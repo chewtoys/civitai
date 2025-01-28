@@ -1,4 +1,5 @@
-import { Currency, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { Currency } from '~/shared/utils/prisma/enums';
 import { BountyEntryFileMeta, UpsertBountyEntryInput } from '~/server/schema/bounty-entry.schema';
 import { TransactionType } from '~/server/schema/buzz.schema';
 import { createBuzzTransaction } from '~/server/services/buzz.service';
@@ -7,6 +8,8 @@ import { createEntityImages, updateEntityImages } from '~/server/services/image.
 import { throwBadRequestError } from '~/server/utils/errorHandling';
 import { dbRead, dbWrite } from '../db/client';
 import { GetByIdInput } from '../schema/base.schema';
+import { userContentOverviewCache } from '~/server/redis/caches';
+import { throwOnBlockedLinkDomain } from '~/server/services/blocklist.service';
 
 export const getEntryById = <TSelect extends Prisma.BountyEntrySelect>({
   input,
@@ -23,14 +26,21 @@ export const getAllEntriesByBountyId = <TSelect extends Prisma.BountyEntrySelect
   select,
   sort = 'createdAt',
 }: {
-  input: { bountyId: number; userId?: number };
+  input: {
+    bountyId: number;
+    userId?: number;
+    excludedUserIds?: number[];
+    limit?: number;
+    cursor?: number;
+  };
   select: TSelect;
   sort?: 'createdAt' | 'benefactorCount';
 }) => {
   let orderBy: Prisma.BountyEntryOrderByWithRelationInput | undefined;
+  const take = (input.limit ?? 20) + 1;
 
   if (sort === 'createdAt') {
-    orderBy = { createdAt: 'desc' };
+    orderBy = { id: 'desc' };
   } else if (sort === 'benefactorCount') {
     orderBy = {
       benefactors: {
@@ -42,7 +52,13 @@ export const getAllEntriesByBountyId = <TSelect extends Prisma.BountyEntrySelect
   }
 
   return dbRead.bountyEntry.findMany({
-    where: { bountyId: input.bountyId, userId: input.userId },
+    where: {
+      bountyId: input.bountyId,
+      userId: input.userId,
+      AND: input.excludedUserIds ? [{ userId: { notIn: input.excludedUserIds } }] : undefined,
+    },
+    cursor: input.cursor ? { id: input.cursor } : undefined,
+    take,
     select,
     orderBy,
   });
@@ -66,13 +82,13 @@ export const getBountyEntryEarnedBuzz = async ({
     FROM "BountyEntry" be
     LEFT JOIN "BountyBenefactor" bb ON bb."awardedToId" = be.id AND bb.currency = ${currency}::"Currency"
     WHERE be.id IN (${Prisma.join(ids)})
-    GROUP BY be.id 
+    GROUP BY be.id
   `;
 
   return data;
 };
 
-export const upsertBountyEntry = ({
+export const upsertBountyEntry = async ({
   id,
   bountyId,
   files,
@@ -81,6 +97,7 @@ export const upsertBountyEntry = ({
   description,
   userId,
 }: UpsertBountyEntryInput & { userId: number }) => {
+  if (description) await throwOnBlockedLinkDomain(description);
   return dbWrite.$transaction(async (tx) => {
     if (id) {
       const [awarded] = await getBountyEntryEarnedBuzz({ ids: [id] });
@@ -90,7 +107,6 @@ export const upsertBountyEntry = ({
       }
       // confirm it exists:
       const entry = await tx.bountyEntry.update({ where: { id }, data: { description } });
-
       if (!entry) return null;
 
       if (files) {
@@ -141,6 +157,10 @@ export const upsertBountyEntry = ({
           entityId: entry.id,
           entityType: 'BountyEntry',
         });
+      }
+
+      if (entry.userId) {
+        await userContentOverviewCache.bust(entry.userId);
       }
 
       return entry;
@@ -349,23 +369,24 @@ export const deleteBountyEntry = async ({
     }
   }
 
-  const deletedBountyEntry = await dbWrite.$transaction(async (tx) => {
-    const deletedBountyEntry = await tx.bountyEntry.delete({ where: { id } });
-    if (!deletedBountyEntry) return null;
+  const deletedBountyEntry = await dbWrite.$transaction(
+    async (tx) => {
+      const deletedBountyEntry = await tx.bountyEntry.delete({ where: { id } });
+      if (!deletedBountyEntry) return null;
 
-    await tx.file.deleteMany({ where: { entityId: id, entityType: 'BountyEntry' } });
-    const images = await tx.imageConnection.findMany({
-      select: {
-        imageId: true,
-      },
-      where: { entityId: id, entityType: 'BountyEntry' },
-    });
+      await tx.file.deleteMany({ where: { entityId: id, entityType: 'BountyEntry' } });
+      const images = await tx.imageConnection.findMany({
+        select: { imageId: true },
+        where: { entityId: id, entityType: 'BountyEntry' },
+      });
 
-    await tx.imageConnection.deleteMany({ where: { entityId: id, entityType: 'BountyEntry' } });
-    await tx.image.deleteMany({ where: { id: { in: images.map((i) => i.imageId) } } });
+      await tx.imageConnection.deleteMany({ where: { entityId: id, entityType: 'BountyEntry' } });
+      await tx.image.deleteMany({ where: { id: { in: images.map((i) => i.imageId) } } });
 
-    return deletedBountyEntry;
-  });
+      return deletedBountyEntry;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   if (!deletedBountyEntry) return null;
 

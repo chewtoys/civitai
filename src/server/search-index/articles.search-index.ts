@@ -1,18 +1,17 @@
-import { client, updateDocs } from '~/server/meilisearch/client';
-import { getOrCreateIndex, onSearchIndexDocumentsCleanup } from '~/server/meilisearch/util';
-import { EnqueuedTask } from 'meilisearch';
-import {
-  createSearchIndexUpdateProcessor,
-  SearchIndexRunContext,
-} from '~/server/search-index/base.search-index';
-import { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { searchClient as client, updateDocs } from '~/server/meilisearch/client';
+import { getOrCreateIndex } from '~/server/meilisearch/util';
+import { createSearchIndexUpdateProcessor } from '~/server/search-index/base.search-index';
+import { ArticleStatus, Availability } from '~/shared/utils/prisma/enums';
 import { articleDetailSelect } from '~/server/selectors/article.selector';
 import { ARTICLES_SEARCH_INDEX } from '~/server/common/constants';
+import { isDefined } from '~/utils/type-guards';
+import { ImageMetaProps } from '~/server/schema/image.schema';
+import { parseBitwiseBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
+import { getCosmeticsForEntity } from '~/server/services/cosmetic.service';
 
-const READ_BATCH_SIZE = 1000;
 const MEILISEARCH_DOCUMENT_BATCH_SIZE = 1000;
 const INDEX_ID = ARTICLES_SEARCH_INDEX;
-const SWAP_INDEX_ID = `${INDEX_ID}_NEW`;
 
 const onIndexSetup = async ({ indexName }: { indexName: string }) => {
   if (!client) {
@@ -44,13 +43,14 @@ const onIndexSetup = async ({ indexName }: { indexName: string }) => {
     'createdAt',
     'stats.commentCount',
     'stats.favoriteCount',
+    'stats.collectedCount',
     'stats.viewCount',
     'stats.tippedAmountCount',
   ]);
 
   console.log('onIndexSetup :: sortableFieldsAttributesTask created', sortableFieldsAttributesTask);
 
-  const filterableAttributes = ['tags.name', 'user.username'];
+  const filterableAttributes = ['tags.name', 'user.username', 'nsfwLevel'];
 
   if (
     // Meilisearch stores sorted.
@@ -69,172 +69,136 @@ const onIndexSetup = async ({ indexName }: { indexName: string }) => {
   console.log('onIndexSetup :: all tasks completed');
 };
 
-export type ArticleSearchIndexRecord = Awaited<ReturnType<typeof onFetchItemsToIndex>>[number];
-
-const onFetchItemsToIndex = async ({
-  db,
-  whereOr,
-  indexName,
-  ...queryProps
+const transformData = async ({
+  articles,
+  cosmetics,
 }: {
-  db: PrismaClient;
-  indexName: string;
-  whereOr?: Prisma.ArticleWhereInput[];
-  skip?: number;
-  take?: number;
+  articles: Article[];
+  cosmetics: Awaited<ReturnType<typeof getCosmeticsForEntity>>;
 }) => {
-  const offset = queryProps.skip || 0;
-  console.log(
-    `onFetchItemsToIndex :: fetching starting for ${indexName} range:`,
-    offset,
-    offset + READ_BATCH_SIZE - 1,
-    ' filters:',
-    whereOr
-  );
-
-  const articles = await db.article.findMany({
-    skip: offset,
-    take: READ_BATCH_SIZE,
-    select: {
-      ...articleDetailSelect,
-      stats: {
-        select: {
-          favoriteCountAllTime: true,
-          commentCountAllTime: true,
-          likeCountAllTime: true,
-          dislikeCountAllTime: true,
-          heartCountAllTime: true,
-          laughCountAllTime: true,
-          cryCountAllTime: true,
-          viewCountAllTime: true,
-          tippedAmountCountAllTime: true,
+  const records = articles
+    .map(({ tags, stats, ...articleRecord }) => {
+      const coverImage = articleRecord.coverImage;
+      if (!coverImage) return null;
+      return {
+        ...articleRecord,
+        nsfwLevel: parseBitwiseBrowsingLevel(articleRecord.nsfwLevel),
+        stats: stats
+          ? {
+              favoriteCount: stats.favoriteCountAllTime,
+              collectedCount: stats.collectedCountAllTime,
+              commentCount: stats.commentCountAllTime,
+              likeCount: stats.likeCountAllTime,
+              dislikeCount: stats.dislikeCountAllTime,
+              heartCount: stats.heartCountAllTime,
+              laughCount: stats.laughCountAllTime,
+              cryCount: stats.cryCountAllTime,
+              viewCount: stats.viewCountAllTime,
+              tippedAmountCount: stats.tippedAmountCountAllTime,
+            }
+          : undefined,
+        // Flatten tags:
+        tags: tags.map((articleTag) => articleTag.tag),
+        coverImage: {
+          ...coverImage,
+          // !important - when article `userNsfwLevel` equals article `nsfwLevel`, it's possible that the article `userNsfwLevel` is higher than the cover image `nsfwLevel`. In this case, we update the image to the higher `nsfwLevel` so that it will still pass through front end filters
+          nsfwLevel:
+            articleRecord.nsfwLevel === articleRecord.userNsfwLevel
+              ? articleRecord.nsfwLevel
+              : coverImage.nsfwLevel,
+          meta: coverImage.meta as ImageMetaProps,
+          tags: coverImage.tags.map((x) => x.tag),
         },
-      },
-    },
-    where: {
-      publishedAt: {
-        not: null,
-      },
-      tosViolation: false,
-      // if lastUpdatedAt is not provided,
-      // this should generate the entirety of the index.
-      OR: (whereOr?.length ?? 0) > 0 ? whereOr : undefined,
-    },
-  });
+        cosmetic: cosmetics[articleRecord.id] ?? null,
+      };
+    })
+    .filter(isDefined);
 
-  console.log(
-    `onFetchItemsToIndex :: fetching complete for ${indexName} range:`,
-    offset,
-    offset + READ_BATCH_SIZE - 1,
-    'filters:',
-    whereOr
-  );
-
-  // Avoids hitting the DB without data.
-  if (articles.length === 0) {
-    return [];
-  }
-
-  const indexReadyRecords = articles.map(({ tags, stats, ...articleRecord }) => {
-    return {
-      ...articleRecord,
-      stats: stats
-        ? {
-            favoriteCount: stats.favoriteCountAllTime,
-            commentCount: stats.commentCountAllTime,
-            likeCount: stats.likeCountAllTime,
-            dislikeCount: stats.dislikeCountAllTime,
-            heartCount: stats.heartCountAllTime,
-            laughCount: stats.laughCountAllTime,
-            cryCount: stats.cryCountAllTime,
-            viewCount: stats.viewCountAllTime,
-            tippedAmountCount: stats.tippedAmountCountAllTime,
-          }
-        : undefined,
-      // Flatten tags:
-      tags: tags.map((articleTag) => articleTag.tag),
-    };
-  });
-
-  return indexReadyRecords;
+  return records;
 };
 
-const onIndexUpdate = async ({ db, lastUpdatedAt, indexName }: SearchIndexRunContext) => {
-  if (!client) return;
+export type ArticleSearchIndexRecord = Awaited<ReturnType<typeof transformData>>[number];
 
-  // Confirm index setup & working:
-  await onIndexSetup({ indexName });
-  // Cleanup documents that require deletion:
-  // Always pass INDEX_ID here, not index name, as pending to delete will
-  // always use this name.
-  await onSearchIndexDocumentsCleanup({ db, indexName: INDEX_ID });
-
-  let offset = 0;
-  const articlesTasks: EnqueuedTask[] = [];
-
-  const queuedItems = await db.searchIndexUpdateQueue.findMany({
+const articleSelect = {
+  ...articleDetailSelect,
+  stats: {
     select: {
-      id: true,
+      favoriteCountAllTime: true,
+      collectedCountAllTime: true,
+      commentCountAllTime: true,
+      likeCountAllTime: true,
+      dislikeCountAllTime: true,
+      heartCountAllTime: true,
+      laughCountAllTime: true,
+      cryCountAllTime: true,
+      viewCountAllTime: true,
+      tippedAmountCountAllTime: true,
     },
-    where: {
-      type: INDEX_ID,
-    },
-  });
-
-  while (true) {
-    console.log(
-      `onIndexUpdate :: fetching starting for ${indexName} range:`,
-      offset,
-      offset + READ_BATCH_SIZE - 1
-    );
-    const indexReadyRecords = await onFetchItemsToIndex({
-      db,
-      indexName,
-      skip: offset,
-      whereOr: !lastUpdatedAt
-        ? undefined
-        : [
-            {
-              createdAt: {
-                gt: lastUpdatedAt,
-              },
-            },
-            {
-              updatedAt: {
-                gt: lastUpdatedAt,
-              },
-            },
-            {
-              id: {
-                in: queuedItems.map(({ id }) => id),
-              },
-            },
-          ],
-    });
-    console.log(
-      `onIndexUpdate :: fetching complete for ${indexName} range:`,
-      offset,
-      offset + READ_BATCH_SIZE - 1
-    );
-
-    if (indexReadyRecords.length === 0) break;
-
-    const tasks = await updateDocs({
-      indexName,
-      documents: indexReadyRecords,
-      batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
-    });
-    articlesTasks.push(...tasks);
-
-    offset += indexReadyRecords.length;
-  }
-
-  console.log('onIndexUpdate :: index update complete');
+  },
 };
+
+type Article = Prisma.ArticleGetPayload<{
+  select: typeof articleSelect;
+}>;
 
 export const articlesSearchIndex = createSearchIndexUpdateProcessor({
   indexName: INDEX_ID,
-  swapIndexName: SWAP_INDEX_ID,
-  onIndexUpdate,
-  onIndexSetup,
+  setup: onIndexSetup,
+  prepareBatches: async ({ db }, lastUpdatedAt) => {
+    const data = await db.$queryRaw<{ startId: number; endId: number }[]>`
+      SELECT MIN(id) as "startId", MAX(id) as "endId" FROM "Article"
+      ${
+        lastUpdatedAt
+          ? Prisma.sql`
+        WHERE "createdAt" >= ${lastUpdatedAt}
+      `
+          : Prisma.sql``
+      };
+    `;
+
+    const { startId, endId } = data[0];
+
+    return {
+      batchSize: 1000,
+      startId,
+      endId,
+    };
+  },
+  pullData: async ({ db, logger }, batch) => {
+    logger(`PullData :: Pulling data for batch: ${batch}`);
+    const articles = await db.article.findMany({
+      select: articleSelect,
+      where: {
+        publishedAt: { not: null },
+        status: ArticleStatus.Published,
+        tosViolation: false,
+        availability: { not: Availability.Unsearchable },
+        id: batch.type === 'update' ? { in: batch.ids } : { gte: batch.startId, lte: batch.endId },
+      },
+    });
+
+    logger(`PullData :: Pulled articles`);
+
+    const cosmetics = await getCosmeticsForEntity({
+      ids: articles.map((x) => x.id),
+      entity: 'Article',
+    });
+
+    logger(`PullData :: Pulled cosmetics`);
+
+    return {
+      articles,
+      cosmetics,
+    };
+  },
+  transformData,
+  pushData: async ({ indexName }, records) => {
+    await updateDocs({
+      indexName,
+      documents: records as any[],
+      batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
+    });
+
+    return;
+  },
 });

@@ -1,34 +1,37 @@
-import { client, updateDocs } from '~/server/meilisearch/client';
-import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
+import { Prisma } from '@prisma/client';
+import { chunk, isEqual } from 'lodash-es';
+import { TypoTolerance } from 'meilisearch';
+import { ModelFileType, MODELS_SEARCH_INDEX } from '~/server/common/constants';
+import { searchClient as client, updateDocs } from '~/server/meilisearch/client';
+import { getOrCreateIndex } from '~/server/meilisearch/util';
+import { imagesForModelVersionsCache } from '~/server/redis/caches';
+import { ModelFileMetadata } from '~/server/schema/model-file.schema';
+import { RecommendedSettingsSchema } from '~/server/schema/model-version.schema';
+import { createSearchIndexUpdateProcessor } from '~/server/search-index/base.search-index';
 import { modelHashSelect } from '~/server/selectors/modelHash.selector';
+import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
+import { getCosmeticsForEntity } from '~/server/services/cosmetic.service';
+import { ImagesForModelVersions } from '~/server/services/image.service';
+import { getCategoryTags } from '~/server/services/system-cache';
+import { limitConcurrency, Task } from '~/server/utils/concurrency-helpers';
+import { parseBitwiseBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
 import {
+  Availability,
   MetricTimeframe,
   ModelHashType,
   ModelStatus,
-  Prisma,
-  PrismaClient,
-  SearchIndexUpdateQueueAction,
-} from '@prisma/client';
-import { MODELS_SEARCH_INDEX, ModelFileType } from '~/server/common/constants';
-import { getOrCreateIndex, onSearchIndexDocumentsCleanup } from '~/server/meilisearch/util';
-import { EnqueuedTask } from 'meilisearch';
-import { getImagesForModelVersion } from '~/server/services/image.service';
+} from '~/shared/utils/prisma/enums';
 import { isDefined } from '~/utils/type-guards';
-import {
-  createSearchIndexUpdateProcessor,
-  SearchIndexRunContext,
-} from '~/server/search-index/base.search-index';
-import { getCategoryTags } from '~/server/services/system-cache';
-import { ModelFileMetadata } from '~/server/schema/model-file.schema';
-import { withRetries } from '~/server/utils/errorHandling';
+import { getModelVersionsForSearchIndex } from '../selectors/modelVersion.selector';
+import { getUnavailableResources } from '../services/generation/generation.service';
 
 const RATING_BAYESIAN_M = 3.5;
 const RATING_BAYESIAN_C = 10;
 
-const READ_BATCH_SIZE = 1000;
-const MEILISEARCH_DOCUMENT_BATCH_SIZE = 1000;
+const READ_BATCH_SIZE = 2000;
+const MEILISEARCH_DOCUMENT_BATCH_SIZE = READ_BATCH_SIZE;
 const INDEX_ID = MODELS_SEARCH_INDEX;
-const SWAP_INDEX_ID = `${INDEX_ID}_NEW`;
+
 const onIndexSetup = async ({ indexName }: { indexName: string }) => {
   if (!client) {
     return;
@@ -57,13 +60,10 @@ const onIndexSetup = async ({ indexName }: { indexName: string }) => {
 
   const sortableAttributes = [
     // sort
-    'metrics.weightedRating',
+    'metrics.thumbsUpCount',
     'createdAt',
     'metrics.commentCount',
-    'metrics.favoriteCount',
     'metrics.downloadCount',
-    'metrics.rating',
-    'metrics.ratingCount',
     'metrics.collectedCount',
     'metrics.tippedAmountCount',
   ];
@@ -80,7 +80,7 @@ const onIndexSetup = async ({ indexName }: { indexName: string }) => {
   const rankingRules = [
     'sort',
     'attribute',
-    'metrics.weightedRating:desc',
+    'metrics.thumbsUpCount:desc',
     'words',
     'proximity',
     'exactness',
@@ -92,19 +92,23 @@ const onIndexSetup = async ({ indexName }: { indexName: string }) => {
   }
 
   const filterableAttributes = [
+    'id',
     'hashes',
-    'nsfw',
+    'nsfwLevel',
     'type',
     'checkpointType',
     'tags.name',
-    'user.username',
     'version.baseModel',
+    'user.id',
     'user.username',
     'status',
     'category.name',
     'canGenerate',
     'fileFormats',
     'lastVersionAtUnix',
+    'versions.hashes',
+    'versions.baseModel',
+    'versions.id',
   ];
 
   if (
@@ -120,434 +124,370 @@ const onIndexSetup = async ({ indexName }: { indexName: string }) => {
       updateFilterableAttributesTask
     );
   }
+
+  const typoTolerance: TypoTolerance = {
+    enabled: true,
+    minWordSizeForTypos: {
+      oneTypo: 12,
+      twoTypos: 16,
+    },
+    disableOnAttributes: [],
+    disableOnWords: [],
+  };
+
+  if (
+    // Meilisearch stores sorted.
+    !isEqual(settings.typoTolerance, typoTolerance)
+  ) {
+    const updateTypoToleranceTask = await index.updateTypoTolerance(typoTolerance);
+    console.log('onIndexSetup :: updateTypoToleranceTask created', updateTypoToleranceTask);
+  }
+};
+
+const modelSelect = Prisma.validator<Prisma.ModelSelect>()({
+  id: true,
+  name: true,
+  type: true,
+  nsfw: true,
+  nsfwLevel: true,
+  minor: true,
+  status: true,
+  createdAt: true,
+  lastVersionAt: true,
+  publishedAt: true,
+  locked: true,
+  earlyAccessDeadline: true,
+  mode: true,
+  checkpointType: true,
+  availability: true,
+  allowNoCredit: true,
+  allowCommercialUse: true,
+  allowDerivatives: true,
+  allowDifferentLicense: true,
+  // Joins:
+  user: {
+    select: userWithCosmeticsSelect,
+  },
+  modelVersions: {
+    select: getModelVersionsForSearchIndex,
+    orderBy: { index: 'asc' as const },
+    where: {
+      status: ModelStatus.Published,
+      availability: {
+        not: Availability.Unsearchable,
+      },
+    },
+  },
+  tagsOnModels: { select: { tag: { select: { id: true, name: true } } } },
+  hashes: {
+    select: modelHashSelect,
+    where: {
+      fileType: { in: ['Model', 'Pruned Model'] as ModelFileType[] },
+      hashType: { notIn: ['AutoV1'] as ModelHashType[] },
+    },
+  },
+  metrics: {
+    select: {
+      commentCount: true,
+      favoriteCount: true,
+      thumbsUpCount: true,
+      downloadCount: true,
+      rating: true,
+      ratingCount: true,
+      collectedCount: true,
+      tippedAmountCount: true,
+    },
+    where: {
+      timeframe: MetricTimeframe.AllTime,
+    },
+  },
+});
+
+type Model = Prisma.ModelGetPayload<{
+  select: typeof modelSelect;
+}>;
+type PullDataResult = {
+  models: Model[];
+  cosmetics: Awaited<ReturnType<typeof getCosmeticsForEntity>>;
+  images: ImagesForModelVersions[];
+};
+const transformData = async ({ models, cosmetics, images }: PullDataResult) => {
+  const modelCategories = await getCategoryTags('model');
+  const modelCategoriesIds = modelCategories.map((category) => category.id);
+
+  const unavailableGenResources = await getUnavailableResources();
+
+  const indexReadyRecords = models
+    .map((modelRecord) => {
+      const {
+        user,
+        modelVersions,
+        tagsOnModels,
+        hashes,
+        allowNoCredit,
+        allowCommercialUse,
+        allowDerivatives,
+        allowDifferentLicense,
+        ...model
+      } = modelRecord;
+      const metrics = modelRecord.metrics[0] ?? {};
+
+      const weightedRating =
+        (metrics.rating * metrics.ratingCount + RATING_BAYESIAN_M * RATING_BAYESIAN_C) /
+        (metrics.ratingCount + RATING_BAYESIAN_C);
+
+      const [version] = modelVersions;
+      if (!version) return null;
+
+      const { files, ...restVersion } = version;
+
+      const canGenerate = modelVersions.some(
+        (x) => x.generationCoverage?.covered && !unavailableGenResources.includes(x.id)
+      );
+
+      const category = tagsOnModels.find((tagOnModel) =>
+        modelCategoriesIds.includes(tagOnModel.tag.id)
+      );
+
+      return {
+        ...model,
+        nsfwLevel: parseBitwiseBrowsingLevel(model.nsfwLevel),
+        lastVersionAtUnix: model.lastVersionAt?.getTime() ?? model.createdAt.getTime(),
+        user,
+        category: category?.tag,
+        permissions: {
+          allowNoCredit,
+          allowCommercialUse,
+          allowDerivatives,
+          allowDifferentLicense,
+          minor: modelRecord.minor,
+        },
+        version: {
+          ...restVersion,
+          metrics: restVersion.metrics[0],
+          hashes: restVersion.hashes.map((hash) => hash.hash),
+          hashData: restVersion.hashes.map((hash) => ({ hash: hash.hash, type: hash.hashType })),
+          settings: restVersion.settings as RecommendedSettingsSchema,
+        },
+        versions: modelVersions.map(
+          ({ generationCoverage, files, hashes, settings, metrics: vMetrics, ...x }) => ({
+            ...x,
+            metrics: vMetrics[0],
+            hashes: hashes.map((hash) => hash.hash),
+            hashData: hashes.map((hash) => ({ hash: hash.hash, type: hash.hashType })),
+            canGenerate:
+              generationCoverage?.covered && unavailableGenResources.indexOf(x.id) === -1,
+            settings: settings as RecommendedSettingsSchema,
+          })
+        ),
+        triggerWords: [
+          ...new Set(modelVersions.flatMap((modelVersion) => modelVersion.trainedWords)),
+        ],
+        fileFormats: [
+          ...new Set(
+            modelVersions
+              .flatMap((modelVersion) =>
+                modelVersion.files.map((x) => (x.metadata as ModelFileMetadata)?.format)
+              )
+              .filter(isDefined)
+          ),
+        ],
+        hashes: hashes.map((hash) => hash.hash.toLowerCase()),
+        tags: tagsOnModels.map((tagOnModel) => tagOnModel.tag),
+        metrics: {
+          ...metrics,
+          weightedRating,
+        },
+        rank: {
+          downloadCount: metrics?.downloadCount ?? 0,
+          favoriteCount: metrics.favoriteCount ?? 0,
+          thumbsUpCount: metrics.thumbsUpCount ?? 0,
+          commentCount: metrics.commentCount ?? 0,
+          ratingCount: metrics.ratingCount ?? 0,
+          rating: metrics.rating ?? 0,
+          collectedCount: metrics.collectedCount ?? 0,
+          tippedAmountCount: metrics.tippedAmountCount ?? 0,
+        },
+        canGenerate,
+        cosmetic: cosmetics[model.id] ?? null,
+      };
+    })
+    // Removes null models that have no versionIDs
+    .filter(isDefined);
+
+  const indexRecordsWithImages = models
+    .map((modelRecord) => {
+      const { modelVersions, ...model } = modelRecord;
+      const [modelVersion] = modelVersions;
+
+      if (!modelVersion) {
+        return null;
+      }
+
+      const modelImages = images.filter(
+        (image) =>
+          image.modelVersionId === modelVersion.id &&
+          image.availability !== Availability.Unsearchable
+      );
+
+      return {
+        id: model.id,
+        images: modelImages,
+      };
+    })
+    // Removes null models that have no versionIDs
+    .filter(isDefined);
+
+  return {
+    indexReadyRecords,
+    indexRecordsWithImages,
+  };
 };
 
 export type ModelSearchIndexRecord = Awaited<
-  ReturnType<typeof onFetchItemsToIndex>
+  ReturnType<typeof transformData>
 >['indexReadyRecords'][number] &
-  Awaited<ReturnType<typeof onFetchItemsToIndex>>['indexRecordsWithImages'][number];
-
-const onFetchItemsToIndex = async ({
-  db,
-  whereOr,
-  indexName,
-  ...queryProps
-}: {
-  db: PrismaClient;
-  indexName: string;
-  whereOr?: Prisma.ModelWhereInput[];
-  skip?: number;
-  take?: number;
-}) => {
-  return withRetries(
-    async () => {
-      const modelCategories = await getCategoryTags('model');
-      const modelCategoriesIds = modelCategories.map((category) => category.id);
-
-      const offset = queryProps.skip || 0;
-      console.log(
-        `onFetchItemsToIndex :: fetching starting for ${indexName} range:`,
-        offset,
-        offset + READ_BATCH_SIZE - 1,
-        ' filters:',
-        whereOr
-      );
-      const models = await db.model.findMany({
-        take: READ_BATCH_SIZE,
-        ...queryProps,
-        select: {
-          id: true,
-          name: true,
-          type: true,
-          nsfw: true,
-          status: true,
-          createdAt: true,
-          lastVersionAt: true,
-          publishedAt: true,
-          locked: true,
-          earlyAccessDeadline: true,
-          mode: true,
-          checkpointType: true,
-          // Joins:
-          user: {
-            select: userWithCosmeticsSelect,
-          },
-          modelVersions: {
-            orderBy: { index: 'asc' },
-            select: {
-              id: true,
-              name: true,
-              earlyAccessTimeFrame: true,
-              createdAt: true,
-              generationCoverage: { select: { covered: true } },
-              trainedWords: true,
-              baseModel: true,
-              baseModelType: true,
-              files: { select: { metadata: true }, where: { type: 'Model' } },
-            },
-            where: {
-              status: ModelStatus.Published,
-            },
-          },
-          tagsOnModels: { select: { tag: { select: { id: true, name: true } } } },
-          hashes: {
-            select: modelHashSelect,
-            where: {
-              hashType: ModelHashType.SHA256,
-              fileType: { in: ['Model', 'Pruned Model'] as ModelFileType[] },
-            },
-          },
-          metrics: {
-            select: {
-              commentCount: true,
-              favoriteCount: true,
-              downloadCount: true,
-              rating: true,
-              ratingCount: true,
-              collectedCount: true,
-              tippedAmountCount: true,
-            },
-            where: {
-              timeframe: MetricTimeframe.AllTime,
-            },
-          },
-          rank: {
-            select: {
-              [`downloadCount${MetricTimeframe.AllTime}`]: true,
-              [`favoriteCount${MetricTimeframe.AllTime}`]: true,
-              [`commentCount${MetricTimeframe.AllTime}`]: true,
-              [`ratingCount${MetricTimeframe.AllTime}`]: true,
-              [`rating${MetricTimeframe.AllTime}`]: true,
-              [`collectedCount${MetricTimeframe.AllTime}`]: true,
-              [`tippedAmountCount${MetricTimeframe.AllTime}`]: true,
-            },
-          },
-        },
-        where: {
-          status: ModelStatus.Published,
-          OR: (whereOr?.length ?? 0) > 0 ? whereOr : undefined,
-        },
-      });
-
-      console.log(
-        `onFetchItemsToIndex :: fetching complete for ${indexName} range:`,
-        offset,
-        offset + READ_BATCH_SIZE - 1,
-        'filters:',
-        whereOr
-      );
-
-      // Avoids hitting the DB without data.
-      if (models.length === 0) {
-        return {
-          indexReadyRecords: [],
-          indexRecordsWithImages: [],
-        };
-      }
-
-      const modelVersionIds = models.flatMap((m) => m.modelVersions.map((m) => m.id));
-      const images = !!modelVersionIds.length
-        ? await getImagesForModelVersion({
-            modelVersionIds,
-            imagesPerVersion: 10,
-          })
-        : [];
-
-      const imageIds = images.map((image) => image.id);
-      // Performs a single DB request:
-      const tagsOnImages = !imageIds.length
-        ? []
-        : await db.tagsOnImage.findMany({
-            select: {
-              imageId: true,
-              tag: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-            where: {
-              imageId: {
-                in: imageIds,
-              },
-            },
-          });
-
-      // Get tags for each image:
-      const imagesWithTags = images.map((image) => {
-        const imageTags = tagsOnImages
-          .filter((tagOnImage) => tagOnImage.imageId === image.id)
-          .map((tagOnImage) => tagOnImage.tag);
-
-        return {
-          ...image,
-          tags: imageTags,
-        };
-      });
-
-      const indexReadyRecords = models
-        .map((modelRecord) => {
-          const { user, modelVersions, tagsOnModels, hashes, rank, ...model } = modelRecord;
-
-          const metrics = modelRecord.metrics[0] || {};
-
-          const weightedRating =
-            (metrics.rating * metrics.ratingCount + RATING_BAYESIAN_M * RATING_BAYESIAN_C) /
-            (metrics.ratingCount + RATING_BAYESIAN_C);
-
-          const [version] = modelVersions;
-
-          if (!version) {
-            return null;
-          }
-
-          const canGenerate = modelVersions.some((x) => x.generationCoverage?.covered);
-
-          const category = tagsOnModels.find((tagOnModel) =>
-            modelCategoriesIds.includes(tagOnModel.tag.id)
-          );
-
-          return {
-            ...model,
-            lastVersionAtUnix: model.lastVersionAt?.getTime() ?? model.createdAt.getTime(),
-            user,
-            category: category?.tag,
-            version,
-            versions: modelVersions.map(({ generationCoverage, files, ...x }) => ({
-              ...x,
-              canGenerate: generationCoverage?.covered,
-            })),
-            triggerWords: [
-              ...new Set(modelVersions.flatMap((modelVersion) => modelVersion.trainedWords)),
-            ],
-            fileFormats: [
-              ...new Set(
-                modelVersions
-                  .flatMap((modelVersion) =>
-                    modelVersion.files.map((x) => (x.metadata as ModelFileMetadata)?.format)
-                  )
-                  .filter(isDefined)
-              ),
-            ],
-            hashes: hashes.map((hash) => hash.hash.toLowerCase()),
-            tags: tagsOnModels.map((tagOnModel) => tagOnModel.tag),
-            metrics: {
-              ...metrics,
-              weightedRating,
-            },
-            rank: {
-              downloadCount: rank?.[`downloadCount${MetricTimeframe.AllTime}`] ?? 0,
-              favoriteCount: rank?.[`favoriteCount${MetricTimeframe.AllTime}`] ?? 0,
-              commentCount: rank?.[`commentCount${MetricTimeframe.AllTime}`] ?? 0,
-              ratingCount: rank?.[`ratingCount${MetricTimeframe.AllTime}`] ?? 0,
-              rating: rank?.[`rating${MetricTimeframe.AllTime}`] ?? 0,
-              collectedCount: rank?.[`collectedCount${MetricTimeframe.AllTime}`] ?? 0,
-              tippedAmountCount: rank?.[`tippedAmountCount${MetricTimeframe.AllTime}`] ?? 0,
-            },
-            canGenerate,
-          };
-        })
-        // Removes null models that have no versionIDs
-        .filter(isDefined);
-
-      const indexRecordsWithImages = models
-        .map((modelRecord) => {
-          const { modelVersions, ...model } = modelRecord;
-          const [modelVersion] = modelVersions;
-
-          if (!modelVersion) {
-            return null;
-          }
-
-          const modelImages = imagesWithTags.filter(
-            (image) => image.modelVersionId === modelVersion.id
-          );
-
-          return {
-            id: model.id,
-            images: modelImages,
-          };
-        })
-        // Removes null models that have no versionIDs
-        .filter(isDefined);
-
-      return {
-        indexReadyRecords,
-        indexRecordsWithImages,
-      };
-    },
-    3,
-    1500
-  );
-};
-
-const onUpdateQueueProcess = async ({ db, indexName }: { db: PrismaClient; indexName: string }) => {
-  const queuedItems = await db.searchIndexUpdateQueue.findMany({
-    select: {
-      id: true,
-    },
-    where: { type: INDEX_ID, action: SearchIndexUpdateQueueAction.Update },
-  });
-
-  console.log(
-    'onUpdateQueueProcess :: A total of ',
-    queuedItems.length,
-    ' have been updated and will be re-indexed'
-  );
-
-  const batchCount = Math.ceil(queuedItems.length / READ_BATCH_SIZE);
-
-  const itemsToIndex: Awaited<ReturnType<typeof onFetchItemsToIndex>> = {
-    indexReadyRecords: [],
-    indexRecordsWithImages: [],
-  };
-
-  for (let batchNumber = 0; batchNumber < batchCount; batchNumber++) {
-    const batch = queuedItems.slice(
-      batchNumber * READ_BATCH_SIZE,
-      batchNumber * READ_BATCH_SIZE + READ_BATCH_SIZE
-    );
-
-    const itemIds = batch.map(({ id }) => id);
-
-    const { indexReadyRecords, indexRecordsWithImages } = await onFetchItemsToIndex({
-      db,
-      indexName,
-      whereOr: [{ id: { in: itemIds } }],
-    });
-
-    itemsToIndex.indexReadyRecords.push(...indexReadyRecords);
-    itemsToIndex.indexRecordsWithImages.push(...indexRecordsWithImages);
-  }
-
-  return itemsToIndex;
-};
-
-const onIndexUpdate = async ({
-  db,
-  lastUpdatedAt,
-  indexName = INDEX_ID,
-  updateIds,
-  deleteIds,
-}: SearchIndexRunContext) => {
-  if (!client) return;
-
-  // Confirm index setup & working:
-  await onIndexSetup({ indexName });
-
-  // Cleanup documents that require deletion:
-  // Always pass INDEX_ID here, not index name, as pending to delete will
-  // always use this name.
-  await onSearchIndexDocumentsCleanup({ db, indexName: INDEX_ID });
-  if (deleteIds && deleteIds.length > 0) {
-    await onSearchIndexDocumentsCleanup({ db, indexName: INDEX_ID, ids: deleteIds });
-  }
-
-  const modelTasks: EnqueuedTask[] = [];
-
-  if (lastUpdatedAt) {
-    // Only if this is an update (NOT a reset or first run) will we care for queued items:
-
-    // Update whatever items we have on the queue.
-    // Do it on batches, since it's possible that there are far more items than we expect:
-    const {
-      indexReadyRecords: updateIndexReadyRecords,
-      indexRecordsWithImages: updateIndexRecordsWithImages,
-    } = await onUpdateQueueProcess({
-      db,
-      indexName,
-    });
-
-    if (updateIndexReadyRecords.length > 0) {
-      const updateBaseTasks = await updateDocs({
-        indexName,
-        documents: updateIndexReadyRecords,
-        batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
-      });
-
-      console.log('onIndexUpdate :: base tasks for updated items have been added');
-      modelTasks.push(...updateBaseTasks);
-    }
-
-    if (updateIndexRecordsWithImages.length > 0) {
-      const updateImageTasks = await updateDocs({
-        indexName,
-        documents: updateIndexRecordsWithImages,
-        batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
-      });
-
-      console.log('onIndexUpdate :: image tasks for updated items have been added');
-
-      modelTasks.push(...updateImageTasks);
-    }
-  }
-
-  // Now, we can tackle new additions
-  let offset = 0;
-  while (true) {
-    const whereOr: Prisma.Enumerable<Prisma.ModelWhereInput> = [];
-    if (lastUpdatedAt) {
-      whereOr.push({
-        createdAt: {
-          gt: lastUpdatedAt,
-        },
-      });
-
-      whereOr.push({
-        updatedAt: {
-          gt: lastUpdatedAt,
-        },
-      });
-    }
-
-    if (updateIds && updateIds.length > 0) {
-      whereOr.push({
-        id: {
-          in: updateIds,
-        },
-      });
-    }
-
-    const { indexReadyRecords, indexRecordsWithImages } = await onFetchItemsToIndex({
-      db,
-      indexName,
-      skip: offset,
-      whereOr,
-    });
-
-    if (indexReadyRecords.length === 0 && indexRecordsWithImages.length === 0) {
-      break;
-    }
-
-    const baseTasks = await updateDocs({
-      indexName,
-      documents: indexReadyRecords,
-      batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
-    });
-
-    console.log('onIndexUpdate :: base tasks have been added');
-
-    const imagesTasks = await updateDocs({
-      indexName,
-      documents: indexRecordsWithImages,
-      batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
-    });
-
-    console.log('onIndexUpdate :: image tasks have been added');
-
-    modelTasks.push(...baseTasks);
-    modelTasks.push(...imagesTasks);
-
-    offset += indexReadyRecords.length;
-  }
-
-  console.log('onIndexUpdate :: Indexing complete');
-};
+  Awaited<ReturnType<typeof transformData>>['indexRecordsWithImages'][number];
 
 export const modelsSearchIndex = createSearchIndexUpdateProcessor({
   indexName: INDEX_ID,
-  swapIndexName: SWAP_INDEX_ID,
-  onIndexUpdate,
-  onIndexSetup,
+  setup: onIndexSetup,
+  maxQueueSize: 25, // Avoids hoggging too much memory.
+  prepareBatches: async ({ db, logger }, lastUpdatedAt) => {
+    const data = await db.$queryRaw<{ startId: number; endId: number }[]>`
+      SELECT MIN(id) as "startId", MAX(id) as "endId" FROM "Model"
+      WHERE status = ${ModelStatus.Published}::"ModelStatus"
+          AND availability != ${Availability.Unsearchable}::"Availability"
+      ${
+        lastUpdatedAt
+          ? Prisma.sql`
+        AND "createdAt" >= ${lastUpdatedAt}
+      `
+          : Prisma.sql``
+      };
+    `;
+
+    const { startId, endId } = data[0];
+    logger(
+      `PrepareBatches :: StartId: ${startId}, EndId: ${endId}. Last Updated at ${lastUpdatedAt}`
+    );
+
+    const updateIds = [];
+
+    if (lastUpdatedAt) {
+      let offset = 0;
+
+      while (true) {
+        const ids = await db.$queryRaw<{ id: number }[]>`
+        SELECT id FROM "Model"
+        WHERE status = ${ModelStatus.Published}::"ModelStatus"
+            AND availability != ${Availability.Unsearchable}::"Availability"
+            AND "updatedAt" >= ${lastUpdatedAt}
+        OFFSET ${offset} LIMIT ${READ_BATCH_SIZE};
+        `;
+
+        if (!ids.length) {
+          break;
+        }
+
+        offset += READ_BATCH_SIZE;
+        updateIds.push(...ids.map((x) => x.id));
+      }
+    }
+
+    return {
+      batchSize: READ_BATCH_SIZE,
+      startId,
+      endId,
+      updateIds,
+    };
+  },
+  pullData: async ({ db, logger }, batch) => {
+    const batchLogKey =
+      batch.type === 'update'
+        ? `Update ${batch.ids.length} items`
+        : `${batch.startId} - ${batch.endId}`;
+    logger(`PullData :: Pulling data for batch`, batchLogKey);
+    const models = await db.model.findMany({
+      select: modelSelect,
+      where: {
+        status: ModelStatus.Published,
+        availability: {
+          not: Availability.Unsearchable,
+        },
+        id:
+          batch.type === 'update'
+            ? {
+                in: batch.ids,
+              }
+            : {
+                gte: batch.startId,
+                lte: batch.endId,
+              },
+      },
+    });
+
+    logger(`PullData :: Pulled models`, batchLogKey);
+
+    const results: PullDataResult = {
+      models,
+      cosmetics: {},
+      images: [],
+    };
+
+    if (models.length === 0) return results;
+
+    const pullBatches = chunk(models, 500);
+    const tasks: Task[] = [];
+    for (const batch of pullBatches) {
+      tasks.push(async () => {
+        logger(`PullData :: Pull cosmetics`, batchLogKey);
+        const batchIds = batch.map((m) => m.id);
+        const cosmetics = await getCosmeticsForEntity({
+          ids: batchIds,
+          entity: 'Model',
+        });
+        logger(`PullData :: Pulled cosmetics`, batchLogKey);
+
+        Object.assign(results.cosmetics, cosmetics);
+      });
+
+      const modelVersionIds = batch.flatMap((m) => m.modelVersions.map((m) => m.id));
+      const versionBatches = chunk(modelVersionIds, 500);
+      for (const versionBatch of versionBatches) {
+        tasks.push(async () => {
+          logger(`PullData :: Pull images`, batchLogKey);
+          const imagesCache = await imagesForModelVersionsCache.fetch(versionBatch);
+          const images = Object.values(imagesCache).flatMap((x) => x.images.slice(0, 10));
+          logger(`PullData :: Pulled images`, batchLogKey);
+
+          results.images.push(...images);
+        });
+      }
+    }
+    await limitConcurrency(tasks, 2);
+
+    logger(`PullData :: Finished pulling data for batch`, batchLogKey);
+
+    return results;
+  },
+  transformData,
+  pushData: async ({ indexName }, data) => {
+    const { indexReadyRecords, indexRecordsWithImages } = data as {
+      indexReadyRecords: any[];
+      indexRecordsWithImages: any[];
+    };
+
+    const records = [...indexReadyRecords, ...indexRecordsWithImages];
+
+    if (records.length > 0) {
+      await updateDocs({
+        indexName,
+        documents: records,
+        batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
+      });
+    }
+
+    return;
+  },
 });

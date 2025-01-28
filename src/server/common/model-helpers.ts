@@ -1,4 +1,4 @@
-import { Image, ImageGenerationProcess, NsfwLevel, Prisma, TrainingStatus } from '@prisma/client';
+import { ImageGenerationProcess, ModelStatus, TrainingStatus } from '~/shared/utils/prisma/enums';
 import { ModelFileType } from '~/server/common/constants';
 import { MyDraftModelGetAll, MyTrainingModelGetAll } from '~/types/router';
 import { QS } from '~/utils/qs';
@@ -12,7 +12,7 @@ export const createModelFileDownloadUrl = ({
   versionId: number;
   type?: ModelFileType | string;
   primary?: boolean;
-  meta?: FileMetadata;
+  meta?: BasicFileMetadata;
 }) => {
   const { format, size, fp } = meta || {};
   const queryString = QS.stringify({
@@ -25,7 +25,7 @@ export const createModelFileDownloadUrl = ({
   return `/api/download/models/${versionId}${queryString ? '?' + queryString : ''}`;
 };
 
-export function getImageGenerationProcess(meta: Prisma.JsonObject): ImageGenerationProcess {
+export function getImageGenerationProcess(meta: MixedObject): ImageGenerationProcess {
   // if (meta['comfy'] != null) return ImageGenerationProcess.comfy; // Enable this after the search migration is complete
 
   const denoiseStrength = meta['Denoise strength'] ?? meta['Denoising strength'] != null;
@@ -49,24 +49,20 @@ export function getModelWizardUrl(model: MyDraftModelGetAll['items'][number]) {
   return `/models/${model.id}`;
 }
 
-export function getModelTrainingWizardUrl(model: MyTrainingModelGetAll['items'][number]) {
-  const currentVersion = model.modelVersions[0];
-  if (
-    currentVersion &&
-    currentVersion.trainingStatus &&
-    currentVersion.trainingStatus !== TrainingStatus.Pending &&
-    currentVersion.trainingStatus !== TrainingStatus.Failed
-  ) {
-    // TODO [bw] what should we do here? check for specific other values?
-    return `/models/${model.id}/wizard?step=1`;
+export function getModelTrainingWizardUrl(mv: MyTrainingModelGetAll['items'][number]) {
+  const trainingStatus = mv.trainingStatus;
+
+  if (mv.model.status === ModelStatus.Published) {
+    return `/models/${mv.model.id}/model-versions/${mv.id}/wizard?step=1`;
   }
 
-  const hasTrainingData = !!currentVersion?.files.length;
+  if (trainingStatus && trainingStatus !== TrainingStatus.Pending) {
+    // TODO [bw] what should we do here? check for specific other values?
+    return `/models/${mv.model.id}/wizard?step=1&modelVersionId=${mv.id}`;
+  }
 
-  if (!hasTrainingData) return `/models/train?modelId=${model.id}&step=2`;
-  return `/models/train?modelId=${model.id}&step=3`;
-}
+  const hasTrainingData = !!mv.files.length;
 
-export function isNsfwImage(image: Pick<Image, 'nsfw'>) {
-  return image?.nsfw !== NsfwLevel.None;
+  if (!hasTrainingData) return `/models/train?modelId=${mv.model.id}&step=2`;
+  return `/models/train?modelId=${mv.model.id}&step=3`;
 }

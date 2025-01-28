@@ -1,35 +1,35 @@
 import {
+  Alert,
+  Code,
   Container,
+  Divider,
+  Group,
   Paper,
   Stack,
   Text,
-  Alert,
-  Group,
   ThemeIcon,
-  Divider,
-  Code,
 } from '@mantine/core';
+import { Currency } from '~/shared/utils/prisma/enums';
 import { IconExclamationMark } from '@tabler/icons-react';
 import { BuiltInProviderType } from 'next-auth/providers';
 import { getCsrfToken, getProviders, signIn } from 'next-auth/react';
 import { useRouter } from 'next/router';
+import { useEffect, useRef, useState } from 'react';
+import { CreatorCardV2 } from '~/components/CreatorCard/CreatorCard';
+import { CurrencyBadge } from '~/components/Currency/CurrencyBadge';
 import { EmailLogin } from '~/components/EmailLogin/EmailLogin';
+import { Meta } from '~/components/Meta/Meta';
+import { useReferralsContext } from '~/components/Referrals/ReferralsProvider';
 import { SignInError } from '~/components/SignInError/SignInError';
 import { SocialButton } from '~/components/Social/SocialButton';
-
-import { createServerSideProps } from '~/server/utils/server-side-helpers';
-import { loginRedirectReasons, LoginRedirectReason, trackedReasons } from '~/utils/login-helpers';
-import { useReferralsContext } from '~/components/Referrals/ReferralsProvider';
-import { trpc } from '~/utils/trpc';
-import { CreatorCard } from '~/components/CreatorCard/CreatorCard';
-import { Meta } from '~/components/Meta/Meta';
-import { env } from '~/env/client.mjs';
-import { CurrencyBadge } from '~/components/Currency/CurrencyBadge';
-import { Currency } from '@prisma/client';
 import { useTrackEvent } from '~/components/TrackView/track.utils';
-import { useEffect, useRef } from 'react';
+import { env } from '~/env/client';
+import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { getBaseUrl } from '~/server/utils/url-helpers';
+import { LoginRedirectReason, loginRedirectReasons, trackedReasons } from '~/utils/login-helpers';
+import { trpc } from '~/utils/trpc';
 
-export default function Login({ providers }: Props) {
+export default function Login() {
   const router = useRouter();
   const {
     error,
@@ -47,6 +47,10 @@ export default function Login({ providers }: Props) {
   );
   const observedReason = useRef<string | null>(null);
   const { trackAction } = useTrackEvent();
+  const [providers, setProviders] = useState<NextAuthProviders | null>(null);
+  useEffect(() => {
+    if (!providers) getProviders().then((providers) => setProviders(providers));
+  }, []);
 
   const redirectReason = loginRedirectReasons[reason];
 
@@ -95,7 +99,7 @@ export default function Login({ providers }: Props) {
                 <Text color="dimmed" size="sm">
                   You have been referred by
                 </Text>
-                <CreatorCard user={referrer} withActions={false} />
+                <CreatorCardV2 user={referrer} withActions={false} />
                 <Text size="sm">
                   By signing up with the referral code <Code>{code}</Code> both you and the user who
                   referred you will be awarded{' '}
@@ -112,7 +116,7 @@ export default function Login({ providers }: Props) {
               Welcome to Civitai, sign in with
             </Text>
 
-            <Stack mb={error ? 'md' : undefined} mt="md">
+            <Stack mt="md">
               {providers
                 ? Object.values(providers)
                     .filter((x) => x.id !== 'email')
@@ -129,7 +133,7 @@ export default function Login({ providers }: Props) {
                     })
                 : null}
               <Divider label="Or" labelPosition="center" />
-              <EmailLogin />
+              <EmailLogin returnUrl={returnUrl} />
             </Stack>
             {error && (
               <SignInError
@@ -158,19 +162,29 @@ export const getServerSideProps = createServerSideProps({
   useSession: true,
   resolver: async ({ session, ctx }) => {
     if (session) {
-      return {
-        redirect: {
-          destination: '/',
-          permanent: false,
-        },
-      };
+      const { callbackUrl, error, reason } = ctx.query;
+      if (reason !== 'switch-accounts') {
+        const destinationURL = new URL(
+          typeof callbackUrl === 'string' ? callbackUrl : '/',
+          getBaseUrl()
+        );
+        if (error) destinationURL.searchParams.set('error', error as string);
+        const destination = `${destinationURL.pathname}${destinationURL.search}${destinationURL.hash}`;
+
+        return {
+          redirect: {
+            destination,
+            permanent: false,
+          },
+        };
+      }
     }
 
-    const providers = await getProviders();
+    // const providers = await getProviders();
     const csrfToken = await getCsrfToken();
 
     return {
-      props: { providers, csrfToken },
+      props: { providers: null, csrfToken },
     };
   },
 });

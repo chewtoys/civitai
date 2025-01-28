@@ -9,13 +9,14 @@ type TrackedFile = AsyncReturnType<typeof getDataFromFile> & {
   timeRemaining: number;
   status: 'pending' | 'error' | 'success' | 'uploading' | 'aborted' | 'blocked';
   abort: () => void;
-  id: string;
+  // id: string;
   url: string;
 };
 
 type UploadResult = {
   url: string;
   id: string;
+  objectUrl: string;
 };
 
 type UploadToCF = (file: File, metadata?: Record<string, string>) => Promise<UploadResult>;
@@ -48,8 +49,11 @@ export const useCFImageUpload: UseCFImageUpload = () => {
 
   // eslint-disable-next-line @typescript-eslint/no-shadow
   const uploadToCF: UploadToCF = async (file, metadata = {}) => {
+    const imageData = await getDataFromFile(file);
+    if (!imageData) throw new Error();
+
     const filename = encodeURIComponent(file.name);
-    const res = await fetch('/api/image-upload', {
+    const res = await fetch('/api/v1/image-upload', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -65,8 +69,6 @@ export const useCFImageUpload: UseCFImageUpload = () => {
     }
 
     const { id, uploadURL: url } = data;
-    const imageData = await getDataFromFile(file);
-    if (!imageData) throw new Error();
 
     const xhr = new XMLHttpRequest();
     setFiles((x) => [
@@ -75,8 +77,7 @@ export const useCFImageUpload: UseCFImageUpload = () => {
         ...pendingTrackedFile,
         ...imageData,
         abort: xhr.abort.bind(xhr),
-        id,
-        url,
+        url: id,
       },
     ]);
 
@@ -84,12 +85,16 @@ export const useCFImageUpload: UseCFImageUpload = () => {
       setFiles((x) =>
         x.map((y) => {
           if (y.file !== file) return y;
-          return { ...y, ...trackedFile } as TrackedFile;
+          return {
+            ...y,
+            ...trackedFile,
+            url: id,
+          } as TrackedFile;
         })
       );
     }
 
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
       let uploadStart = Date.now();
       xhr.upload.addEventListener('loadstart', () => {
         uploadStart = Date.now();
@@ -116,27 +121,29 @@ export const useCFImageUpload: UseCFImageUpload = () => {
       });
       xhr.addEventListener('loadend', () => {
         const success = xhr.readyState === 4 && xhr.status === 200;
-        if (success) updateFile({ status: 'success' });
+        if (success) {
+          updateFile({ status: 'success' });
+          // URL.revokeObjectURL(imageData.objectUrl);
+        }
         resolve(success);
       });
       xhr.addEventListener('error', () => {
         updateFile({ status: 'error' });
-        resolve(false);
+        reject(false);
       });
       xhr.addEventListener('abort', () => {
         updateFile({ status: 'aborted' });
-        resolve(false);
+        reject(false);
       });
       xhr.open('PUT', url);
-      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.send(file);
     });
 
-    return { url: url.split('?')[0], id };
+    return { url: url.split('?')[0], id, objectUrl: imageData.objectUrl };
   };
 
-  const removeImage = (imageId: string) => {
-    setFiles((current) => current.filter((x) => x.id !== imageId));
+  const removeImage = (imageUrl: string) => {
+    setFiles((current) => current.filter((x) => x.url !== imageUrl));
   };
 
   return {

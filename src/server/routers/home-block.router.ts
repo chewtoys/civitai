@@ -7,7 +7,7 @@ import {
   getSystemHomeBlocksHandler,
   setHomeBlocksOrderHandler,
 } from '~/server/controllers/home-block.controller';
-import { applyUserPreferences, edgeCacheIt } from '~/server/middleware.trpc';
+import { edgeCacheIt, noEdgeCache } from '~/server/middleware.trpc';
 import {
   getHomeBlocksInputSchema,
   getHomeBlockByIdInputSchema,
@@ -21,17 +21,16 @@ export const homeBlockRouter = router({
   getHomeBlocks: publicProcedure
     .input(getHomeBlocksInputSchema)
     .use(isFlagProtected('alternateHome'))
-    .use(applyUserPreferences())
+    .use(noEdgeCache({ authedOnly: true }))
     .query(getHomeBlocksHandler),
   getSystemHomeBlocks: publicProcedure
     .input(getSystemHomeBlocksInputSchema)
     .use(isFlagProtected('alternateHome'))
-    .use(applyUserPreferences())
     .query(getSystemHomeBlocksHandler),
   getHomeBlock: publicProcedure
     .input(getHomeBlockByIdInputSchema)
     .use(isFlagProtected('alternateHome'))
-    .use(edgeCacheIt())
+    .use(edgeCacheIt({ ttl: 60 }))
     .query(getHomeBlocksByIdHandler),
   createCollectionHomeBlock: protectedProcedure
     .input(createCollectionHomeBlockInputSchema)

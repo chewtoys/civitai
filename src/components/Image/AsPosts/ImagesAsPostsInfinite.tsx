@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Anchor,
   Button,
   Center,
   Group,
@@ -11,14 +12,26 @@ import {
   ThemeIcon,
   Title,
 } from '@mantine/core';
-import { IconArrowsCross, IconCloudOff, IconPlus, IconStar } from '@tabler/icons-react';
-import Link from 'next/link';
+import {
+  IconCloudOff,
+  IconEye,
+  IconEyeOff,
+  IconPlus,
+  IconSettings,
+  IconStar,
+} from '@tabler/icons-react';
 import { useRouter } from 'next/router';
-import { createContext, useContext, useMemo, useState } from 'react';
-
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { useBrowsingLevelDebounced } from '~/components/BrowsingLevel/BrowsingLevelProvider';
 import { ButtonTooltip } from '~/components/CivitaiWrapped/ButtonTooltip';
-import { PeriodFilter, SortFilter } from '~/components/Filters';
+import { useContainerSmallerThan } from '~/components/ContainerProvider/useContainerSmallerThan';
+import { dialogStore } from '~/components/Dialog/dialogStore';
+import { SortFilter } from '~/components/Filters';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { useGallerySettings } from '~/components/Image/AsPosts/gallery.utils';
 import { ImagesAsPostsCard } from '~/components/Image/AsPosts/ImagesAsPostsCard';
+import { ImageCategories } from '~/components/Image/Filters/ImageCategories';
+import { MediaFiltersDropdown } from '~/components/Image/Filters/MediaFiltersDropdown';
 import { useImageFilters } from '~/components/Image/image.utils';
 import { InViewLoader } from '~/components/InView/InViewLoader';
 import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
@@ -26,19 +39,24 @@ import { MasonryColumns } from '~/components/MasonryColumns/MasonryColumns';
 import { MasonryContainer } from '~/components/MasonryColumns/MasonryContainer';
 import { MasonryProvider } from '~/components/MasonryColumns/MasonryProvider';
 import { ModelGenerationCard } from '~/components/Model/Generation/ModelGenerationCard';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useIsMobile } from '~/hooks/useIsMobile';
-import { useSetFilters } from '~/providers/FiltersProvider';
+import { Flags } from '~/shared/utils';
+import { ModelById } from '~/types/router';
 import { removeEmpty } from '~/utils/object-helpers';
+import { QS } from '~/utils/qs';
 import { trpc } from '~/utils/trpc';
+import { GalleryModerationModal } from './GalleryModerationModal';
 
-type ModelVersionsProps = { id: number; name: string };
+type ModelVersionsProps = { id: number; name: string; modelId: number };
 type ImagesAsPostsInfiniteState = {
+  model: ModelById;
   modelVersions?: ModelVersionsProps[];
   filters: {
     modelId?: number;
     username?: string;
   } & Record<string, unknown>;
+  showModerationOptions?: boolean;
 };
 const ImagesAsPostsInfiniteContext = createContext<ImagesAsPostsInfiniteState | null>(null);
 export const useImagesAsPostsInfiniteContext = () => {
@@ -49,107 +67,207 @@ export const useImagesAsPostsInfiniteContext = () => {
 
 type ImagesAsPostsInfiniteProps = {
   selectedVersionId?: number;
-  modelId: number;
+  model: ModelById;
   username?: string;
   modelVersions?: ModelVersionsProps[];
   generationOptions?: { generationModelId?: number; includeEditingActions?: boolean };
+  showModerationOptions?: boolean;
+  showPOIWarning?: boolean;
+  canReview?: boolean;
 };
 
 const LIMIT = 50;
 export default function ImagesAsPostsInfinite({
-  modelId,
+  model,
   username,
   modelVersions,
   selectedVersionId,
   generationOptions,
+  showModerationOptions,
+  showPOIWarning,
+  canReview,
 }: ImagesAsPostsInfiniteProps) {
   const currentUser = useCurrentUser();
   const router = useRouter();
-  const isMobile = useIsMobile();
-  // const globalFilters = useImageFilters();
-  const [limit] = useState(isMobile ? LIMIT / 2 : LIMIT);
+  const isMobile = useContainerSmallerThan('sm');
+  const limit = isMobile ? LIMIT / 2 : LIMIT;
+
+  const [showHidden, setShowHidden] = useState(false);
 
   const imageFilters = useImageFilters('modelImages');
-  const setFilters = useSetFilters('modelImages');
   const filters = removeEmpty({
     ...imageFilters,
     modelVersionId: selectedVersionId,
-    modelId,
+    modelId: model.id,
     username,
+    hidden: showHidden, // override global hidden filter
+    // types: [MediaType.image, MediaType.video], // override global types image filter
   });
 
-  const { data, isLoading, fetchNextPage, hasNextPage, isRefetching } =
+  const browsingLevel = useBrowsingLevelDebounced();
+  const { gallerySettings } = useGallerySettings({ modelId: model.id });
+  let intersection = browsingLevel;
+  if (gallerySettings?.level) {
+    intersection = Flags.intersection(browsingLevel, gallerySettings.level);
+  }
+  const enabled = !!gallerySettings && intersection > 0;
+  const { data, isLoading, fetchNextPage, hasNextPage, isRefetching, isFetching } =
     trpc.image.getImagesAsPostsInfinite.useInfiniteQuery(
-      { ...filters, limit },
+      { ...filters, limit, browsingLevel: intersection },
       {
         getNextPageParam: (lastPage) => lastPage.nextCursor,
         trpc: { context: { skipBatch: true } },
         keepPreviousData: true,
+        enabled,
         // enabled: inView,
       }
     );
 
-  const items = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data]);
+  const hiddenUsers = useMemo(
+    () => gallerySettings?.hiddenUsers.map((x) => x.id),
+    [gallerySettings?.hiddenUsers]
+  );
+  const hiddenTags = useMemo(
+    () => gallerySettings?.hiddenTags.map((x) => x.id),
+    [gallerySettings?.hiddenTags]
+  );
+
+  const flatData = useMemo(() => data?.pages.flatMap((x) => (!!x ? x.items : [])), [data]);
+  const { items } = useApplyHiddenPreferences({
+    type: 'posts',
+    data: flatData,
+    hiddenImages: !showHidden ? gallerySettings?.hiddenImages : undefined,
+    hiddenUsers: !showHidden ? hiddenUsers : undefined,
+    hiddenTags: !showHidden ? hiddenTags : undefined,
+    browsingLevel: intersection,
+  });
+
+  const handleAddPostClick = (opts?: { reviewing?: boolean }) => {
+    const queryString = QS.stringify({
+      modelId: model.id,
+      modelVersionId: selectedVersionId,
+      returnUrl: router.asPath,
+      reviewing: opts?.reviewing,
+    });
+
+    router.push(`/posts/create?${queryString}`);
+  };
+
+  useEffect(() => {
+    if (!gallerySettings?.hiddenImages.length) setShowHidden(false);
+  }, [gallerySettings?.hiddenImages]);
 
   const isMuted = currentUser?.muted ?? false;
-  const addPostLink = `/posts/create?modelId=${modelId}${
-    selectedVersionId ? `&modelVersionId=${selectedVersionId}` : ''
-  }&returnUrl=${router.asPath}`;
-  const { excludeCrossPosts } = imageFilters;
+  const hasModerationPreferences =
+    !!gallerySettings?.hiddenImages.length ||
+    !!gallerySettings?.hiddenUsers.length ||
+    !!gallerySettings?.hiddenTags.length;
 
   return (
-    <ImagesAsPostsInfiniteContext.Provider value={{ filters, modelVersions }}>
-      <MasonryProvider columnWidth={310} maxColumnCount={6} maxSingleColumnWidth={450}>
-        <MasonryContainer
-          fluid
-          pt="xl"
-          pb={61}
-          mb={-61}
-          sx={(theme) => ({
-            background: theme.colorScheme === 'dark' ? theme.colors.dark[6] : theme.colors.gray[1],
-          })}
-        >
+    <ImagesAsPostsInfiniteContext.Provider
+      value={{ filters, modelVersions, showModerationOptions, model }}
+    >
+      <MasonryProvider
+        columnWidth={320}
+        maxColumnCount={6}
+        maxSingleColumnWidth={450}
+        style={{ flex: 1 }}
+      >
+        <MasonryContainer>
           <Stack spacing="md">
-            <Group spacing="xs" align="flex-end">
+            <Group spacing="xs">
               <Title order={2}>Gallery</Title>
               {!isMuted && (
                 <Group>
-                  <LoginRedirect reason="create-review">
-                    <Link href={addPostLink}>
-                      <Button variant="outline" size="xs" leftIcon={<IconPlus size={16} />}>
-                        Add Post
-                      </Button>
-                    </Link>
+                  <LoginRedirect reason="post-images">
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      leftIcon={<IconPlus size={16} />}
+                      onClick={() => handleAddPostClick()}
+                    >
+                      Add Post
+                    </Button>
                   </LoginRedirect>
-                  <LoginRedirect reason="create-review">
-                    <Link href={addPostLink + '&reviewing=true'}>
-                      <Button leftIcon={<IconStar size={16} />} variant="outline" size="xs">
+                  {canReview && (
+                    <LoginRedirect reason="create-review">
+                      <Button
+                        leftIcon={<IconStar size={16} />}
+                        variant="outline"
+                        size="xs"
+                        onClick={() => handleAddPostClick({ reviewing: true })}
+                      >
                         Add Review
                       </Button>
-                    </Link>
-                  </LoginRedirect>
+                    </LoginRedirect>
+                  )}
                 </Group>
               )}
-            </Group>
-            {/* IMAGES */}
-            <Group position="apart" spacing={0}>
-              <SortFilter type="modelImages" />
-              <Group spacing={4}>
-                <PeriodFilter type="modelImages" />
-                <ButtonTooltip label={`${excludeCrossPosts ? 'Show' : 'Hide'} Cross-posts`}>
-                  <ActionIcon
-                    variant={excludeCrossPosts ? 'light' : 'transparent'}
-                    color={excludeCrossPosts ? 'red' : undefined}
-                    onClick={() => setFilters({ excludeCrossPosts: !excludeCrossPosts })}
-                  >
-                    <IconArrowsCross size={20} />
-                  </ActionIcon>
-                </ButtonTooltip>
-                {/* <ImageFiltersDropdown /> */}
+              <Group ml="auto" spacing={8}>
+                <SortFilter type="modelImages" variant="button" />
+                <MediaFiltersDropdown size="sm" filterType="modelImages" compact hideBaseModels />
+                {showModerationOptions && (
+                  <>
+                    {!!gallerySettings?.hiddenImages.length && (
+                      <ButtonTooltip label={`${showHidden ? 'Hide' : 'Show'} hidden images`}>
+                        <ActionIcon
+                          variant="light"
+                          radius="xl"
+                          color="red"
+                          onClick={() => setShowHidden((h) => !h)}
+                        >
+                          {showHidden ? <IconEye size={16} /> : <IconEyeOff size={16} />}
+                        </ActionIcon>
+                      </ButtonTooltip>
+                    )}
+                    <ButtonTooltip label="Gallery Moderation Preferences">
+                      <ActionIcon
+                        variant="filled"
+                        radius="xl"
+                        onClick={() =>
+                          dialogStore.trigger({
+                            component: GalleryModerationModal,
+                            props: { modelId: model.id },
+                          })
+                        }
+                      >
+                        <IconSettings size={16} />
+                      </ActionIcon>
+                    </ButtonTooltip>
+                  </>
+                )}
               </Group>
             </Group>
-            {/* <ImageCategories /> */}
-            {isLoading ? (
+            {showPOIWarning && (
+              <Text size="sm" color="dimmed" lh={1.1}>
+                This resource is intended to depict a real person. All images that use this resource
+                are scanned for mature themes and manually reviewed by a moderator in accordance
+                with our{' '}
+                <Text
+                  component={Link}
+                  href="/content/rules/real-people"
+                  variant="link"
+                  td="underline"
+                >
+                  real person policy
+                </Text>
+                .{' '}
+                <Text td="underline" component="span">
+                  If you see an image that violates this policy, please report it immediately.
+                </Text>
+              </Text>
+            )}
+            {hasModerationPreferences ? (
+              <Text size="xs" color="dimmed" mt="-md">
+                Some images have been hidden based on moderation preferences set by the creator,{' '}
+                <Link legacyBehavior href={`/images?modelVersionId=${selectedVersionId}`} passHref>
+                  <Anchor span>view all images using this resource</Anchor>
+                </Link>
+                .
+              </Text>
+            ) : null}
+            <ImageCategories />
+            {enabled && isLoading ? (
               <Paper style={{ minHeight: 200, position: 'relative' }}>
                 <LoadingOverlay visible zIndex={10} />
               </Paper>
@@ -188,16 +306,21 @@ export default function ImagesAsPostsInfinite({
                   }}
                   adjustHeight={({ height }, data) => {
                     const imageHeight = Math.min(height, 600);
-                    return imageHeight + 57 + (data.images.length > 1 ? 8 : 0);
+                    return (
+                      imageHeight +
+                      (data.user.id !== -1 ? 58 : 0) +
+                      (data.images.length > 1 ? 8 : 0)
+                    );
                   }}
                   maxItemHeight={600}
                   render={ImagesAsPostsCard}
                   itemId={(data) => data.images.map((x) => x.id).join('_')}
+                  withAds
                 />
                 {hasNextPage && (
                   <InViewLoader
                     loadFn={fetchNextPage}
-                    loadCondition={!isRefetching}
+                    loadCondition={!isFetching}
                     style={{ gridColumn: '1/-1' }}
                   >
                     <Center p="xl" sx={{ height: 36 }} mt="md">
@@ -222,22 +345,6 @@ export default function ImagesAsPostsInfinite({
           </Stack>
         </MasonryContainer>
       </MasonryProvider>
-
-      {/* {isLoading && (
-        <Paper style={{ minHeight: 200, position: 'relative' }}>
-          <LoadingOverlay visible zIndex={10} />
-        </Paper>
-      )}
-      {!isLoading && !items.length && (
-        <Paper p="xl" sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Stack>
-            <Text size="xl">There are no images for this model yet.</Text>
-            <Text color="dimmed">
-              Add a post to showcase your images generated from this model.
-            </Text>
-          </Stack>
-        </Paper>
-      )} */}
     </ImagesAsPostsInfiniteContext.Provider>
   );
 }

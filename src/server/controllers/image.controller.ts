@@ -1,51 +1,72 @@
-import {
-  GetEntitiesCoverImage,
-  GetImageInput,
-  GetInfiniteImagesInput,
-  ImageModerationSchema,
-  ImageReviewQueueInput,
-  imageReviewQueueInputSchema,
-} from './../schema/image.schema';
-import {
-  getAllImages,
-  getEntityCoverImage,
-  getImage,
-  getImageDetail,
-  getImageModerationReviewQueue,
-  getImageResources,
-  moderateImages,
-} from './../services/image.service';
-import { NsfwLevel, ReportReason, ReportStatus } from '@prisma/client';
 import { TRPCError } from '@trpc/server';
-import { Context } from '~/server/createContext';
-import { dbRead } from '~/server/db/client';
-import { GetByIdInput } from '~/server/schema/base.schema';
-import { UpdateImageInput } from '~/server/schema/image.schema';
+import { v4 as uuid } from 'uuid';
 import {
+  BlockedReason,
+  ImageSort,
+  NotificationCategory,
+  NsfwLevel,
+  SearchIndexUpdateQueueAction,
+} from '~/server/common/enums';
+import { Context } from '~/server/createContext';
+import { dbRead, dbWrite } from '~/server/db/client';
+import { reportAcceptedReward } from '~/server/rewards';
+import { GetByIdInput } from '~/server/schema/base.schema';
+import { imagesMetricsSearchIndex, imagesSearchIndex } from '~/server/search-index';
+import { getUserCollectionPermissionsById } from '~/server/services/collection.service';
+import {
+  addBlockedImage,
+  bulkAddBlockedImages,
+  bulkRemoveBlockedImages,
   deleteImageById,
+  getAllImagesIndex,
+  getPostDetailByImageId,
+  setVideoThumbnail,
+  updateImageMinor,
   updateImageReportStatusByReason,
-  updateImage,
 } from '~/server/services/image.service';
+import { getGallerySettingsByModelId } from '~/server/services/model.service';
+import { trackModActivity } from '~/server/services/moderator.service';
 import { createNotification } from '~/server/services/notification.service';
+import { amIBlockedByUser } from '~/server/services/user.service';
 import {
   throwAuthorizationError,
   throwDbError,
   throwNotFoundError,
 } from '~/server/utils/errorHandling';
-import { ImageSort } from '~/server/common/enums';
-import { trackModActivity } from '~/server/services/moderator.service';
+import { getNsfwLevelDeprecatedReverseMapping } from '~/shared/constants/browsingLevel.constants';
+import { Flags } from '~/shared/utils';
+import { BlockImageReason, ReportReason, ReportStatus } from '~/shared/utils/prisma/enums';
+import { isDefined } from '~/utils/type-guards';
+import {
+  GetEntitiesCoverImage,
+  GetImageInput,
+  GetInfiniteImagesOutput,
+  ImageModerationSchema,
+  ImageReviewQueueInput,
+  SetVideoThumbnailInput,
+  UpdateImageMinorInput,
+} from './../schema/image.schema';
+import {
+  getAllImages,
+  getEntityCoverImage,
+  getImage,
+  getImageContestCollectionDetails,
+  getImageModerationReviewQueue,
+  getImageResources,
+  getResourceIdsForImages,
+  getTagNamesForImages,
+  moderateImages,
+} from './../services/image.service';
 
-type SortableImage = {
-  nsfw: NsfwLevel;
-  createdAt: Date;
-  connections: {
-    index: number | null;
-  } | null;
-};
-const sortByIndex = (a: SortableImage, b: SortableImage) => {
-  const aIndex = a.connections?.index ?? 0;
-  const bIndex = b.connections?.index ?? 0;
-  return aIndex - bIndex;
+const reviewTypeToBlockedReason = {
+  csam: BlockImageReason.CSAM,
+  minor: BlockImageReason.TOS,
+  poi: BlockImageReason.TOS,
+  reported: BlockImageReason.TOS,
+  blocked: BlockImageReason.TOS,
+  tag: BlockImageReason.TOS,
+  newUser: BlockImageReason.Ownership,
+  appeal: BlockImageReason.TOS,
 };
 
 export const moderateImageHandler = async ({
@@ -56,12 +77,44 @@ export const moderateImageHandler = async ({
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
-    await moderateImages(input);
-    await trackModActivity(ctx.user.id, {
+    const { id: userId } = ctx.user;
+    const affected = await moderateImages({ ...input, userId });
+    await trackModActivity(userId, {
       entityType: 'image',
       entityId: input.ids,
       activity: 'review',
     });
+    if (affected) {
+      const ids = affected.map((x) => x.id);
+      const imageTags = await getTagNamesForImages(ids);
+      const imageResources = await getResourceIdsForImages(ids);
+      for (const { id, userId, nsfwLevel } of affected) {
+        const tags = imageTags[id] ?? [];
+        tags.push(input.reviewType ?? 'other');
+        const resources = imageResources[id] ?? [];
+
+        await ctx.track.image({
+          type: 'DeleteTOS',
+          imageId: id,
+          nsfw: getNsfwLevelDeprecatedReverseMapping(nsfwLevel),
+          tags,
+          resources,
+          tosReason: input.reviewType ?? 'other',
+          ownerId: userId,
+        });
+      }
+
+      await bulkAddBlockedImages({
+        data: affected
+          .filter((x) => !!x.pHash)
+          .map((x) => ({
+            hash: x.pHash,
+            reason: reviewTypeToBlockedReason[input.reviewType],
+          })),
+      });
+    } else {
+      await bulkRemoveBlockedImages({ ids: input.ids });
+    }
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     else throw throwDbError(error);
@@ -79,6 +132,7 @@ export const deleteImageHandler = async ({
     const imageTags = await dbRead.imageTag.findMany({
       where: {
         imageId: input.id,
+        concrete: true,
       },
       select: {
         tagName: true,
@@ -91,8 +145,9 @@ export const deleteImageHandler = async ({
       await ctx.track.image({
         type: 'Delete',
         imageId: input.id,
-        nsfw: image.nsfw,
+        nsfw: getNsfwLevelDeprecatedReverseMapping(image.nsfwLevel),
         tags: imageTags.map((x) => x.tagName),
+        ownerId: image.userId,
       });
     }
 
@@ -111,7 +166,7 @@ export const setTosViolationHandler = async ({
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
-    const { user } = ctx;
+    const { user, ip, fingerprint } = ctx;
     const { id } = input;
     if (!user.isModerator) throw throwAuthorizationError('Only moderators can set TOS violation');
 
@@ -119,18 +174,10 @@ export const setTosViolationHandler = async ({
     const image = await dbRead.image.findFirst({
       where: { id },
       select: {
-        nsfw: true,
-        tags: {
-          select: {
-            tag: {
-              select: {
-                name: true,
-              },
-            },
-          },
-        },
+        nsfwLevel: true,
         userId: true,
         postId: true,
+        pHash: true,
         post: {
           select: {
             title: true,
@@ -140,55 +187,65 @@ export const setTosViolationHandler = async ({
     });
     if (!image) throw throwNotFoundError(`No image with id ${id}`);
 
-    // Update any TOS Violation reports
-    await updateImageReportStatusByReason({
+    // Update all reports with this comment id to actioned
+    const affectedReports = await updateImageReportStatusByReason({
       id,
       reason: ReportReason.TOSViolation,
       status: ReportStatus.Actioned,
     });
+    // Reward users for accepted reports
+    for (const report of affectedReports) {
+      reportAcceptedReward.apply(
+        { userId: report.userId, reportId: report.id },
+        { ip, fingerprint }
+      );
+    }
 
-    // Create notifications in the background
-    createNotification({
+    await createNotification({
       userId: image.userId,
       type: 'tos-violation',
+      category: NotificationCategory.System,
+      key: `tos-violation:image:${uuid()}`,
       details: {
         modelName: image.post?.title ?? `post #${image.postId}`,
         entity: 'image',
-        url: `/posts/${image.postId}`,
+        url: `/images/${id}`,
       },
-    }).catch((error) => {
-      // Print out any errors
-      console.error(error);
+    }).catch();
+
+    // Block image
+    // This used to be a delete, but the mod team prefers to have the clean up happen later
+    await dbWrite.image.updateMany({
+      where: { id },
+      data: {
+        needsReview: null,
+        ingestion: 'Blocked',
+        nsfw: 'Blocked',
+        nsfwLevel: NsfwLevel.Blocked,
+        blockedFor: BlockedReason.Moderated,
+        updatedAt: new Date(),
+      },
     });
 
-    // Delete image
-    await deleteImageById({ id });
+    if (image.pHash) await addBlockedImage({ hash: image.pHash, reason: BlockImageReason.TOS });
 
+    await imagesSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);
+    await imagesMetricsSearchIndex.queueUpdate([
+      { id, action: SearchIndexUpdateQueueAction.Delete },
+    ]);
+
+    const imageTags = await getTagNamesForImages([id]);
+    const imageResources = await getResourceIdsForImages([id]);
     await ctx.track.image({
       type: 'DeleteTOS',
       imageId: id,
-      nsfw: image.nsfw,
-      tags: image.tags.map((x) => x.tag.name),
+      nsfw: getNsfwLevelDeprecatedReverseMapping(image.nsfwLevel),
+      tags: imageTags[id] ?? [],
+      resources: imageResources[id] ?? [],
+      tosReason: 'manual',
+      ownerId: image.userId,
     });
     return image;
-  } catch (error) {
-    if (error instanceof TRPCError) throw error;
-    else throw throwDbError(error);
-  }
-};
-
-export const updateImageHandler = async ({ input }: { input: UpdateImageInput }) => {
-  try {
-    return await updateImage({ ...input });
-  } catch (error) {
-    if (error instanceof TRPCError) throw error;
-    else throw throwDbError(error);
-  }
-};
-
-export const getImageDetailHandler = async ({ input }: { input: GetByIdInput }) => {
-  try {
-    return await getImageDetail({ ...input });
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     else throw throwDbError(error);
@@ -200,15 +257,20 @@ export const getInfiniteImagesHandler = async ({
   input,
   ctx,
 }: {
-  input: GetInfiniteImagesInput;
+  input: GetInfiniteImagesOutput;
   ctx: Context;
 }) => {
+  const { user, features } = ctx;
+  const fetchFn = features.imageIndexFeed && input.useIndex ? getAllImagesIndex : getAllImages;
+  // console.log(fetchFn === getAllImagesIndex ? 'Using search index for feed' : 'Using DB for feed');
+
   try {
-    return await getAllImages({
+    return await fetchFn({
       ...input,
-      userId: ctx.user?.id,
-      isModerator: ctx.user?.isModerator,
+      user,
+      useCombinedNsfwLevel: !features.canViewNsfw,
       headers: { src: 'getInfiniteImagesHandler' },
+      include: [...input.include, 'tagIds'],
     });
   } catch (error) {
     if (error instanceof TRPCError) throw error;
@@ -230,30 +292,72 @@ const getReactionTotals = (post: ImagesAsPostModel) => {
 };
 
 export type ImagesAsPostModel = AsyncReturnType<typeof getImagesAsPostsInfiniteHandler>['items'][0];
+type ImageResultSearchIndex = AsyncReturnType<typeof getAllImagesIndex>['items'][number];
+type ImageResultDB = AsyncReturnType<typeof getAllImages>['items'][number];
 export const getImagesAsPostsInfiniteHandler = async ({
-  input: { limit, cursor, ...input },
+  input: { limit, cursor, hidden, ...input },
   ctx,
 }: {
-  input: GetInfiniteImagesInput;
+  input: GetInfiniteImagesOutput;
   ctx: Context;
 }) => {
   try {
-    const posts: Record<number, AsyncReturnType<typeof getAllImages>['items']> = {};
+    const { user, features } = ctx;
+    const fetchFn = features.imageIndex ? getAllImagesIndex : getAllImages;
+    // console.log(features.imageIndex ? 'Using search index' : 'Using DB');
+    type ResultType = typeof features.imageIndex extends true
+      ? ImageResultSearchIndex
+      : ImageResultDB;
+
+    const posts: Record<number, ResultType[]> = {};
+    const pinned: Record<number, ResultType[]> = {};
     let remaining = limit;
+    const fetchHidden = hidden && input.modelId;
+    const modelGallerySettings = input.modelId
+      ? await getGallerySettingsByModelId({ id: input.modelId })
+      : null;
+    const hiddenImagesIds = modelGallerySettings?.hiddenImages ?? [];
+    const pinnedPosts = modelGallerySettings?.pinnedPosts ?? {};
+    const versionPinnedPosts =
+      pinnedPosts && input.modelVersionId ? pinnedPosts[input.modelVersionId] ?? [] : [];
+
+    if (versionPinnedPosts.length && !cursor) {
+      const { items: pinnedPostsImages } = await fetchFn({
+        ...input,
+        limit: limit * 4,
+        useCombinedNsfwLevel: !features.canViewNsfw,
+        followed: false,
+        postIds: versionPinnedPosts,
+        user,
+        headers: { src: 'getImagesAsPostsInfiniteHandler' },
+        include: [...input.include, 'tagIds', 'profilePictures'],
+      });
+
+      for (const image of pinnedPostsImages) {
+        if (!image?.postId) continue;
+        if (!pinned[image.postId]) pinned[image.postId] = [];
+        pinned[image.postId].push(image);
+      }
+    }
 
     while (true) {
-      const { nextCursor, items } = await getAllImages({
+      // TODO handle/remove all these (headers, include, ids)
+      const { nextCursor, items } = await fetchFn({
         ...input,
         followed: false,
+        useCombinedNsfwLevel: !features.canViewNsfw,
         cursor,
-        limit: Math.ceil(limit * 3), // Overscan so that I can merge by postId
-        userId: ctx.user?.id,
+        ids: fetchHidden ? hiddenImagesIds : undefined,
+        limit: Math.ceil(limit * 2), // Overscan so that I can merge by postId
+        user,
         headers: { src: 'getImagesAsPostsInfiniteHandler' },
+        include: [...input.include, 'tagIds', 'profilePictures'],
       });
 
       // Merge images by postId
       for (const image of items) {
-        if (!image?.postId) continue; // Skip images that aren't part of a post
+        // Skip images that aren't part of a post or are pinned
+        if (!image?.postId || versionPinnedPosts.includes(image.postId)) continue;
         if (!posts[image.postId]) posts[image.postId] = [];
         posts[image.postId].push(image);
       }
@@ -267,8 +371,10 @@ export const getImagesAsPostsInfiniteHandler = async ({
       remaining = limit - Object.keys(posts).length;
     }
 
+    const mergedPosts = Object.values({ ...pinned, ...posts });
+
     // Get reviews from the users who created the posts
-    const userIds = [...new Set(Object.values(posts).map(([post]) => post.user.id))];
+    const userIds = [...new Set(mergedPosts.map(([post]) => post.user.id).filter(isDefined))];
     const reviews = await dbRead.resourceReview.findMany({
       where: {
         userId: { in: userIds },
@@ -281,20 +387,31 @@ export const getImagesAsPostsInfiniteHandler = async ({
         details: true,
         id: true,
         modelVersionId: true,
+        recommended: true,
       },
       orderBy: { rating: 'desc' },
     });
 
     // Prepare the results
-    const results = Object.values(posts).map((images) => {
+    const results = mergedPosts.map((images) => {
       const [image] = images;
       const user = image.user;
       const review = reviews.find((review) => review.userId === user.id);
-      const createdAt = images.map((image) => image.createdAt).sort()[0];
+      // TODO meili has sortAt as a string, not a date
+      const createdAt = images.map((image) => new Date(image.sortAt)).sort()[0];
+
       if (input.sort === ImageSort.Newest) images.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      const imageNsfwLevels = images.map((x) => x.nsfwLevel);
+      let nsfwLevel = 0;
+      for (const imageNsfwLevel of imageNsfwLevels) {
+        nsfwLevel = Flags.addFlag(nsfwLevel, imageNsfwLevel);
+      }
+
       return {
         postId: image.postId as number,
-        postTitle: image.postTitle,
+        // postTitle: image.postTitle,
+        pinned: !!(image.postId && pinned[image.postId]),
+        nsfwLevel,
         modelVersionId: image.modelVersionId,
         publishedAt: image.publishedAt,
         createdAt,
@@ -303,7 +420,8 @@ export const getImagesAsPostsInfiniteHandler = async ({
         review: review
           ? {
               rating: review.rating,
-              details: review?.details,
+              details: review.details,
+              recommended: review.recommended,
               id: review.id,
             }
           : undefined,
@@ -312,25 +430,62 @@ export const getImagesAsPostsInfiniteHandler = async ({
 
     if (input.sort === ImageSort.Newest)
       results.sort((a, b) => {
-        if (a.createdAt < b.createdAt) return 1;
-        if (a.createdAt > b.createdAt) return -1;
-        return 0;
+        // sort by createdAt, but if it pinned, sort by pinned first respecting createdAt
+        const aCreatedAt = a.createdAt.getTime();
+        const bCreatedAt = b.createdAt.getTime();
+
+        if (a.pinned && b.pinned) return bCreatedAt - aCreatedAt;
+        if (a.pinned) return -1;
+        if (b.pinned) return 1;
+        return bCreatedAt - aCreatedAt;
       });
     else if (input.sort === ImageSort.MostReactions)
       results.sort((a, b) => {
         const aReactions = getReactionTotals(a);
         const bReactions = getReactionTotals(b);
-        if (aReactions < bReactions) return 1;
-        if (aReactions > bReactions) return -1;
-        return 0;
+
+        if (a.pinned && b.pinned) return bReactions - aReactions;
+        if (a.pinned) return -1;
+        if (b.pinned) return 1;
+        return bReactions - aReactions;
       });
     else if (input.sort === ImageSort.MostComments)
       results.sort((a, b) => {
         const aComments = a.images[0].stats?.commentCountAllTime ?? 0;
         const bComments = b.images[0].stats?.commentCountAllTime ?? 0;
-        if (aComments < bComments) return 1;
-        if (aComments > bComments) return -1;
-        return 0;
+
+        if (a.pinned && b.pinned) return bComments - aComments;
+        if (a.pinned) return -1;
+        if (b.pinned) return 1;
+        return bComments - aComments;
+      });
+    // else if (input.sort === ImageSort.MostTipped)
+    //   results.sort((a, b) => {
+    //     const aTips = a.images[0].stats?.tippedAmountCountAllTime ?? 0;
+    //     const bTips = b.images[0].stats?.tippedAmountCountAllTime ?? 0;
+    //     if (aTips < bTips) return 1;
+    //     if (aTips > bTips) return -1;
+    //     return 0;
+    //   });
+    else if (input.sort === ImageSort.MostCollected)
+      results.sort((a, b) => {
+        const aCollections = a.images[0].stats?.collectedCountAllTime ?? 0;
+        const bCollections = b.images[0].stats?.collectedCountAllTime ?? 0;
+
+        if (a.pinned && b.pinned) return bCollections - aCollections;
+        if (a.pinned) return -1;
+        if (b.pinned) return 1;
+        return bCollections - aCollections;
+      });
+    else if (input.sort === ImageSort.Oldest)
+      results.sort((a, b) => {
+        const aCreatedAt = a.createdAt.getTime();
+        const bCreatedAt = b.createdAt.getTime();
+
+        if (a.pinned && b.pinned) return aCreatedAt - bCreatedAt;
+        if (a.pinned) return -1;
+        if (b.pinned) return 1;
+        return aCreatedAt - bCreatedAt;
       });
 
     return {
@@ -351,6 +506,11 @@ export const getImageHandler = async ({ input, ctx }: { input: GetImageInput; ct
       userId: ctx.user?.id,
       isModerator: ctx.user?.isModerator,
     });
+
+    if (ctx.user && !ctx.user.isModerator) {
+      const blocked = await amIBlockedByUser({ userId: ctx.user.id, targetUserId: result.user.id });
+      if (blocked) throw throwNotFoundError();
+    }
 
     return result;
   } catch (error) {
@@ -386,28 +546,6 @@ export const getEntitiesCoverImageHandler = async ({ input }: { input: GetEntiti
 
 // #endregion
 
-// export const getReportedImages = async ({
-//   input,
-//   ctx,
-// }: {
-//   input: any;
-//   ctx: DeepNonNullable<Context>;
-// }) => {
-//   try {
-//     const images = await dbRead.image.findMany({
-//       where: {
-//         reports: { some: { report: { status: 'Pending' } } },
-//       },
-//       select: {
-
-//       }
-//     });
-
-//     return images;
-//   } catch (error) {
-//     throw throwDbError(error);
-//   }
-// };
 export const getModeratorReviewQueueHandler = async ({
   input,
   ctx,
@@ -424,3 +562,69 @@ export const getModeratorReviewQueueHandler = async ({
     else throw throwDbError(error);
   }
 };
+
+export const getImageContestCollectionDetailsHandler = async ({
+  input,
+  ctx,
+}: {
+  input: GetByIdInput;
+  ctx: Context;
+}) => {
+  try {
+    const collectionItems = await getImageContestCollectionDetails({
+      ...input,
+      userId: ctx.user?.id,
+    });
+    const imageId = collectionItems?.[0]?.imageId;
+    if (!imageId) return { collectionItems, post: null };
+
+    const post = await getPostDetailByImageId({ imageId });
+    return { collectionItems, post };
+  } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    else throw throwDbError(error);
+  }
+};
+
+export function setVideoThumbnailController({
+  input,
+  ctx,
+}: {
+  input: SetVideoThumbnailInput;
+  ctx: DeepNonNullable<Context>;
+}) {
+  try {
+    const { id: userId, isModerator } = ctx.user;
+    return setVideoThumbnail({ ...input, userId, isModerator });
+  } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    else throw throwDbError(error);
+  }
+}
+
+// This is only available for collections
+export async function updateImageMinorHandler({
+  input,
+  ctx,
+}: {
+  input: UpdateImageMinorInput;
+  ctx: DeepNonNullable<Context>;
+}) {
+  try {
+    const { collectionId } = input;
+    const { id: userId, isModerator } = ctx.user;
+
+    const permissions = await getUserCollectionPermissionsById({
+      id: collectionId,
+      userId,
+      isModerator,
+    });
+    if (!permissions.manage) throw throwAuthorizationError();
+
+    const image = await updateImageMinor(input);
+    return image;
+  } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    else throw throwDbError(error);
+  }
+}

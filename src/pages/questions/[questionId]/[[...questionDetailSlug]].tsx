@@ -16,14 +16,22 @@ import React from 'react';
 import { QuestionDetails } from '~/components/Questions/QuestionDetails';
 import { truncate } from 'lodash-es';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
 
 export const getServerSideProps = createServerSideProps<{
   id: number;
   title: string;
 }>({
   useSSG: true,
-  resolver: async ({ ssg, ctx }) => {
+  resolver: async ({ ssg, ctx, features }) => {
+    if (!features?.questions)
+      return {
+        redirect: {
+          destination: '/',
+          permanent: false,
+        },
+      };
+
     const params = (ctx.params ?? {}) as {
       questionId: string;
       questionDetailSlug: string[] | undefined;
@@ -86,6 +94,7 @@ export default function QuestionPage(
 
   const isModerator = user?.isModerator ?? false;
   const isOwner = user?.id === question?.user.id;
+  if (!isModerator) return <NotFound />;
 
   if (questionsLoading)
     return (

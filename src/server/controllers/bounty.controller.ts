@@ -38,9 +38,12 @@ import { getImagesByEntity } from '../services/image.service';
 import { isDefined } from '~/utils/type-guards';
 import { getFilesByEntity } from '~/server/services/file.service';
 import { BountyEntryFileMeta } from '~/server/schema/bounty-entry.schema';
-import { Currency } from '@prisma/client';
+import { Currency } from '~/shared/utils/prisma/enums';
 import { getReactionsSelectV2 } from '~/server/selectors/reaction.selector';
 import { handleLogError } from '~/server/utils/errorHandling';
+import { NsfwLevel } from '~/server/common/enums';
+import { BlockedByUsers } from '~/server/services/user-preferences.service';
+import { amIBlockedByUser } from '~/server/services/user.service';
 
 export const getInfiniteBountiesHandler = async ({
   input,
@@ -50,7 +53,7 @@ export const getInfiniteBountiesHandler = async ({
   ctx: Context;
 }) => {
   const { user } = ctx;
-  const limit = input.limit + 1 ?? 10;
+  const limit = (input.limit ?? 10) + 1;
   const userId = input.userId ?? user?.id;
 
   try {
@@ -64,11 +67,14 @@ export const getInfiniteBountiesHandler = async ({
         type: true,
         complete: true,
         user: { select: userWithCosmeticsSelect },
+        nsfw: true,
+        nsfwLevel: true,
         tags: {
           select: {
-            tag: {
-              select: { id: true, name: true },
-            },
+            tagId: true,
+            // tag: {
+            //   select: { id: true, name: true },
+            // },
           },
         },
         stats: {
@@ -103,13 +109,21 @@ export const getInfiniteBountiesHandler = async ({
         .map((item) => {
           const itemImages = images[item.id];
           const tags = item.tags;
+          const user = item.user;
           // if there are no images, we don't want to show the bounty
-          if (!itemImages?.length) return null;
+          if (!itemImages?.length || !user) return null;
 
           return {
             ...item,
-            images: itemImages,
-            tags: tags.map(({ tag }) => ({ id: tag.id, name: tag.name })),
+            nsfwLevel: item.nsfw ? NsfwLevel.XXX : item.nsfwLevel,
+            user,
+            images: itemImages.map((image) => ({
+              ...image,
+              tagIds: image.tags.map((x) => x.id),
+              // !important - for feed queries, when `bounty.nsfw === true`, we set all image `nsfwLevel` values to `NsfwLevel.XXX`
+              nsfwLevel: item.nsfw ? NsfwLevel.XXX : image.nsfwLefel,
+            })),
+            tags: tags.map(({ tagId }) => tagId),
           };
         })
         .filter(isDefined),
@@ -139,6 +153,14 @@ export const getBountyHandler = async ({ input, ctx }: { input: GetByIdInput; ct
       },
     });
     if (!bounty) throw throwNotFoundError(`No bounty with id ${input.id}`);
+
+    if (ctx.user && !ctx.user.isModerator) {
+      const blocked = await amIBlockedByUser({
+        userId: ctx.user?.id,
+        targetUserId: bounty.user?.id,
+      });
+      if (blocked) throw throwNotFoundError();
+    }
 
     const images = await getBountyImages({
       id: bounty.id,
@@ -173,17 +195,27 @@ export const getBountyEntriesHandler = async ({
   ctx: Context;
 }) => {
   try {
+    const limit = input.limit ?? 20;
+    const blockedByUsers = (await BlockedByUsers.getCached({ userId: ctx.user?.id })).map(
+      (u) => u.id
+    );
     const entries = await getAllEntriesByBountyId({
-      input: { bountyId: input.id, userId: input.owned ? ctx.user?.id : undefined },
+      input: {
+        bountyId: input.id,
+        userId: input.owned ? ctx.user?.id : undefined,
+        excludedUserIds: blockedByUsers,
+        cursor: input.cursor,
+        limit,
+      },
       select: {
         id: true,
         createdAt: true,
         bountyId: true,
         user: { select: userWithCosmeticsSelect },
+        nsfwLevel: true,
         reactions: {
           select: getReactionsSelectV2,
         },
-
         stats: {
           select: {
             likeCountAllTime: true,
@@ -196,8 +228,14 @@ export const getBountyEntriesHandler = async ({
           },
         },
       },
-      sort: 'benefactorCount',
+      sort: 'createdAt',
     });
+
+    let nextCursor: number | undefined;
+    if (entries.length > limit) {
+      const nextItem = entries.pop();
+      nextCursor = nextItem?.id;
+    }
 
     const images = await getImagesByEntity({
       ids: entries.map((entry) => entry.id),
@@ -219,35 +257,44 @@ export const getBountyEntriesHandler = async ({
       currency: Currency.BUZZ,
     });
 
-    return entries.map((entry) => {
-      const awardedUnitAmountTotal = Number(
-        awardedTotal.find((a) => a.id === entry.id)?.awardedUnitAmount ?? 0
-      );
-      return {
-        ...entry,
-        images: images
-          .filter((i) => i.entityId === entry.id)
-          .map((i) => ({
-            ...i,
-            metadata: i.metadata as ImageMetaProps,
-          })),
-        // Returns the amount of buzz required to unlock ALL files accounting for the amount of buzz the entry has earned
-        fileUnlockAmount: Math.max(
-          0,
-          files.reduce(
-            (acc, curr) =>
-              Math.max(
-                acc,
-                curr.metadata ? (curr.metadata as BountyEntryFileMeta)?.unlockAmount ?? 0 : 0
-              ),
-            0
-          ) - awardedUnitAmountTotal
-        ),
-        fileCount: files.length,
+    return {
+      nextCursor,
+      items: entries
+        .map((entry) => {
+          const user = entry.user;
+          const awardedUnitAmountTotal = Number(
+            awardedTotal.find((a) => a.id === entry.id)?.awardedUnitAmount ?? 0
+          );
+          if (!user) return null;
+          return {
+            ...entry,
+            user,
+            images: images
+              .filter((i) => i.entityId === entry.id)
+              .map((i) => ({
+                ...i,
+                tagIds: i.tags?.map((x) => x.id),
+                metadata: i.metadata as ImageMetaProps,
+              })),
+            // Returns the amount of buzz required to unlock ALL files accounting for the amount of buzz the entry has earned
+            fileUnlockAmount: Math.max(
+              0,
+              files.reduce(
+                (acc, curr) =>
+                  Math.max(
+                    acc,
+                    curr.metadata ? (curr.metadata as BountyEntryFileMeta)?.unlockAmount ?? 0 : 0
+                  ),
+                0
+              ) - awardedUnitAmountTotal
+            ),
+            fileCount: files.length,
 
-        awardedUnitAmountTotal,
-      };
-    });
+            awardedUnitAmountTotal,
+          };
+        })
+        .filter(isDefined),
+    };
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     throw throwDbError(error);
@@ -332,7 +379,11 @@ export const upsertBountyHandler = async ({
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
-    const bounty = await upsertBounty({ ...input, userId: ctx.user.id });
+    const bounty = await upsertBounty({
+      ...input,
+      userId: ctx.user.id,
+      isModerator: ctx.user.isModerator ?? false,
+    });
     if (!bounty) throw throwNotFoundError(`No bounty with id ${input.id}`);
 
     if (input.id) ctx.track.bounty({ type: 'Update', bountyId: input.id }).catch(handleLogError);

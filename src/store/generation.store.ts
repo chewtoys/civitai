@@ -1,87 +1,121 @@
-import { ModelType } from '@prisma/client';
 import { create } from 'zustand';
-import { devtools } from 'zustand/middleware';
+import { devtools, persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import { generation, getGenerationConfig } from '~/server/common/constants';
-import { GenerateFormModel, GetGenerationDataInput } from '~/server/schema/generation.schema';
-import { Generation } from '~/server/services/generation/generation.types';
-import { showErrorNotification } from '~/utils/notifications';
-import { findClosest } from '~/utils/number-helpers';
-import { removeEmpty } from '~/utils/object-helpers';
+import { GetGenerationDataInput } from '~/server/schema/generation.schema';
+import {
+  GenerationData,
+  GenerationResource,
+  RemixOfProps,
+} from '~/server/services/generation/generation.service';
+import {
+  engineDefinitions,
+  generationFormWorkflowConfigurations,
+} from '~/shared/constants/generation.constants';
+import { MediaType } from '~/shared/utils/prisma/enums';
 import { QS } from '~/utils/qs';
+import { trpc } from '~/utils/trpc';
+import { isDefined } from '~/utils/type-guards';
 
-export type RunType = 'run' | 'remix' | 'random' | 'params';
-type DrawerOptions = { fullHeight?: boolean };
-type View = 'queue' | 'generate' | 'feed';
+export type RunType = 'run' | 'remix' | 'replay';
+export type GenerationPanelView = 'queue' | 'generate' | 'feed';
 type GenerationState = {
+  counter: number;
+  loading: boolean;
   opened: boolean;
-  view: View;
-  drawerOptions: DrawerOptions;
-  data?: { type: RunType; data: Partial<GenerateFormModel> };
+  view: GenerationPanelView;
+  type: MediaType;
+  remixOf?: RemixOfProps;
+  data?: GenerationData & { runType: RunType };
+  // input?: GetGenerationDataInput;
   // used to populate form with model/image generation data
-  open: (input?: GetGenerationDataInput, drawerOptions?: DrawerOptions) => Promise<void>;
+  open: (input?: GetGenerationDataInput) => Promise<void>;
   close: () => void;
-  setView: (view: View) => void;
-  randomize: (includeResources?: boolean) => Promise<void>;
-  setParams: (data: Generation.Data['params']) => void;
-  setData: (args: { data: Generation.Data; type: RunType }) => void;
+  setView: (view: GenerationPanelView) => void;
+  setType: (type: MediaType) => void;
+  setData: (
+    args: GenerationData & {
+      type: MediaType;
+      workflow?: string;
+      sourceImage?: string;
+      engine?: string;
+    }
+  ) => void;
   clearData: () => void;
 };
 
 export const useGenerationStore = create<GenerationState>()(
   devtools(
-    immer((set, get) => ({
+    immer((set) => ({
+      counter: 0,
+      loading: false,
       opened: false,
       view: 'generate',
-      drawerOptions: { fullHeight: false },
-      open: async (input, drawerOptions) => {
+      type: 'image',
+      open: async (input) => {
         set((state) => {
           state.opened = true;
-          if (input) state.view = 'generate';
-          if (drawerOptions) state.drawerOptions = drawerOptions;
+          if (input) {
+            state.view = 'generate';
+            state.loading = true;
+          }
         });
 
-        if (!input) return;
-        const data = await getGenerationData(input);
-        const type =
-          input.type === 'model' || input.type === 'modelVersion'
-            ? 'run'
-            : input.type === 'image'
-            ? 'remix'
-            : 'random';
-        if (data) get().setData({ type, data: { ...data } });
+        if (input) {
+          const isMedia = ['audio', 'image', 'video'].includes(input.type);
+          if (isMedia) {
+            generationFormStore.setType(input.type as MediaType);
+          }
+          try {
+            const result = await fetchGenerationData(input);
+            if (isMedia) {
+              useRemixStore.setState({ ...result, resources: withSubstitute(result.resources) });
+            }
+
+            const { remixOf, ...data } = result;
+            set((state) => {
+              state.data = {
+                ...data,
+                resources: withSubstitute(data.resources),
+                runType: input.type === 'image' ? 'remix' : 'run',
+              };
+              state.loading = false;
+              state.counter++;
+            });
+          } catch (e) {
+            set((state) => {
+              state.loading = false;
+            });
+            throw e;
+          }
+        }
       },
       close: () =>
         set((state) => {
           state.opened = false;
-          state.drawerOptions = {};
         }),
       setView: (view) =>
         set((state) => {
           state.view = view;
         }),
-      setParams: (params) => {
-        const data = formatGenerationData('params', { resources: [], params });
-
+      setType: (type) => {
         set((state) => {
-          state.data = {
-            type: 'params',
-            data: { ...data },
-          };
+          state.type = type;
         });
       },
-      setData: ({ data, type }) =>
+      setData: ({ type, remixOf, workflow, sourceImage, engine, ...data }) => {
+        useGenerationFormStore.setState({ type, workflow, sourceImage });
+        if (engine) useGenerationFormStore.setState({ engine });
         set((state) => {
-          state.view = 'generate';
-          state.data = { type, data: formatGenerationData(type, data) };
-        }),
-      randomize: async (includeResources) => {
-        const data = await getGenerationData({ type: 'random', includeResources });
-        if (data) get().setData({ type: 'random', data });
+          state.remixOf = remixOf;
+          state.data = { ...data, resources: withSubstitute(data.resources), runType: 'replay' };
+          state.counter++;
+          if (!location.pathname.includes('generate')) state.view = 'generate';
+        });
       },
       clearData: () =>
         set((state) => {
           state.data = undefined;
+          state.counter++;
         }),
     })),
     { name: 'generation-store' }
@@ -96,80 +130,108 @@ export const generationPanel = {
 };
 
 export const generationStore = {
+  setType: store.setType,
   setData: store.setData,
-  setParams: store.setParams,
   clearData: store.clearData,
-  randomize: store.randomize,
+  // getSupplementaryFormData() {
+  //   const { remixOf, type } = useGenerationStore.getState();
+  //   return { remixOf, type };
+  // },
 };
 
-const dictionary: Record<string, Generation.Data> = {};
-const getGenerationData = async (input: GetGenerationDataInput) => {
-  try {
-    const key = input.type !== 'random' ? `${input.type}_${input.id}` : undefined;
-    if (key && dictionary[key]) return dictionary[key];
-    else {
-      const response = await fetch(`/api/generation/data?${QS.stringify(input)}`);
-      if (!response.ok) throw new Error(response.statusText);
-      const data: Generation.Data = await response.json();
-      if (key) dictionary[key] = data;
-      return data;
+function withSubstitute(resources: GenerationResource[]) {
+  return resources.map((item) => {
+    const { substitute, ...rest } = item;
+    if (!rest.canGenerate && substitute?.canGenerate) return { ...item, ...substitute };
+    return rest;
+  });
+}
+
+const dictionary: Record<string, GenerationData> = {};
+export const fetchGenerationData = async (input: GetGenerationDataInput) => {
+  let key = 'default';
+  switch (input.type) {
+    case 'modelVersions':
+      key = `${input.type}_${input.ids.join('_')}`;
+      break;
+    default:
+      key = `${input.type}_${input.id}`;
+      break;
+  }
+
+  if (dictionary[key]) return dictionary[key];
+  else {
+    const response = await fetch(`/api/generation/data?${QS.stringify(input)}`);
+    if (!response.ok) throw new Error(response.statusText);
+    const data: GenerationData = await response.json();
+    dictionary[key] = data;
+    return data;
+  }
+};
+
+export const useGenerationFormStore = create<{
+  type: MediaType;
+  engine?: string;
+  workflow?: string; // is this needed?
+  sourceImage?: string;
+  width?: number;
+  height?: number;
+}>()(persist((set) => ({ type: 'image' }), { name: 'generation-form' }));
+
+export const generationFormStore = {
+  setType: (type: MediaType) => useGenerationFormStore.setState({ type }),
+  setWorkflow: (workflow?: string) => {
+    let updatedWorkflow = workflow;
+    let engine: string | undefined;
+    if (workflow) {
+      const configuration = generationFormWorkflowConfigurations.find((x) => x.key === workflow);
+      if (!configuration) updatedWorkflow = undefined;
+      else {
+        if ('engine' in configuration) engine = configuration.engine;
+      }
     }
-  } catch (error: any) {
-    showErrorNotification({ error });
-  }
+
+    useGenerationFormStore.setState({ workflow: updatedWorkflow, engine });
+  },
+  setEngine: (engine: string) => useGenerationFormStore.setState({ engine }),
+  setsourceImage: (sourceImage?: string) => useGenerationFormStore.setState({ sourceImage }),
+  reset: () => useGenerationFormStore.setState((state) => ({ type: state.type }), true),
 };
 
-const formatGenerationData = (
-  type: RunType,
-  { resources, params }: Generation.Data
-): Partial<GenerateFormModel> => {
-  const aspectRatio =
-    params?.width && params.height
-      ? getClosestAspectRatio(params?.width, params?.height, params?.baseModel)
-      : undefined;
+export const useRemixStore = create<{
+  resources?: GenerationResource[];
+  params?: Record<string, unknown>;
+  remixOf?: RemixOfProps;
+}>()(persist(() => ({}), { name: 'remixOf' }));
 
-  if (params?.sampler)
-    params.sampler = generation.samplers.includes(params.sampler as any)
-      ? params.sampler
-      : undefined;
+export function useVideoGenerationWorkflows() {
+  const { data, isLoading } = trpc.generation.getGenerationEngines.useQuery();
+  const workflows = generationFormWorkflowConfigurations
+    .map((config) => {
+      const engine = data?.find((x) => x.engine === config.engine);
+      if (!engine) return null;
+      return { ...config, ...engine };
+    })
+    .filter(isDefined);
 
-  const additionalResourceTypes = getGenerationConfig(
-    params?.baseModel
-  ).additionalResourceTypes.map((x) => x.type);
+  const sourceImage = useGenerationFormStore((state) => state.sourceImage);
+  const availableEngines = Object.keys(engineDefinitions)
+    .filter((key) =>
+      workflows
+        ?.filter((x) => (sourceImage ? x.subType === 'img2vid' : x.subType === 'txt2vid'))
+        .some((x) => x.engine === key && !x.disabled)
+    )
+    .map((key) => ({ key, ...engineDefinitions[key] }));
 
-  const additionalResources = resources.filter((x) =>
-    additionalResourceTypes.includes(x.modelType as any)
+  return { data: workflows, availableEngines, isLoading };
+}
+
+export function useSelectedVideoWorkflow() {
+  const { data } = useVideoGenerationWorkflows();
+  const selectedEngine = useGenerationFormStore((state) => state.engine);
+  const sourceImage = useGenerationFormStore((state) => state.sourceImage);
+  const workflows = data.filter(({ subType, type }) =>
+    type === 'video' && sourceImage ? subType.startsWith('img') : subType.startsWith('txt')
   );
-
-  const model = resources.find((x) => x.modelType === ModelType.Checkpoint);
-
-  const formData: Partial<GenerateFormModel> =
-    type !== 'remix' ? removeEmpty({ ...params, aspectRatio }) : { ...params, aspectRatio };
-  if (type === 'params') return formData;
-  else if (type === 'run') {
-    return {
-      ...formData,
-      model,
-      resources: additionalResources,
-    };
-  } else {
-    const vae = resources.find((x) => x.modelType === ModelType.VAE);
-
-    return {
-      ...formData,
-      model,
-      vae,
-      resources: !!additionalResources.length ? additionalResources : undefined,
-    };
-  }
-};
-
-export const getClosestAspectRatio = (width?: number, height?: number, baseModel?: string) => {
-  width = width ?? (baseModel === 'SDXL' ? 1024 : 512);
-  height = height ?? (baseModel === 'SDXL' ? 1024 : 512);
-  const aspectRatios = getGenerationConfig(baseModel).aspectRatios;
-  const ratios = aspectRatios.map((x) => x.width / x.height);
-  const closest = findClosest(ratios, width / height);
-  const index = ratios.indexOf(closest);
-  return `${index ?? 0}`;
-};
+  return workflows.find((x) => x.engine === selectedEngine) ?? workflows[0];
+}

@@ -1,3 +1,4 @@
+import { useIsomorphicEffect } from '@mantine/hooks';
 import { createContext, useContext, useEffect, useState } from 'react';
 
 const IsClientContext = createContext<boolean | null>(null);

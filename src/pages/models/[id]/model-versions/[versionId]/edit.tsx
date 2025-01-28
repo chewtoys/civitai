@@ -1,6 +1,6 @@
 import { Anchor, Button, Container, Group, Stack, Text, Title } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useRouter } from 'next/router';
 
 import { NotFound } from '~/components/AppLayout/NotFound';
@@ -35,8 +35,8 @@ export default function ModelVersionEditPage() {
   return (
     <Container size="sm">
       <Stack spacing="xl">
-        <Link href={`/models/${modelVersion?.model.id}`} passHref shallow>
-          <Anchor size="sm">
+        <Link legacyBehavior href={`/models/${modelVersion?.model.id}`} passHref shallow>
+          <Anchor size="xs">
             <Group spacing={4}>
               <IconArrowLeft size={18} strokeWidth={1.5} />
               <Text inherit>Back to {modelVersion?.model?.name} page</Text>
@@ -49,12 +49,12 @@ export default function ModelVersionEditPage() {
           version={modelVersion}
           onSubmit={handleClose}
         >
-          {({ loading }) => (
+          {({ loading, canSave }) => (
             <Group mt="xl" position="right">
               <Button variant="default" onClick={handleClose}>
                 Cancel
               </Button>
-              <Button type="submit" loading={loading}>
+              <Button type="submit" loading={loading} disabled={!canSave}>
                 Save
               </Button>
             </Group>

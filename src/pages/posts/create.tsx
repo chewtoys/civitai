@@ -1,133 +1,144 @@
 import {
-  Box,
+  Anchor,
+  Card,
   Center,
   Container,
   Group,
-  Input,
   Loader,
   Select,
   Stack,
   Text,
   Title,
 } from '@mantine/core';
-import { IconLock } from '@tabler/icons-react';
+import { IconAlertCircle, IconLock } from '@tabler/icons-react';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useRouter } from 'next/router';
-import { useRef, useState } from 'react';
-
+import { useRef } from 'react';
 import { AlertWithIcon } from '~/components/AlertWithIcon/AlertWithIcon';
+import { Page } from '~/components/AppLayout/Page';
 import { BackButton } from '~/components/BackButton/BackButton';
-import { ImageDropzone } from '~/components/Image/ImageDropzone/ImageDropzone';
-import { useEditPostContext } from '~/components/Post/Edit/EditPostProvider';
-import { PostEditLayout } from '~/components/Post/Edit/PostEditLayout';
+import { CollectionUploadSettingsWrapper } from '~/components/Collections/components/CollectionUploadSettingsWrapper';
+import { FeatureIntroductionHelpButton } from '~/components/FeatureIntroduction/FeatureIntroduction';
+import { PostEditLayout } from '~/components/Post/EditV2/PostEditLayout';
+import { PostImageDropzone } from '~/components/Post/EditV2/PostImageDropzone';
 import {
-  EditUserResourceReview,
+  EditUserResourceReviewV2,
   ReviewEditCommandsRef,
+  UserResourceReviewComposite,
 } from '~/components/ResourceReview/EditUserResourceReview';
+import { ResourceReviewThumbActions } from '~/components/ResourceReview/ResourceReviewThumbActions';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { POST_IMAGE_LIMIT } from '~/server/common/constants';
-import { IMAGE_MIME_TYPE, VIDEO_MIME_TYPE } from '~/server/common/mime-types';
-import { showErrorNotification } from '~/utils/notifications';
+import { postEditQuerySchema } from '~/server/schema/post.schema';
+import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { getLoginLink } from '~/utils/login-helpers';
 import { trpc } from '~/utils/trpc';
+import { isDefined } from '~/utils/type-guards';
+import { removeDuplicates } from '~/utils/array-helpers';
 
-export default function PostCreate() {
-  const currentUser = useCurrentUser();
-  const router = useRouter();
-  const tagId = router.query.tag ? Number(router.query.tag) : undefined;
-  const modelId = router.query.modelId ? Number(router.query.modelId) : undefined;
-  const modelVersionId = router.query.modelVersionId
-    ? Number(router.query.modelVersionId)
-    : undefined;
-  const reviewing = router.query.reviewing ? router.query.reviewing === 'true' : undefined;
-  const isMuted = currentUser?.muted ?? false;
-  const displayReview = !isMuted && !!reviewing && !!modelVersionId && !!modelId;
-  const reviewEditRef = useRef<ReviewEditCommandsRef | null>(null);
+export const getServerSideProps = createServerSideProps({
+  useSession: true,
+  resolver: async ({ session, ctx }) => {
+    if (!session)
+      return {
+        redirect: {
+          destination: getLoginLink({ returnUrl: ctx.resolvedUrl, reason: 'post-images' }),
+          permanent: false,
+        },
+      };
+  },
+});
 
-  const reset = useEditPostContext((state) => state.reset);
-  const images = useEditPostContext((state) => state.images);
-  const upload = useEditPostContext((state) => state.upload);
-  const queryUtils = trpc.useContext();
+export default Page(
+  function () {
+    const currentUser = useCurrentUser();
+    const router = useRouter();
+    const params = postEditQuerySchema.parse(router.query);
+    const {
+      modelId,
+      modelVersionId,
+      tag: tagId,
+      video: postingVideo,
+      clubId,
+      reviewing,
+      collections: collectionIds,
+      collectionId,
+    } = params;
 
-  const { data: versions, isLoading: versionsLoading } = trpc.model.getVersions.useQuery(
-    { id: modelId ?? 0, excludeUnpublished: true },
-    { enabled: !!modelId && !reviewing }
-  );
+    const isMuted = currentUser?.muted ?? false;
+    const displayReview = !isMuted && !!reviewing && !!modelVersionId && !!modelId;
+    const reviewEditRef = useRef<ReviewEditCommandsRef | null>(null);
 
-  const { data: version, isLoading: versionLoading } = trpc.modelVersion.getById.useQuery(
-    { id: modelVersionId ?? 0 },
-    { enabled: !!modelVersionId }
-  );
-
-  const { data: tag, isLoading: tagLoading } = trpc.tag.getById.useQuery(
-    { id: tagId ?? 0 },
-    { enabled: !!tagId }
-  );
-  const { data: currentUserReview, isLoading: loadingCurrentUserReview } =
-    trpc.resourceReview.getUserResourceReview.useQuery(
-      { modelVersionId: modelVersionId ?? 0 },
-      { enabled: !!currentUser && displayReview }
+    const { data: versions, isLoading: versionsLoading } = trpc.model.getVersions.useQuery(
+      { id: modelId ?? 0, excludeUnpublished: true },
+      { enabled: !!modelId && !reviewing }
     );
 
-  const [selected, setSelected] = useState<string | undefined>(modelVersionId?.toString());
-
-  const { mutate, isLoading } = trpc.post.create.useMutation();
-  const handleDrop = (files: File[]) => {
-    const versionId = selected ? Number(selected) : modelVersionId;
-    const title =
-      reviewing && version ? `${version.model.name} - ${version.name} Review` : undefined;
-
-    reviewEditRef.current?.save();
-
-    mutate(
-      { modelVersionId: versionId, title, tag: tagId },
-      {
-        onSuccess: async (response) => {
-          reset(response);
-          const postId = response.id;
-          queryUtils.post.getEdit.setData({ id: postId }, () => response);
-          upload({ postId, modelVersionId: versionId }, files);
-          const returnUrl = router.query.returnUrl as string;
-          let pathname = `/posts/${postId}/edit`;
-          const queryParams: string[] = [];
-          if (returnUrl) queryParams.push(`returnUrl=${returnUrl}`);
-          if (reviewing) queryParams.push('reviewing=true');
-          if (queryParams.length > 0) pathname += `?${queryParams.join('&')}`;
-
-          await router.push(pathname);
-        },
-        onError(error) {
-          showErrorNotification({
-            title: 'Failed to create post',
-            error: new Error(error.message),
-          });
-        },
-      }
+    const { data: version, isLoading: versionLoading } = trpc.modelVersion.getById.useQuery(
+      { id: modelVersionId ?? 0 },
+      { enabled: !!modelVersionId }
     );
-  };
 
-  let backButtonUrl = modelId ? `/models/${modelId}` : '/';
-  if (modelVersionId) backButtonUrl += `?modelVersionId=${modelVersionId}`;
-  if (tagId) backButtonUrl = `/posts?tags=${tagId}&view=feed`;
+    const { data: tag, isLoading: tagLoading } = trpc.tag.getById.useQuery(
+      { id: tagId ?? 0 },
+      { enabled: !!tagId }
+    );
 
-  const loading = (loadingCurrentUserReview || versionLoading) && !currentUserReview && !version;
+    const { data: currentUserReview, isLoading: loadingCurrentUserReview } =
+      trpc.resourceReview.getUserResourceReview.useQuery(
+        { modelVersionId: modelVersionId ?? 0 },
+        { enabled: !!currentUser && displayReview }
+      );
 
-  return (
-    <Container size="xs">
-      <Group spacing="xs">
-        <BackButton url={backButtonUrl} />
-        <Title>{displayReview ? 'Create a Review' : 'Create Image Post'}</Title>
-      </Group>
-      {currentUser?.muted ? (
+    const collectionIdsAggregate = removeDuplicates(
+      [collectionId, ...(collectionIds ?? [])].filter(isDefined)
+    );
+
+    let backButtonUrl = modelId ? `/models/${modelId}` : '/';
+
+    if (modelVersionId) backButtonUrl += `?modelVersionId=${modelVersionId}`;
+    if (tagId) backButtonUrl = `/posts?tags=${tagId}&view=feed`;
+    if (clubId) backButtonUrl = `/clubs/${clubId}`;
+    if (collectionIds?.length)
+      backButtonUrl =
+        collectionIds.length > 1 ? `/collections` : `/collections/${collectionIds[0]}`;
+    if (collectionId) backButtonUrl = `/collections/${collectionId}`;
+
+    const loading = (loadingCurrentUserReview || versionLoading) && !currentUserReview && !version;
+
+    if (currentUser?.muted)
+      return (
         <Container size="xs">
           <Center p="xl">
             <Stack align="center">
               <AlertWithIcon color="yellow" icon={<IconLock />} iconSize={32} iconColor="yellow">
-                <Text size="md">You cannot create a post because your account has been muted.</Text>
+                <Text size="md">
+                  You cannot create a post because your account has been restricted.
+                </Text>
               </AlertWithIcon>
             </Stack>
           </Center>
         </Container>
-      ) : (
-        <Stack spacing={8}>
+      );
+
+    return (
+      <CollectionUploadSettingsWrapper collectionIds={collectionIdsAggregate}>
+        <Container size="xs" className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <BackButton url={backButtonUrl} />
+              <Title>
+                {displayReview
+                  ? 'Create a Review'
+                  : (collectionIdsAggregate?.length ?? 0) > 0
+                  ? 'Submit Entry'
+                  : `Create ${postingVideo ? 'Video' : 'Image'} Post`}
+              </Title>
+            </div>
+            <FeatureIntroductionHelpButton
+              feature="post-create"
+              contentSlug={['feature-introduction', 'post-images']}
+            />
+          </div>
           {tagId && (tag || tagLoading) && (
             <Group spacing="xs">
               {tagLoading && <Loader size="sm" />}
@@ -154,48 +165,88 @@ export default function PostCreate() {
             <Select
               description="Select a resource to ensure that all uploaded images receive correct resource attribution"
               placeholder="Select a resource"
-              value={selected}
+              value={modelVersionId ? String(modelVersionId) : undefined}
               nothingFound={versionsLoading ? 'Loading...' : 'No resources found'}
               data={versions.map(({ id, name }) => ({ label: name, value: id.toString() }))}
-              onChange={(value) => {
-                if (value) setSelected(value);
-              }}
+              onChange={(value) =>
+                router.replace({ query: { ...params, modelVersionId: value } }, undefined, {
+                  shallow: true,
+                })
+              }
             />
           )}
           {displayReview && version && (
-            <>
-              <Input.Wrapper label="What did you think of this resource?">
-                <Box mt={5}>
-                  <EditUserResourceReview
-                    modelVersionId={version.id}
-                    modelId={version.model.id}
-                    modelName={version.model.name}
-                    modelVersionName={version.name}
-                    resourceReview={currentUserReview}
-                    openedCommentBox
-                    innerRef={reviewEditRef}
-                  />
-                </Box>
-              </Input.Wrapper>
-              {currentUserReview && (
-                <Text size="sm" color="dimmed">
-                  {`We've saved your review. Now, consider adding images below to create a post showcasing the resource.`}
-                </Text>
-              )}
-            </>
-          )}
-          <ImageDropzone
-            mt="md"
-            onDrop={handleDrop}
-            loading={isLoading}
-            count={images.length}
-            max={POST_IMAGE_LIMIT}
-            accept={[...IMAGE_MIME_TYPE, ...VIDEO_MIME_TYPE]}
-          />
-        </Stack>
-      )}
-    </Container>
-  );
-}
+            <UserResourceReviewComposite
+              modelId={version.model.id}
+              modelVersionId={version.id}
+              modelName={version.model.name}
+            >
+              {({ modelId, modelVersionId, modelName, userReview }) => (
+                <>
+                  <Card p="sm" withBorder>
+                    <Stack spacing={8}>
+                      <Text size="md" weight={600}>
+                        What did you think of this resource?
+                      </Text>
+                      <ResourceReviewThumbActions
+                        modelId={modelId}
+                        modelVersionId={modelVersionId}
+                        userReview={userReview}
+                        withCount
+                      />
+                    </Stack>
+                    {userReview && (
+                      <Card.Section py="sm" mt="sm" inheritPadding withBorder>
+                        <EditUserResourceReviewV2
+                          modelVersionId={modelVersionId}
+                          modelName={modelName}
+                          userReview={userReview}
+                          innerRef={reviewEditRef}
+                        />
+                      </Card.Section>
+                    )}
+                  </Card>
 
-PostCreate.getLayout = PostEditLayout;
+                  {userReview && (
+                    <Text size="sm" color="dimmed">
+                      {`We've saved your review. Now, consider adding images below to create a post showcasing the resource.`}
+                    </Text>
+                  )}
+                </>
+              )}
+            </UserResourceReviewComposite>
+          )}
+          <AlertWithIcon icon={<IconAlertCircle />}>
+            There may be a short delay before your uploaded media appears in the Model Gallery and
+            Image Feeds. Please allow a few minutes for your media to become visible after posting.
+          </AlertWithIcon>
+          {!displayReview && (
+            <Text size="xs" color="dimmed">
+              Our site is mostly used for sharing AI generated content. You can start generating
+              images using our{' '}
+              <Link legacyBehavior href="/generate" passHref>
+                <Anchor>onsite generator</Anchor>
+              </Link>{' '}
+              or train your model using your own images by using our{' '}
+              <Link legacyBehavior href="/models/train" passHref>
+                <Anchor>onsite LoRA trainer</Anchor>
+              </Link>
+              .
+            </Text>
+          )}
+
+          <PostImageDropzone
+            showProgress={false}
+            onCreatePost={async (post) => {
+              await router.replace({
+                pathname: `/posts/${post.id}/edit`,
+                query: { ...params },
+              });
+            }}
+          />
+        </Container>
+      </CollectionUploadSettingsWrapper>
+    );
+  },
+  { InnerLayout: PostEditLayout }
+);

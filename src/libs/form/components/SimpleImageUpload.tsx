@@ -10,26 +10,33 @@ import {
   Tooltip,
   useMantineTheme,
 } from '@mantine/core';
-import { Dropzone, FileWithPath } from '@mantine/dropzone';
+import { Dropzone, DropzoneProps, FileWithPath } from '@mantine/dropzone';
 import { useDidUpdate } from '@mantine/hooks';
-import { MediaType } from '@prisma/client';
+import { MediaType } from '~/shared/utils/prisma/enums';
 import { IconPhoto, IconTrash, IconUpload, IconX } from '@tabler/icons-react';
 import { isEqual } from 'lodash-es';
 import { useEffect, useState } from 'react';
 
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
+import { BrowsingLevelBadge } from '~/components/ImageGuard/ImageGuard2';
 import { useCFImageUpload } from '~/hooks/useCFImageUpload';
 import { constants } from '~/server/common/constants';
 import { IMAGE_MIME_TYPE } from '~/server/common/mime-types';
+import { DataFromFile } from '~/utils/metadata';
 import { formatBytes } from '~/utils/number-helpers';
 
 type SimpleImageUploadProps = Omit<InputWrapperProps, 'children' | 'onChange'> & {
-  value?: string | { url: string };
-  onChange?: (value: CustomFile | null) => void;
+  value?:
+    | string
+    | { id?: number; nsfwLevel?: number; userId?: number; user?: { id: number }; url: string };
+  onChange?: (value: DataFromFile | null) => void;
   previewWidth?: number;
   maxSize?: number;
   aspectRatio?: number;
   children?: React.ReactNode;
+  dropzoneProps?: Omit<DropzoneProps, 'children' | 'onDrop'>;
+  previewDisabled?: boolean;
+  withNsfwLevel?: boolean;
 };
 
 export function SimpleImageUpload({
@@ -39,31 +46,38 @@ export function SimpleImageUpload({
   previewWidth = 450,
   aspectRatio,
   children,
+  previewDisabled,
+  dropzoneProps,
+  withNsfwLevel = true,
   ...props
 }: SimpleImageUploadProps) {
   const theme = useMantineTheme();
   const { uploadToCF, files: imageFiles, resetFiles } = useCFImageUpload();
+  const imageFile = imageFiles[0];
   // const [files, filesHandlers] = useListState<CustomFile>(value ? [{ url: value }] : []);
-  const [image, setImage] = useState<CustomFile | undefined>();
+  const [image, setImage] = useState<{ url: string; objectUrl?: string } | undefined>();
+
   const [error, setError] = useState('');
 
   const handleDrop = async (droppedFiles: FileWithPath[]) => {
     const hasLargeFile = droppedFiles.some((file) => file.size > maxSize);
     if (hasLargeFile) return setError(`Files should not exceed ${formatBytes(maxSize)}`);
 
+    handleRemove();
     setError('');
     const [file] = droppedFiles;
-    const toUpload = { url: URL.createObjectURL(file), file };
-    setImage((current) => ({
-      ...current,
-      previewUrl: toUpload.url,
-      url: '',
-      file: toUpload.file,
-    }));
 
-    const { id } = await uploadToCF(toUpload.file);
-    setImage((current) => ({ ...current, url: id, file: undefined, previewUrl: undefined }));
-    URL.revokeObjectURL(toUpload.url);
+    // const toUpload = { url: URL.createObjectURL(file), file };
+    // setImage((current) => ({
+    //   ...current,
+    //   previewUrl: toUpload.url,
+    //   url: '',
+    //   file: toUpload.file,
+    // }));
+
+    await uploadToCF(file);
+    // setImage((current) => ({ ...current, url: id, file: undefined, previewUrl: undefined }));
+    // URL.revokeObjectURL(objectUrl);
   };
 
   const handleRemove = () => {
@@ -81,21 +95,17 @@ export function SimpleImageUpload({
   }, [image, value]);
 
   useDidUpdate(() => {
-    const [imageFile] = imageFiles;
-
-    if (!imageFile) {
-      return;
-    }
+    if (!imageFile) return;
+    setImage({ url: imageFile.url, objectUrl: imageFile.objectUrl });
 
     if (imageFile.status === 'success') {
-      const { id, url, status, ...file } = imageFile;
-      onChange?.({ ...image, ...file, url: id });
+      onChange?.(imageFile);
     }
     // don't disable the eslint-disable
-  }, [imageFiles]); // eslint-disable-line
+  }, [imageFile]); // eslint-disable-line
 
   const [match] = imageFiles;
-  const showLoading = match && match.progress < 100 && !image?.url;
+  const showLoading = match && match.progress < 100;
 
   return (
     <Input.Wrapper {...props} error={props.error ?? error}>
@@ -106,7 +116,7 @@ export function SimpleImageUpload({
         >
           <LoadingOverlay visible />
         </Paper>
-      ) : image && (image.previewUrl || image.url) ? (
+      ) : !previewDisabled && image ? (
         <div style={{ position: 'relative', width: '100%', marginTop: 5 }}>
           <Tooltip label="Remove image">
             <ActionIcon
@@ -148,6 +158,10 @@ export function SimpleImageUpload({
                   }
                 : {
                     height: 'calc(100vh / 3)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+
                     '& > img': {
                       height: '100%',
                       objectFit: 'cover',
@@ -156,8 +170,14 @@ export function SimpleImageUpload({
                   }
             }
           >
+            {withNsfwLevel && !!value && typeof value !== 'string' && (
+              <BrowsingLevelBadge
+                browsingLevel={value.nsfwLevel}
+                className="absolute left-2 top-2 z-10"
+              />
+            )}
             <EdgeMedia
-              src={image.previewUrl ?? image.url}
+              src={image.objectUrl ?? image.url}
               type={MediaType.image}
               width={previewWidth}
               style={{ maxWidth: aspectRatio ? '100%' : undefined }}
@@ -167,10 +187,6 @@ export function SimpleImageUpload({
         </div>
       ) : (
         <Dropzone
-          onDrop={handleDrop}
-          accept={IMAGE_MIME_TYPE}
-          maxFiles={1}
-          // maxSize={maxSize}
           mt={5}
           styles={(theme) => ({
             root:
@@ -181,6 +197,11 @@ export function SimpleImageUpload({
                   }
                 : undefined,
           })}
+          accept={IMAGE_MIME_TYPE}
+          {...dropzoneProps}
+          onDrop={handleDrop}
+          maxFiles={1}
+          // maxSize={maxSize}
         >
           <Dropzone.Accept>
             <Group position="center" spacing="xs">

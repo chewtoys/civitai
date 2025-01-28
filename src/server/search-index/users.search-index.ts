@@ -1,30 +1,16 @@
-import { updateDocs } from '~/server/meilisearch/client';
-import {
-  getOrCreateIndex,
-  onSearchIndexDocumentsCleanup,
-  waitForTasksWithRetries,
-} from '~/server/meilisearch/util';
-import { EnqueuedTask } from 'meilisearch';
-import {
-  createSearchIndexUpdateProcessor,
-  SearchIndexRunContext,
-} from '~/server/search-index/base.search-index';
-import {
-  CosmeticSource,
-  CosmeticType,
-  Prisma,
-  PrismaClient,
-  SearchIndexUpdateQueueAction,
-} from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { USERS_SEARCH_INDEX } from '~/server/common/constants';
+import { updateDocs } from '~/server/meilisearch/client';
 
-const READ_BATCH_SIZE = 10000;
-const MEILISEARCH_DOCUMENT_BATCH_SIZE = 10000;
+import { getOrCreateIndex } from '~/server/meilisearch/util';
+import { createSearchIndexUpdateProcessor } from '~/server/search-index/base.search-index';
+import { getCosmeticsForUsers, getProfilePicturesForUsers } from '~/server/services/user.service';
+
+import { isDefined } from '~/utils/type-guards';
+
+const READ_BATCH_SIZE = 15000;
+const MEILISEARCH_DOCUMENT_BATCH_SIZE = 15000;
 const INDEX_ID = USERS_SEARCH_INDEX;
-const SWAP_INDEX_ID = `${INDEX_ID}_NEW`;
-
-const RATING_BAYESIAN_M = 3.5;
-const RATING_BAYESIAN_C = 10;
 
 const onIndexSetup = async ({ indexName }: { indexName: string }) => {
   const index = await getOrCreateIndex(indexName, { primaryKey: 'id' });
@@ -50,7 +36,7 @@ const onIndexSetup = async ({ indexName }: { indexName: string }) => {
 
   const sortableAttributes = [
     'createdAt',
-    'stats.weightedRating',
+    'metrics.thumbsUpCount',
     'metrics.followerCount',
     'metrics.uploadCount',
   ];
@@ -70,335 +56,236 @@ const onIndexSetup = async ({ indexName }: { indexName: string }) => {
     console.log('onIndexSetup :: updateRankingRulesTask created', updateRankingRulesTask);
   }
 
-  // Uncomment & Add if we want to filter by some attribute at some point.
-  // const filterableAttributes = [];
-  //
-  // if (
-  //   // Meilisearch stores sorted.
-  //   JSON.stringify(filterableAttributes.sort()) !== JSON.stringify(settings.filterableAttributes)
-  // ) {
-  //   const updateFilterableAttributesTask = await index.updateFilterableAttributes(
-  //     filterableAttributes
-  //   );
-  //
-  //   console.log(
-  //     'onIndexSetup :: updateFilterableAttributesTask created',
-  //     updateFilterableAttributesTask
-  //   );
-  // }
+  const filterableAttributes = ['id', 'username'];
+
+  if (
+    // Meilisearch stores sorted.
+    JSON.stringify(filterableAttributes.sort()) !== JSON.stringify(settings.filterableAttributes)
+  ) {
+    const updateFilterableAttributesTask = await index.updateFilterableAttributes(
+      filterableAttributes
+    );
+
+    console.log(
+      'onIndexSetup :: updateFilterableAttributesTask created',
+      updateFilterableAttributesTask
+    );
+  }
 
   console.log('onIndexSetup :: all tasks completed');
 };
 
-export type UserSearchIndexRecord = Awaited<ReturnType<typeof onFetchItemsToIndex>>[number];
-type UserForSearchIndex = {
+type BaseUser = {
   id: number;
   username: string | null;
   createdAt: Date;
   image: string | null;
   deletedAt: Date | null;
-  metrics: {
-    followerCount: number;
-    uploadCount: number;
-    followingCount: number;
-    reviewCount: number;
-    answerAcceptCount: number;
-    hiddenCount: number;
-    answerCount: number;
-  }[];
-  stats: {
-    ratingAllTime: number;
-    ratingCountAllTime: number;
-    downloadCountAllTime: number;
-    favoriteCountAllTime: number;
-    followerCountAllTime: number;
-    answerAcceptCountAllTime: number;
-    answerCountAllTime: number;
-    followingCountAllTime: number;
-    hiddenCountAllTime: number;
-    reviewCountAllTime: number;
-    uploadCountAllTime: number;
-  } | null;
-  rank: {
-    leaderboardId: string | null;
-    leaderboardRank: number | null;
-    leaderboardTitle: string | null;
-    leaderboardCosmetic: string | null;
-  } | null;
-  cosmetics: {
-    id: number;
-    data: Prisma.JsonValue;
-    type: CosmeticType;
-    name: string;
-    source: CosmeticSource;
-  }[];
+};
+type UserMetric = {
+  userId: number;
+  followerCount: number;
+  uploadCount: number;
+  thumbsUpCount: number;
+  downloadCount: number;
+};
+type UserRank = {
+  userId: number;
+  leaderboardRank: number;
+  leaderboardId: string;
+  leaderboardTitle: string;
+  leaderboardCosmetic: string;
 };
 
-const onFetchItemsToIndex = async ({
-  db,
-  whereOr,
-  indexName,
-  ...queryProps
+const WHERE = [Prisma.sql`u.id != -1`, Prisma.sql`u."deletedAt" IS NULL`];
+
+const transformData = async ({
+  users,
+  metrics,
+  ranks,
+  profilePictures,
+  cosmetics,
 }: {
-  db: PrismaClient;
-  indexName: string;
-  whereOr?: Prisma.Sql[];
-  skip?: number;
+  users: BaseUser[];
+  metrics: UserMetric[];
+  ranks: UserRank[];
+  profilePictures: Awaited<ReturnType<typeof getProfilePicturesForUsers>>;
+  cosmetics: Awaited<ReturnType<typeof getCosmeticsForUsers>>;
 }) => {
-  const offset = queryProps.skip || 0;
-  console.log(
-    `onFetchItemsToIndex :: fetching starting for ${indexName} range:`,
-    offset,
-    offset + READ_BATCH_SIZE - 1,
-    ' filters:',
-    whereOr
-  );
-
-  const WHERE = [Prisma.sql`u.id != -1`, Prisma.sql`u."deletedAt" IS NULL`];
-
-  if (whereOr) {
-    WHERE.push(Prisma.sql`(${Prisma.join(whereOr, ' OR ')})`);
-  }
-
-  const users = await db.$queryRaw<UserForSearchIndex[]>`
-  WITH target AS MATERIALIZED (
-    SELECT
-    u.id,
-      u.username,
-    u."deletedAt",
-    u."createdAt",
-    u.image
-      FROM "User" u
-      WHERE ${Prisma.join(WHERE, ' AND ')}
-    OFFSET ${offset} LIMIT ${READ_BATCH_SIZE}
-  ), cosmetics AS MATERIALIZED (
-    SELECT
-      uc."userId",
-      jsonb_agg(jsonb_build_object(
-        'id', c.id,
-        'data', c.data,
-        'type', c.type,
-        'source', c.source,
-        'name', c.name,
-        'leaderboardId', c."leaderboardId",
-        'leaderboardPosition', c."leaderboardPosition"
-      )) cosmetics
-    FROM "UserCosmetic" uc
-    JOIN "Cosmetic" c ON c.id = uc."cosmeticId"
-    AND "equippedAt" IS NOT NULL
-    WHERE uc."userId" IN (SELECT id FROM target)
-    GROUP BY uc."userId"
-  ), ranks AS MATERIALIZED (
-    SELECT
-      ur."userId",
-      jsonb_build_object(
-        'leaderboardRank', ur."leaderboardRank",
-        'leaderboardId', ur."leaderboardId",
-        'leaderboardTitle', ur."leaderboardTitle",
-        'leaderboardCosmetic', ur."leaderboardCosmetic"
-      ) rank
-    FROM "UserRank" ur
-    WHERE ur."leaderboardRank" IS NOT NULL
-      AND ur."userId" IN (SELECT id FROM target)
-  ), stats AS MATERIALIZED (
-      SELECT
-        m."userId",
-        jsonb_build_object(
-          'ratingAllTime', IIF(sum("ratingCount") IS NULL OR sum("ratingCount") < 1, 0::double precision, sum("rating" * "ratingCount")/sum("ratingCount")),
-              'ratingCountAllTime', SUM("ratingCount"),
-              'downloadCountAllTime', SUM("downloadCount"),
-              'favoriteCountAllTime', SUM("favoriteCount")
-        ) stats
-      FROM "ModelMetric" mm
-      JOIN "Model" m ON mm."modelId" = m.id AND timeframe = 'AllTime'
-      WHERE m."userId" IN (SELECT id FROM target)
-      GROUP BY m."userId"
-  ), metrics as MATERIALIZED (
-    SELECT
-      um."userId",
-      jsonb_build_object(
-        'followerCount', um."followerCount",
-        'uploadCount', um."uploadCount",
-        'followingCount', um."followingCount",
-        'reviewCount', um."reviewCount",
-        'answerAcceptCount', um."answerAcceptCount",
-        'hiddenCount', um."hiddenCount",
-        'answerCount', um."answerCount"
-      ) metrics
-    FROM "UserMetric" um
-    WHERE um.timeframe = 'AllTime'
-      AND um."userId" IN (SELECT id FROM target)
-  )
-  SELECT
-    t.*,
-    (SELECT cosmetics FROM cosmetics c WHERE c."userId" = t.id),
-    (SELECT rank FROM ranks r WHERE r."userId" = t.id),
-    (SELECT metrics FROM metrics m WHERE m."userId" = t.id),
-    (SELECT stats FROM stats s WHERE s."userId" = t.id)
-  FROM target t
-  `;
-
-  console.log(
-    `onFetchItemsToIndex :: fetching complete for ${indexName} range:`,
-    offset,
-    offset + READ_BATCH_SIZE - 1,
-    'filters:',
-    whereOr
-  );
-
-  // Avoids hitting the DB without data.
-  if (users.length === 0) {
-    return [];
-  }
-
-  const indexReadyRecords = users.map((userRecord) => {
-    const stats = userRecord.stats;
-    const cosmetics = userRecord.cosmetics ?? [];
-
-    const weightedRating = !stats
-      ? 0
-      : (stats.ratingAllTime * stats.ratingCountAllTime + RATING_BAYESIAN_M * RATING_BAYESIAN_C) /
-        (stats.ratingCountAllTime + RATING_BAYESIAN_C);
-
+  const records = users.map((user) => {
     return {
-      ...userRecord,
-      stats: stats
-        ? {
-            ...stats,
-            weightedRating,
-          }
-        : null,
-      metrics: userRecord.metrics ?? {},
-      cosmetics: cosmetics.map((cosmetic) => ({ cosmetic })),
+      ...user,
+      profilePicture: profilePictures[user.id] ?? null,
+      rank: ranks.find((r) => r.userId === user.id),
+      metrics: metrics.find((m) => m.userId === user.id),
+      cosmetics: cosmetics[user.id] ?? [],
     };
   });
 
-  return indexReadyRecords;
+  return records;
 };
 
-const onUpdateQueueProcess = async ({ db, indexName }: { db: PrismaClient; indexName: string }) => {
-  const queuedItems = await db.searchIndexUpdateQueue.findMany({
-    select: {
-      id: true,
-    },
-    where: { type: INDEX_ID, action: SearchIndexUpdateQueueAction.Update },
-  });
-
-  console.log(
-    'onUpdateQueueProcess :: A total of ',
-    queuedItems.length,
-    ' have been updated and will be re-indexed'
-  );
-
-  const batchCount = Math.ceil(queuedItems.length / READ_BATCH_SIZE);
-
-  const itemsToIndex: UserSearchIndexRecord[] = [];
-
-  for (let batchNumber = 0; batchNumber < batchCount; batchNumber++) {
-    const batch = queuedItems.slice(
-      batchNumber * READ_BATCH_SIZE,
-      batchNumber * READ_BATCH_SIZE + READ_BATCH_SIZE
-    );
-
-    const itemIds = batch.map(({ id }) => id);
-
-    const newItems = await onFetchItemsToIndex({
-      db,
-      indexName,
-      whereOr: [Prisma.sql`u.id IN (${Prisma.join(itemIds)})`],
-    });
-
-    itemsToIndex.push(...newItems);
-  }
-
-  return itemsToIndex;
-};
-const onIndexUpdate = async ({
-  db,
-  lastUpdatedAt,
-  indexName,
-  updateIds,
-  deleteIds,
-}: SearchIndexRunContext) => {
-  // Confirm index setup & working:
-  await onIndexSetup({ indexName });
-  // Cleanup documents that require deletion:
-  // Always pass INDEX_ID here, not index name, as pending to delete will
-  // always use this name.
-  await onSearchIndexDocumentsCleanup({ db, indexName: INDEX_ID });
-
-  if (deleteIds && deleteIds.length > 0) {
-    await onSearchIndexDocumentsCleanup({ db, indexName: INDEX_ID, ids: deleteIds });
-  }
-
-  let offset = 0;
-  const userTasks: EnqueuedTask[] = [];
-
-  if (lastUpdatedAt) {
-    // Only if this is an update (NOT a reset or first run) will we care for queued items:
-
-    // Update whatever items we have on the queue.
-    // Do it on batches, since it's possible that there are far more items than we expect:
-    const updateTasks = await onUpdateQueueProcess({
-      db,
-      indexName,
-    });
-
-    if (updateTasks.length > 0) {
-      const updateBaseTasks = await updateDocs({
-        indexName,
-        documents: updateTasks,
-        batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
-      });
-
-      console.log('onIndexUpdate :: base tasks for updated items have been added');
-      userTasks.push(...updateBaseTasks);
-    }
-  }
-
-  while (true) {
-    console.log(
-      `onIndexUpdate :: fetching starting for ${indexName} range:`,
-      offset,
-      offset + READ_BATCH_SIZE - 1
-    );
-
-    const whereOr: Prisma.Sql[] = [];
-
-    if (updateIds && updateIds.length > 0) {
-      whereOr.push(Prisma.sql`u.id IN (${Prisma.join(updateIds)})`);
-    }
-
-    if (lastUpdatedAt) {
-      whereOr.push(Prisma.sql`u."createdAt" > ${lastUpdatedAt}`);
-    }
-
-    const indexReadyRecords = await onFetchItemsToIndex({
-      db,
-      indexName,
-      skip: offset,
-      whereOr,
-    });
-
-    if (indexReadyRecords.length === 0) break;
-
-    const tasks = await updateDocs({
-      indexName,
-      documents: indexReadyRecords,
-      batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
-    });
-
-    userTasks.push(...tasks);
-
-    offset += indexReadyRecords.length;
-  }
-
-  console.log('onIndexUpdate :: index update complete');
-};
+export type UserSearchIndexRecord = Awaited<ReturnType<typeof transformData>>[number];
 
 export const usersSearchIndex = createSearchIndexUpdateProcessor({
   indexName: INDEX_ID,
-  swapIndexName: SWAP_INDEX_ID,
-  onIndexUpdate,
-  onIndexSetup,
+  setup: onIndexSetup,
+  workerCount: 25,
+  prepareBatches: async ({ db, logger }, lastUpdatedAt) => {
+    const where = [
+      ...WHERE,
+      lastUpdatedAt ? Prisma.sql`u."createdAt" >= ${lastUpdatedAt}` : undefined,
+    ].filter(isDefined);
+
+    const data = await db.$queryRaw<{ startId: number; endId: number }[]>`
+      SELECT
+        (
+          SELECT u.id
+          FROM "User" u
+          WHERE ${Prisma.join(where, ' AND ')}
+          ORDER BY "createdAt" ASC
+          LIMIT 1
+        ) as "startId",
+        (
+          SELECT u.id
+          FROM "User" u
+          WHERE ${Prisma.join(where, ' AND ')}
+          ORDER BY "createdAt" DESC
+          LIMIT 1
+        ) as "endId"
+    `;
+
+    const { startId, endId } = data[0];
+
+    logger(
+      `PrepareBatches :: Prepared batch: ${startId} - ${endId} ... Last updated: ${lastUpdatedAt}`
+    );
+
+    return {
+      batchSize: READ_BATCH_SIZE,
+      startId,
+      endId,
+    };
+  },
+  pullSteps: 4,
+  pullData: async ({ db, logger }, batch, step, prevData) => {
+    logger(
+      `PullData :: Pulling data for batch`,
+      batch.type === 'new' ? `${batch.startId} - ${batch.endId}` : batch.ids.length
+    );
+    const where = [
+      ...WHERE,
+      batch.type === 'update' ? Prisma.sql`u.id IN (${Prisma.join(batch.ids)})` : undefined,
+      batch.type === 'new'
+        ? Prisma.sql`u.id >= ${batch.startId} AND u.id <= ${batch.endId}`
+        : undefined,
+    ].filter(isDefined);
+
+    const userIds = prevData ? (prevData as { users: BaseUser[] }).users.map((u) => u.id) : [];
+
+    // Basic info
+    if (step === 0) {
+      const users = await db.$queryRaw<BaseUser[]>`
+        SELECT
+          u.id,
+          u.username,
+          u."deletedAt",
+          u."createdAt",
+          u.image
+        FROM "User" u
+        WHERE ${Prisma.join(where, ' AND ')}
+      `;
+
+      if (!users.length) return null;
+
+      return {
+        users,
+      };
+    }
+
+    // Metrics
+    if (step === 1) {
+      // What we can get from user metrics
+      const metrics = await db.$queryRaw<UserMetric[]>`
+        SELECT
+          um."userId",
+          um."followerCount",
+          um."uploadCount"
+        FROM "UserMetric" um
+        WHERE um."userId" IN (${Prisma.join(userIds)})
+          AND um."timeframe" = 'AllTime'::"MetricTimeframe"
+      `;
+
+      // What we can get from model metrics
+      const modelMetrics = await db.$queryRaw<UserMetric[]>`
+        SELECT
+          m."userId",
+          SUM(mm."thumbsUpCount") AS "thumbsUpCount",
+          SUM(mm."downloadCount") AS "downladCount"
+        FROM "ModelMetric" mm
+        JOIN "Model" m ON m.id = mm."modelId"
+        WHERE m."userId" IN (${Prisma.join(userIds)})
+          AND mm.timeframe = 'AllTime'::"MetricTimeframe"
+        GROUP BY m."userId";
+      `;
+      // Not using stats because it hits other unnecessary tables
+
+      // Merge in model metrics
+      const modelMetricsMap = Object.fromEntries(modelMetrics.map((m) => [m.userId, m]));
+      for (const metric of metrics) {
+        const modelMetric = modelMetricsMap[metric.userId];
+        metric.thumbsUpCount = Number(modelMetric?.thumbsUpCount ?? 0);
+        metric.downloadCount = Number(modelMetric?.downloadCount ?? 0);
+      }
+
+      return {
+        ...prevData,
+        metrics,
+      };
+    }
+
+    // Ranks
+    if (step === 2) {
+      const ranks = await db.$queryRaw<UserRank[]>`
+        SELECT
+          ur."userId",
+          ur."leaderboardRank",
+          ur."leaderboardId",
+          ur."leaderboardTitle",
+          ur."leaderboardCosmetic"
+        FROM "UserRank" ur
+        WHERE ur."userId" IN (${Prisma.join(userIds)})
+          AND ur."leaderboardRank" IS NOT NULL
+      `;
+
+      return {
+        ...prevData,
+        ranks,
+      };
+    }
+
+    // Profile pictures & cosmetics
+    if (step === 3) {
+      const profilePictures = await getProfilePicturesForUsers(userIds);
+      const cosmetics = await getCosmeticsForUsers(userIds);
+
+      return {
+        ...prevData,
+        profilePictures,
+        cosmetics,
+      };
+    }
+
+    return prevData;
+  },
+  transformData,
+  pushData: async ({ indexName, jobContext }, records) => {
+    await updateDocs({
+      indexName,
+      documents: records as any[],
+      batchSize: MEILISEARCH_DOCUMENT_BATCH_SIZE,
+    });
+
+    return;
+  },
 });

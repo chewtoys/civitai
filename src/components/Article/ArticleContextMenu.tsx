@@ -1,6 +1,6 @@
 import { ActionIcon, ActionIconProps, Loader, Menu } from '@mantine/core';
 import { openConfirmModal } from '@mantine/modals';
-import { NextLink } from '@mantine/next';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { IconBan, IconDotsVertical, IconFlag, IconPencil, IconTrash } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
 
@@ -8,25 +8,29 @@ import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { openContext } from '~/providers/CustomModalsProvider';
 import { ReportEntity } from '~/server/schema/report.schema';
-import { ArticleGetAll } from '~/types/router';
+import type { ArticleGetAllRecord } from '~/server/services/article.service';
 import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
 import { trpc } from '~/utils/trpc';
 import { AddToCollectionMenuItem } from '~/components/MenuItems/AddToCollectionMenuItem';
-import { CollectionType } from '@prisma/client';
+import { ArticleStatus, CollectionType, CosmeticEntity } from '~/shared/utils/prisma/enums';
 import React from 'react';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { ToggleLockComments } from '../CommentsV2';
 import { IconLock } from '@tabler/icons-react';
+import { ToggleSearchableMenuItem } from '../MenuItems/ToggleSearchableMenuItem';
+import { AddArtFrameMenuItem } from '~/components/Decorations/AddArtFrameMenuItem';
+import { ArticleGetById } from '~/types/router';
+import { openReportModal } from '~/components/Dialog/dialog-registry';
 
 export function ArticleContextMenu({ article, ...props }: Props) {
-  const queryUtils = trpc.useContext();
+  const queryUtils = trpc.useUtils();
   const router = useRouter();
   const currentUser = useCurrentUser();
   const isModerator = currentUser?.isModerator ?? false;
   const isOwner = currentUser?.id === article.user?.id;
 
   const atDetailsPage = router.pathname === '/articles/[id]/[[...slug]]';
-  const showUnpublish = atDetailsPage && article.publishedAt !== null;
+  const showUnpublish = atDetailsPage && article.status === ArticleStatus.Published;
   const features = useFeatureFlags();
 
   const deleteArticleMutation = trpc.article.delete.useMutation();
@@ -49,7 +53,6 @@ export function ArticleContextMenu({ article, ...props }: Props) {
 
               if (atDetailsPage) await router.push('/articles');
               await queryUtils.article.getInfinite.invalidate();
-              await queryUtils.article.getByCategory.invalidate();
             },
             onError(error) {
               showErrorNotification({
@@ -62,10 +65,10 @@ export function ArticleContextMenu({ article, ...props }: Props) {
     });
   };
 
-  const upsertArticleMutation = trpc.article.upsert.useMutation();
+  const unpublishArticleMutation = trpc.article.unpublish.useMutation();
   const handleUnpublishArticle = () => {
-    upsertArticleMutation.mutate(
-      { ...article, publishedAt: null },
+    unpublishArticleMutation.mutate(
+      { id: article.id },
       {
         async onSuccess(result) {
           showSuccessNotification({
@@ -73,9 +76,12 @@ export function ArticleContextMenu({ article, ...props }: Props) {
             message: 'Successfully unpublished article',
           });
 
-          await queryUtils.article.getById.invalidate({ id: result.id });
+          queryUtils.article.getById.setData({ id: article.id }, (old) => ({
+            ...(old as ArticleGetById),
+            ...result,
+          }));
+
           await queryUtils.article.getInfinite.invalidate();
-          await queryUtils.article.getByCategory.invalidate();
           await queryUtils.article.getMyDraftArticles.invalidate();
         },
         onError(error) {
@@ -115,8 +121,21 @@ export function ArticleContextMenu({ article, ...props }: Props) {
             }
           />
         )}
+        <ToggleSearchableMenuItem
+          entityType="Article"
+          entityId={article.id}
+          key="toggle-searchable-menu-item"
+        />
         {currentUser && (isOwner || isModerator) && (
           <>
+            {isOwner && article.coverImage && !atDetailsPage && (
+              <AddArtFrameMenuItem
+                entityType={CosmeticEntity.Article}
+                entityId={article.id}
+                image={article.coverImage}
+                currentCosmetic={article.cosmetic}
+              />
+            )}
             <Menu.Item
               color="red"
               icon={<IconTrash size={14} stroke={1.5} />}
@@ -132,19 +151,26 @@ export function ArticleContextMenu({ article, ...props }: Props) {
             {showUnpublish && (
               <Menu.Item
                 color="yellow"
-                icon={<IconBan size={14} stroke={1.5} />}
+                icon={
+                  unpublishArticleMutation.isLoading ? (
+                    <Loader size={14} />
+                  ) : (
+                    <IconBan size={14} stroke={1.5} />
+                  )
+                }
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   handleUnpublishArticle();
                 }}
-                disabled={upsertArticleMutation.isLoading}
+                disabled={unpublishArticleMutation.isLoading}
+                closeMenuOnClick={false}
               >
                 Unpublish
               </Menu.Item>
             )}
             <Menu.Item
-              component={NextLink}
+              component={Link}
               href={`/articles/${article.id}/edit`}
               icon={<IconPencil size={14} stroke={1.5} />}
             >
@@ -175,7 +201,7 @@ export function ArticleContextMenu({ article, ...props }: Props) {
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                openContext('report', { entityType: ReportEntity.Article, entityId: article.id });
+                openReportModal({ entityType: ReportEntity.Article, entityId: article.id });
               }}
             >
               Report article
@@ -188,5 +214,5 @@ export function ArticleContextMenu({ article, ...props }: Props) {
 }
 
 type Props = Omit<ActionIconProps, 'variant' | 'onClick'> & {
-  article: Omit<ArticleGetAll['items'][number], 'stats'>;
+  article: Omit<ArticleGetAllRecord, 'stats'>;
 };

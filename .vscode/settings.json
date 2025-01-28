@@ -2,17 +2,42 @@
   "editor.formatOnSave": true,
   "editor.tabSize": 2,
   "editor.codeActionsOnSave": {
-    "source.fixAll.eslint": true,
+    "source.fixAll.eslint": "explicit"
   },
   "files.eol": "\n",
+  "[sql]": {
+    "editor.formatOnSave": false
+  },
+  "typescript.tsdk": "node_modules\\typescript\\lib",
   "[typescriptreact]": {
     "editor.defaultFormatter": "dbaeumer.vscode-eslint"
   },
-  "[typescript]": {
-    "editor.defaultFormatter": "dbaeumer.vscode-eslint"
-  },
-  "[sql]": {
-    "editor.formatOnSave": false,
-  },
-  "typescript.tsdk": "node_modules\\typescript\\lib",
+  "typescript.preferences.autoImportFileExcludePatterns": [
+    "@prisma/client"
+  ],
+  "makefile.configureOnOpen": false,
+  "sqltools.connections": [
+    {
+      "previewLimit": 50,
+      "server": "db",
+      "port": 5432,
+      "driver": "PostgreSQL",
+      "name": "db",
+      "database": "civitai",
+      "username": "postgres",
+      "password": "postgres"
+    },
+    {
+      "server": "http://clickhouse",
+      "port": 8123,
+      "database": "default",
+      "username": "default",
+      "requestTimeout": 30000,
+      "enableTls": false,
+      "previewLimit": 50,
+      "driver": "ClickHouse",
+      "name": "clickhouse",
+      "password": ""
+    }
+  ]
 }

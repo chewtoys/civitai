@@ -1,7 +1,8 @@
 import { MantineColor } from '@mantine/core';
-import { ReportReason, ReportStatus } from '@prisma/client';
+import { AppealStatus, EntityType, ReportReason, ReportStatus } from '~/shared/utils/prisma/enums';
 import { z } from 'zod';
 import { getAllQuerySchema } from '~/server/schema/base.schema';
+import { MAX_APPEAL_MESSAGE_LENGTH } from '~/server/common/constants';
 
 export enum ReportEntity {
   Model = 'model',
@@ -15,6 +16,7 @@ export enum ReportEntity {
   Collection = 'collection',
   Bounty = 'bounty',
   BountyEntry = 'bountyEntry',
+  Chat = 'chat',
 }
 
 // #region [report reason detail schemas]
@@ -49,7 +51,7 @@ export const reportAdminAttentionDetailsSchema = baseDetailSchema.extend({
 const baseSchema = z.object({
   type: z.nativeEnum(ReportEntity),
   id: z.number(),
-  details: baseDetailSchema,
+  details: baseDetailSchema.default({}),
 });
 
 export const reportNsfwSchema = baseSchema.extend({
@@ -76,6 +78,10 @@ export const reportAdminAttentionSchema = baseSchema.extend({
   reason: z.literal(ReportReason.AdminAttention),
   details: reportAdminAttentionDetailsSchema,
 });
+
+export const reportCsamSchema = baseSchema.extend({
+  reason: z.literal(ReportReason.CSAM),
+});
 // #endregion
 
 export type CreateReportInput = z.infer<typeof createReportInputSchema>;
@@ -85,6 +91,7 @@ export const createReportInputSchema = z.discriminatedUnion('reason', [
   reportOwnershipSchema,
   reportClaimSchema,
   reportAdminAttentionSchema,
+  reportCsamSchema,
 ]);
 
 export type SetReportStatusInput = z.infer<typeof setReportStatusSchema>;
@@ -136,4 +143,33 @@ export const updateReportSchema = z.object({
   id: z.number(),
   status: z.nativeEnum(ReportStatus),
   internalNotes: z.string().nullish(),
+});
+
+export type CreateEntityAppealInput = z.output<typeof createEntityAppealSchema>;
+export const createEntityAppealSchema = z.object({
+  entityId: z.number(),
+  entityType: z.nativeEnum(EntityType),
+  message: z.string().trim().min(1).max(MAX_APPEAL_MESSAGE_LENGTH),
+});
+
+export type GetRecentAppealsInput = z.output<typeof getRecentAppealsSchema>;
+export const getRecentAppealsSchema = z.object({
+  userId: z.number().optional(),
+  startDate: z.date().optional(),
+});
+
+export type GetAppealDetailsInput = z.output<typeof getAppealDetailsSchema>;
+export const getAppealDetailsSchema = z.object({
+  entityId: z.number(),
+  entityType: z.nativeEnum(EntityType),
+  userId: z.number(),
+});
+
+export type ResolveAppealInput = z.output<typeof resolveAppealSchema>;
+export const resolveAppealSchema = z.object({
+  ids: z.number().array().min(1),
+  entityType: z.nativeEnum(EntityType),
+  status: z.nativeEnum(AppealStatus),
+  resolvedMessage: z.string().trim().max(MAX_APPEAL_MESSAGE_LENGTH).optional(),
+  internalNotes: z.string().trim().optional(),
 });

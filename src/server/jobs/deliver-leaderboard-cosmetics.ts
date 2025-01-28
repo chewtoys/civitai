@@ -36,7 +36,7 @@ async function deliverSeasonCosmetics() {
       c."leaderboardId" = lr."leaderboardId"
       AND lr.position <= c."leaderboardPosition"
       AND lr.date = current_date
-    ON CONFLICT ("userId", "cosmeticId") DO NOTHING;
+    ON CONFLICT ("userId", "cosmeticId", "claimKey") DO NOTHING;
   `;
 
   // equip next best
@@ -54,7 +54,7 @@ async function deliverSeasonCosmetics() {
       LEFT JOIN "LeaderboardResult" lr ON lr."userId" = uc."userId"
         AND lr."leaderboardId" = c."leaderboardId"
         AND lr.date = current_date
-      WHERE uc."equippedAt" IS NOT NULL
+      WHERE uc."equippedAt" IS NOT NULL AND uc."equippedToId" IS NULL
         AND lr.position > c."leaderboardPosition"
     ), next_best AS (
       SELECT
@@ -114,7 +114,7 @@ async function deliverLegendCosmetics() {
       now()
     FROM legends l
     JOIN cosmetic c ON c.id IS NOT NULL
-    ON CONFLICT ("userId", "cosmeticId") DO NOTHING;
+    ON CONFLICT ("userId", "cosmeticId", "claimKey") DO NOTHING;
   `;
 
   // revoke

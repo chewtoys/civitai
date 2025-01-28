@@ -1,78 +1,55 @@
-import { z } from 'zod';
+import { TRPCError } from '@trpc/server';
 import { isProd } from '~/env/other';
-import { env } from '~/env/server.mjs';
 import { purgeCache } from '~/server/cloudflare/client';
-import { BrowsingMode } from '~/server/common/enums';
-import { redis } from '~/server/redis/client';
+import { CacheTTL } from '~/server/common/constants';
+import { logToAxiom } from '~/server/logging/client';
+import { redis, REDIS_KEYS } from '~/server/redis/client';
 import { UserPreferencesInput } from '~/server/schema/base.schema';
-import { getHiddenTagsForUser, userCache } from '~/server/services/user-cache.service';
+import { getAllHiddenForUser } from '~/server/services/user-preferences.service';
 import { middleware } from '~/server/trpc';
-import { fromJson, toJson } from '~/utils/json-helpers';
+import { ExtendedUser } from '~/types/next-auth';
 import { hashifyObject, slugit } from '~/utils/string-helpers';
 
-export const applyUserPreferences = <TInput extends UserPreferencesInput>() =>
-  middleware(async ({ input, ctx, next }) => {
-    const _input = input as TInput;
-    let browsingMode = _input.browsingMode;
-    if (!browsingMode) browsingMode = ctx.browsingMode;
+export const applyUserPreferences = middleware(async ({ input, ctx, next }) => {
+  const _input = input as UserPreferencesInput | undefined;
+  if (_input !== undefined && typeof _input === 'object' && !Array.isArray(_input)) {
+    // _input.browsingLevel ??= ctx.browsingLevel;
 
-    if (browsingMode !== BrowsingMode.All) {
-      const { hidden } = userCache(ctx.user?.id);
-      const [hiddenTags, hiddenUsers, hiddenImages] = await Promise.all([
-        hidden.tags.get(),
-        hidden.users.get(),
-        hidden.images.get(),
-      ]);
-
-      _input.excludedTagIds = [
-        ...hiddenTags.hiddenTags,
-        ...hiddenTags.moderatedTags,
-        ...(_input.excludedTagIds ?? []),
-      ];
-      _input.excludedUserIds = [...hiddenUsers, ...(_input.excludedUserIds ?? [])];
-      _input.excludedImageIds = [...hiddenImages, ...(_input.excludedUserIds ?? [])];
-
-      if (browsingMode === BrowsingMode.SFW) {
-        const systemHidden = await getHiddenTagsForUser({ userId: -1 });
-        _input.excludedTagIds = [
-          ...systemHidden.hiddenTags,
-          ...systemHidden.moderatedTags,
-          ...(_input.excludedTagIds ?? []),
-        ];
-      }
-    }
-
-    return next({
-      ctx: { user: ctx.user },
+    const { hiddenImages, hiddenTags, hiddenModels, hiddenUsers } = await getAllHiddenForUser({
+      userId: ctx.user?.id,
     });
-  });
 
-type BrowsingModeInput = z.infer<typeof browsingModeSchema>;
-const browsingModeSchema = z.object({
-  browsingMode: z.nativeEnum(BrowsingMode).default(BrowsingMode.All),
+    const tagsToHide = hiddenTags.filter((x) => x.hidden).map((x) => x.id);
+
+    const imagesToHide = hiddenImages
+      .filter((x) => !x.tagId || tagsToHide.findIndex((tagId) => tagId === x.tagId) > -1)
+      .map((x) => x.id);
+
+    _input.excludedTagIds = [...(_input.excludedTagIds ?? []), ...tagsToHide];
+    _input.excludedImageIds = [...(_input.excludedImageIds ?? []), ...imagesToHide];
+    _input.excludedUserIds = [...(_input.excludedUserIds ?? []), ...hiddenUsers.map((x) => x.id)];
+    _input.excludedModelIds = [
+      ...(_input.excludedModelIds ?? []),
+      ...hiddenModels.map((x) => x.id),
+    ];
+  }
+
+  return next({
+    ctx: { user: ctx.user },
+  });
 });
-
-export const applyBrowsingMode = <TInput extends BrowsingModeInput>() =>
-  middleware(async ({ input, ctx, next }) => {
-    const _input = input as TInput;
-    const canViewNsfw = ctx.user?.showNsfw ?? env.UNAUTHENTICATED_LIST_NSFW;
-    if (canViewNsfw && !_input.browsingMode) _input.browsingMode = BrowsingMode.All;
-    else if (!canViewNsfw) _input.browsingMode = BrowsingMode.SFW;
-
-    return next({
-      ctx: { user: ctx.user },
-    });
-  });
 
 type CacheItProps<TInput extends object> = {
   key?: string;
   ttl?: number;
   excludeKeys?: (keyof TInput)[];
+  tags?: (input: TInput) => string[];
 };
 export function cacheIt<TInput extends object>({
   key,
   ttl,
   excludeKeys,
+  tags,
 }: CacheItProps<TInput> = {}) {
   ttl ??= 60 * 3;
 
@@ -87,36 +64,105 @@ export function cacheIt<TInput extends object>({
         if (value) cacheKeyObj[key] = value;
       }
     }
-    const cacheKey = `trpc:${key ?? path.replace('.', ':')}:${hashifyObject(cacheKeyObj)}`;
-    const cached = await redis.get(cacheKey);
+    const cacheKey = `${REDIS_KEYS.TRPC.BASE}:${key ?? path.replace('.', ':')}:${hashifyObject(
+      cacheKeyObj
+    )}` as const;
+    const cached = await redis.packed.get(cacheKey);
     if (cached) {
-      const data = fromJson(cached);
-      return { ok: true, data, marker: 'fromCache' as any, ctx };
+      return { ok: true, data: cached, marker: 'fromCache' as any, ctx };
     }
 
     const result = await next({ ctx });
     if (result.ok && result.data && ctx.cache?.canCache) {
-      await redis.set(cacheKey, toJson(result.data), {
+      const cacheTags = tags?.(_input).map((x) => slugit(x));
+      await redis.packed.set(cacheKey, result.data, {
         EX: ttl,
       });
+
+      if (cacheTags) {
+        await Promise.all(
+          cacheTags
+            .map((tag) => {
+              const key = `${REDIS_KEYS.CACHES.TAGGED_CACHE}:${tag}` as const;
+              return [redis.sAdd(key, cacheKey), redis.expire(key, ttl)];
+            })
+            .flat()
+        );
+      }
     }
 
     return result;
   });
 }
 
-type EdgeCacheItProps = {
-  ttl?: number | false;
+export type RateLimit = {
+  limit: number;
+  period: number; // seconds
+  userReq?: (user: ExtendedUser) => boolean;
+};
+export function rateLimit(rateLimits: undefined | RateLimit | RateLimit[]) {
+  if (!rateLimits) rateLimits = { limit: 10, period: CacheTTL.md };
+  if (!Array.isArray(rateLimits)) rateLimits = [rateLimits];
+
+  return middleware(async ({ ctx, next, path }) => {
+    // Skip if user is a moderator
+    if (ctx.user?.isModerator) return await next();
+
+    // Get valid limits
+    let validLimits: RateLimit[] = [];
+    for (const rateLimit of rateLimits) {
+      const matchedPeriod = validLimits.find((x) => x.period === rateLimit.period);
+      if (matchedPeriod?.limit && matchedPeriod.limit > rateLimit.limit) continue;
+      if (!rateLimit.userReq || (ctx.user && rateLimit.userReq(ctx.user))) {
+        validLimits.push(rateLimit);
+      }
+    }
+
+    // Get user's attempts
+    const cacheKey = `${REDIS_KEYS.TRPC.LIMIT.BASE}:${path.replace('.', ':')}` as const;
+    const hashKey = ctx.user?.id?.toString() ?? ctx.ip;
+    const attempts = (await redis.packed.hGet<number[]>(cacheKey, hashKey)) ?? [];
+
+    // Check if user can proceed
+    const canProceed = validLimits.every(({ limit, period }) => {
+      const cutoff = Date.now() - period! * 1000;
+      let relevantAttempts = attempts.filter((x) => x > cutoff).length;
+      return relevantAttempts <= limit!;
+    });
+
+    // Throw if rate limit exceeded
+    if (!canProceed) {
+      throw new TRPCError({
+        code: 'TOO_MANY_REQUESTS',
+        message: `You're doing that too much...`,
+      });
+    }
+
+    // Update user's attempts
+    attempts.push(Date.now());
+    const longestPeriod = Math.max(...validLimits.map((x) => x.period!));
+    const updatedAttempts = attempts.filter((x) => x > Date.now() - longestPeriod * 1000);
+    await redis.packed.hSet(cacheKey, hashKey, updatedAttempts);
+    await redis.sAdd(REDIS_KEYS.TRPC.LIMIT.KEYS, cacheKey);
+    return await next();
+  });
+}
+
+export type EdgeCacheItProps = {
+  ttl?: number;
   expireAt?: () => Date;
   tags?: (input: any) => string[];
 };
-export function edgeCacheIt({ ttl, expireAt, tags }: EdgeCacheItProps = {}) {
-  if (ttl === undefined) ttl = 60 * 3;
-  else if (ttl === false) ttl = 24 * 60 * 60;
-  if (!isProd) return cacheIt({ ttl });
-
-  return middleware(async ({ next, ctx, input }) => {
-    let reqTTL = ttl as number;
+export function edgeCacheIt({ ttl = 60 * 3, expireAt, tags }: EdgeCacheItProps = {}) {
+  return middleware(async ({ next, ctx, input, path }) => {
+    if (!!ctx.req?.query?.batch) {
+      const message = `Content not cached: ${path}`;
+      if (!isProd) console.log(message);
+      else logToAxiom({ name: 'edge-cache-it', type: 'warn', message }, 'civitai-prod').catch();
+      return await next();
+    }
+    if (!isProd) return await next();
+    let reqTTL = ctx.cache.skip ? 0 : (ttl as number);
     if (expireAt) reqTTL = Math.floor((expireAt().getTime() - Date.now()) / 1000);
 
     const result = await next();
@@ -124,7 +170,20 @@ export function edgeCacheIt({ ttl, expireAt, tags }: EdgeCacheItProps = {}) {
       ctx.cache.browserTTL = isProd ? Math.min(60, reqTTL) : 0;
       ctx.cache.edgeTTL = reqTTL;
       ctx.cache.staleWhileRevalidate = 30;
-      ctx.cache.tags = tags?.(input).map((x) => slugit(x));
+      const cacheTags = tags?.(input).map((x) => slugit(x));
+      if (cacheTags) {
+        if (ctx.req?.url) {
+          await Promise.all(
+            cacheTags
+              .map((tag) => {
+                const key = `${REDIS_KEYS.CACHES.EDGE_CACHED}:${tag}` as const;
+                return [redis.sAdd(key, ctx.req.url!), redis.expire(key, ttl)];
+              })
+              .flat()
+          );
+        }
+        ctx.cache.tags = cacheTags;
+      }
     }
 
     return result;
@@ -139,3 +198,23 @@ export function purgeOnSuccess(tags: string[]) {
     return result;
   });
 }
+
+export function noEdgeCache(opts?: { authedOnly?: boolean }) {
+  const { authedOnly } = opts ?? {};
+
+  return middleware(({ next, ctx }) => {
+    if (authedOnly && !ctx.user) return next();
+
+    if (ctx.cache) {
+      ctx.cache.edgeTTL = 0;
+      ctx.cache.browserTTL = 0;
+    }
+
+    return next();
+  });
+}
+
+export const prodOnly = middleware(({ next }) => {
+  if (!isProd) throw new TRPCError({ code: 'FORBIDDEN', message: 'Not available in development' });
+  return next();
+});

@@ -1,58 +1,71 @@
 import sanitize, { Transformer } from 'sanitize-html';
-import linkBlocklist from '~/server/utils/link-blocklist.json';
 import { isNumber, isValidURL } from '~/utils/type-guards';
 
-export type santizeHtmlOptions = sanitize.IOptions & { stripEmpty?: boolean };
-export function sanitizeHtml(
-  html: string,
-  { stripEmpty, ...options }: santizeHtmlOptions = { stripEmpty: false }
-) {
+export const DEFAULT_ALLOWED_TAGS = [
+  'p',
+  'strong',
+  'em',
+  'u',
+  's',
+  'ul',
+  'ol',
+  'li',
+  'a',
+  'br',
+  'img',
+  'iframe',
+  'div',
+  'code',
+  'pre',
+  'span',
+  'h1',
+  'h2',
+  'h3',
+  'hr',
+];
+
+export const DEFAULT_ALLOWED_ATTRIBUTES = {
+  a: ['rel', 'href', 'target'],
+  img: ['src', 'alt', 'width', 'height'],
+  iframe: [
+    'src',
+    'width',
+    'height',
+    'allowfullscreen',
+    'autoplay',
+    'disablekbcontrols',
+    'enableiframeapi',
+    'endtime',
+    'ivloadpolicy',
+    'loop',
+    'modestbranding',
+    'origin',
+    'playlist',
+    'start',
+  ],
+  div: ['data-youtube-video', 'data-type'],
+  span: ['class', 'data-type', 'data-id', 'data-label', 'style'],
+  '*': ['id'],
+};
+
+export const DEFAULT_ALLOWED_IFRAME_HOSTNAMES = [
+  'www.youtube.com',
+  'www.instagram.com',
+  'www.strawpoll.com',
+];
+
+export type santizeHtmlOptions = sanitize.IOptions & {
+  stripEmpty?: boolean;
+};
+export function sanitizeHtml(html: string, args?: santizeHtmlOptions) {
+  const { stripEmpty = false, transformTags, ...options } = args ?? {};
+  // if (throwOnBlockedDomain) {
+  //   const blockedDomains = getBlockedDomains(html);
+  //   if (blockedDomains.length) throw new Error(`invalid urls: ${blockedDomains.join(', ')}`);
+  // }
   return sanitize(html, {
-    allowedTags: [
-      'p',
-      'strong',
-      'em',
-      'u',
-      's',
-      'ul',
-      'ol',
-      'li',
-      'a',
-      'br',
-      'img',
-      'iframe',
-      'div',
-      'code',
-      'pre',
-      'span',
-      'h1',
-      'h2',
-      'h3',
-      'hr',
-    ],
-    allowedAttributes: {
-      a: ['rel', 'href', 'target'],
-      img: ['src', 'alt', 'width', 'height'],
-      iframe: [
-        'src',
-        'width',
-        'height',
-        'allowfullscreen',
-        'autoplay',
-        'disablekbcontrols',
-        'enableiframeapi',
-        'endtime',
-        'ivloadpolicy',
-        'loop',
-        'modestbranding',
-        'origin',
-        'playlist',
-        'start',
-      ],
-      div: ['data-youtube-video', 'data-type'],
-      span: ['class', 'data-type', 'data-id', 'data-label', 'style'],
-      '*': ['id'],
-    },
+    allowedTags: DEFAULT_ALLOWED_TAGS,
+    allowedAttributes: DEFAULT_ALLOWED_ATTRIBUTES,
     exclusiveFilter: stripEmpty
       ? (frame) => {
           return (
@@ -61,19 +74,19 @@ export function sanitizeHtml(
           );
         }
       : undefined,
-    allowedIframeHostnames: ['www.youtube.com', 'www.instagram.com', 'www.strawpoll.com'],
+    allowedIframeHostnames: DEFAULT_ALLOWED_IFRAME_HOSTNAMES,
     transformTags: {
       a: function (tagName, { href, ...attr }) {
         const updatedHref = href.startsWith('http') ? href : `http://${href}`;
         const hrefDomain = isValidURL(updatedHref) ? new URL(updatedHref).hostname : undefined;
         if (!hrefDomain) return { tagName: 'span', ...attr };
 
-        const isBlocked = linkBlocklist.some((domain) => domain === hrefDomain);
-        if (isBlocked)
-          return {
-            tagName: 'span',
-            text: '[Blocked Link]',
-          };
+        // const isBlocked = getIsBlockedDomain(hrefDomain);
+        // if (isBlocked)
+        //   return {
+        //     tagName: 'span',
+        //     text: '[Blocked Link]',
+        //   };
         return {
           tagName: 'a',
           attribs: {
@@ -83,6 +96,7 @@ export function sanitizeHtml(
           },
         };
       } as Transformer,
+      ...transformTags,
     },
     ...options,
   });

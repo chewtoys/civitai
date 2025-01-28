@@ -1,33 +1,31 @@
 import { Box, Center, Loader, Stack, Text, ThemeIcon, Title } from '@mantine/core';
-import { useMemo } from 'react';
-import { useInfiniteHits, useInstantSearch } from 'react-instantsearch';
-import { ImageCard } from '~/components/Cards/ImageCard';
+import { RefinementListProps, useInstantSearch } from 'react-instantsearch';
 import {
+  BrowsingLevelFilter,
   ChipRefinementList,
   DateRangeRefinement,
   SearchableMultiSelectRefinementList,
   SortBy,
 } from '~/components/Search/CustomSearchComponents';
-import { ImageSearchIndexRecord } from '~/server/search-index/images.search-index';
 import { SearchHeader } from '~/components/Search/SearchHeader';
-import { SearchLayout, useSearchLayoutStyles } from '~/components/Search/SearchLayout';
+import { SearchLayout } from '~/components/Search/SearchLayout';
 import { IconCloudOff } from '@tabler/icons-react';
 import { TimeoutLoader } from '~/components/Search/TimeoutLoader';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
-import { applyUserPreferencesImages } from '~/components/Search/search.utils';
 import { IMAGES_SEARCH_INDEX } from '~/server/common/constants';
 import { ImagesSearchIndexSortBy } from '~/components/Search/parsers/image.parser';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { ImagesProvider } from '~/components/Image/Providers/ImagesProvider';
 import { InViewLoader } from '~/components/InView/InViewLoader';
+import { MasonryColumns } from '~/components/MasonryColumns/MasonryColumns';
+import { ImagesCard } from '~/components/Image/Infinite/ImagesCard';
+import { useInfiniteHitsTransformed } from '~/components/Search/search.utils2';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { MediaType } from '~/shared/utils/prisma/enums';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 
 export default function ImageSearch() {
   return (
     <SearchLayout.Root>
-      <SearchLayout.Filters>
-        <RenderFilters />
-      </SearchLayout.Filters>
       <SearchLayout.Content>
         <SearchHeader />
         <ImagesHitList />
@@ -36,77 +34,88 @@ export default function ImageSearch() {
   );
 }
 
+const filterMediaTypesOptions: RefinementListProps['transformItems'] = (items) => {
+  return items.filter((item) => item.value !== MediaType.audio);
+};
+
 function RenderFilters() {
+  const { canViewNsfw } = useFeatureFlags();
+
+  const items = [
+    { label: 'Relevancy', value: ImagesSearchIndexSortBy[0] as string },
+    { label: 'Most Reactions', value: ImagesSearchIndexSortBy[1] as string },
+    { label: 'Most Discussed', value: ImagesSearchIndexSortBy[2] as string },
+    { label: 'Most Collected', value: ImagesSearchIndexSortBy[3] as string },
+    { label: 'Most Buzz', value: ImagesSearchIndexSortBy[4] as string },
+    { label: 'Newest', value: ImagesSearchIndexSortBy[5] as string },
+  ];
+
   return (
     <>
+      <BrowsingLevelFilter attributeName={!canViewNsfw ? 'combinedNsfwLevel' : 'nsfwLevel'} />
       <SortBy
         title="Sort images by"
-        items={[
-          { label: 'Relevancy', value: ImagesSearchIndexSortBy[0] as string },
-          { label: 'Most Reactions', value: ImagesSearchIndexSortBy[1] as string },
-          { label: 'Most Discussed', value: ImagesSearchIndexSortBy[2] as string },
-          { label: 'Most Collected', value: ImagesSearchIndexSortBy[3] as string },
-          { label: 'Most Buzz', value: ImagesSearchIndexSortBy[4] as string },
-          { label: 'Newest', value: ImagesSearchIndexSortBy[5] as string },
-        ]}
+        items={!canViewNsfw ? items.filter((x) => x.label !== 'Newest') : items}
       />
       <DateRangeRefinement title="Filter by Creation Date" attribute="createdAtUnix" />
+      <ChipRefinementList
+        title="Filter by Media Type"
+        sortBy={['name']}
+        operator="or"
+        attribute="type"
+        transformItems={filterMediaTypesOptions}
+      />
       <ChipRefinementList
         title="Filter by Aspect Ratio"
         sortBy={['name']}
         attribute="aspectRatio"
       />
-      <ChipRefinementList title="Generated With" sortBy={['name']} attribute="generationTool" />
-      <SearchableMultiSelectRefinementList
-        title="Users"
-        attribute="user.username"
-        searchable={true}
-      />
+      <SearchableMultiSelectRefinementList title="Users" attribute="user.username" searchable />
       <SearchableMultiSelectRefinementList
         title="Tags"
-        attribute="tags.name"
+        attribute="tagNames"
         operator="and"
-        searchable={true}
+        searchable
       />
-      <ChipRefinementList title="Filter by Base Model" sortBy={['name']} attribute="baseModel" />
+      <SearchableMultiSelectRefinementList
+        title="Tools"
+        attribute="toolNames"
+        operator="and"
+        searchable
+      />
+      <SearchableMultiSelectRefinementList
+        title="Techniques"
+        attribute="techniqueNames"
+        operator="and"
+        searchable
+      />
+      <ChipRefinementList
+        title="Filter by Base Model"
+        sortBy={['name']}
+        attribute="baseModel"
+        limit={100}
+      />
     </>
   );
 }
 
 function ImagesHitList() {
-  const { classes } = useSearchLayoutStyles();
   const { status } = useInstantSearch();
 
-  const { hits, showMore, isLastPage } = useInfiniteHits<ImageSearchIndexRecord>();
-  const currentUser = useCurrentUser();
-  const {
-    images: hiddenImages,
-    tags: hiddenTags,
-    users: hiddenUsers,
-    isLoading: loadingPreferences,
-  } = useHiddenPreferencesContext();
+  const { hits, showMore, isLastPage } = useInfiniteHitsTransformed<'images'>();
 
-  const images = useMemo(() => {
-    return applyUserPreferencesImages<ImageSearchIndexRecord>({
-      items: hits,
-      hiddenImages,
-      hiddenTags,
-      hiddenUsers,
-      currentUserId: currentUser?.id,
-    });
-  }, [hits, hiddenImages, hiddenTags, hiddenUsers, currentUser]);
-
-  const hiddenItems = hits.length - images.length;
+  const { loadingPreferences, items, hiddenCount } = useApplyHiddenPreferences({
+    type: 'images',
+    data: hits,
+  });
 
   if (hits.length === 0) {
     const NotFound = (
       <Box>
         <Center>
           <Stack spacing="md" align="center" maw={800}>
-            {hiddenItems > 0 && (
-              <Text color="dimmed">
-                {hiddenItems} images have been hidden due to your settings.
-              </Text>
+            {hiddenCount > 0 && (
+              <Text color="dimmed">{hiddenCount} images have been hidden due to your settings</Text>
             )}
             <ThemeIcon size={128} radius={100} sx={{ opacity: 0.5 }}>
               <IconCloudOff size={80} />
@@ -157,21 +166,40 @@ function ImagesHitList() {
 
   return (
     <Stack>
-      {hiddenItems > 0 && (
-        <Text color="dimmed">{hiddenItems} images have been hidden due to your settings.</Text>
+      {hiddenCount > 0 && (
+        <Text color="dimmed">{hiddenCount} images have been hidden due to your settings.</Text>
       )}
-      <div
+      {/* <div
         className={classes.grid}
         style={{
-          // Overwrite default sizing here.
           gridTemplateColumns: `repeat(auto-fill, minmax(290px, 1fr))`,
         }}
       >
-        {/* TODO - fix type issues here. Problem is a type mismatch between ImageSearchIndexRecord and ImageGetInfinite  */}
+
         <ImagesProvider images={images as any}>
           {images.map((hit) => (
             <ImageCard key={hit.id} data={hit} />
           ))}
+        </ImagesProvider>
+      </div> */}
+      <div>
+        <ImagesProvider images={items as any}>
+          <MasonryColumns
+            data={items as any}
+            imageDimensions={(data) => {
+              const width = data?.width ?? 450;
+              const height = data?.height ?? 450;
+              return { width, height };
+            }}
+            adjustHeight={({ height }) => {
+              const imageHeight = Math.max(Math.min(height, 600), 150);
+              return imageHeight + 38;
+            }}
+            maxItemHeight={600}
+            render={ImagesCard}
+            itemId={(data) => data.id}
+            withAds
+          />
         </ImagesProvider>
       </div>
       {hits.length > 0 && !isLastPage && (
@@ -190,7 +218,18 @@ function ImagesHitList() {
 }
 
 ImageSearch.getLayout = function getLayout(page: React.ReactNode) {
-  return <SearchLayout indexName={IMAGES_SEARCH_INDEX}>{page}</SearchLayout>;
+  return (
+    <SearchLayout
+      indexName={IMAGES_SEARCH_INDEX}
+      leftSidebar={
+        <SearchLayout.Filters>
+          <RenderFilters />
+        </SearchLayout.Filters>
+      }
+    >
+      {page}
+    </SearchLayout>
+  );
 };
 
 export const getServerSideProps = createServerSideProps({

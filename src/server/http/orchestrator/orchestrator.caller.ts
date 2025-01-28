@@ -1,30 +1,17 @@
-import { env } from '~/env/server.mjs';
+import { env } from '~/env/server';
+import { logToAxiom } from '~/server/logging/client';
 import { HttpCaller } from '../httpCaller';
 import { Orchestrator } from './orchestrator.types';
 
 class OrchestratorCaller extends HttpCaller {
-  private static instance: OrchestratorCaller;
+  constructor(endpoint?: string, token?: string) {
+    endpoint ??= env.ORCHESTRATOR_ENDPOINT;
+    token ??= env.ORCHESTRATOR_ACCESS_TOKEN;
+    if (!endpoint) throw new Error('Missing ORCHESTRATOR_ENDPOINT env');
+    if (!token) throw new Error('Missing ORCHESTRATOR_ACCESS_TOKEN env');
 
-  protected constructor(baseUrl: string, options?: { headers?: MixedObject }) {
-    super(baseUrl, options);
-  }
-
-  static getInstance(): OrchestratorCaller {
-    if (!env.ORCHESTRATOR_ENDPOINT) throw new Error('Missing ORCHESTRATOR_ENDPOINT env');
-    if (!env.ORCHESTRATOR_ACCESS_TOKEN) throw new Error('Missing ORCHESTRATOR_ACCESS_TOKEN env');
-
-    if (!OrchestratorCaller.instance) {
-      OrchestratorCaller.instance = new OrchestratorCaller(env.ORCHESTRATOR_ENDPOINT, {
-        headers: { Authorization: `Bearer ${env.ORCHESTRATOR_ACCESS_TOKEN}` },
-      });
-    }
-
-    return OrchestratorCaller.instance;
-  }
-
-  public textToImage({ payload }: { payload: Orchestrator.Generation.TextToImageJobPayload }) {
-    return this.post<Orchestrator.Generation.TextToImageResponse>('/v1/consumer/jobs', {
-      payload: { $type: 'textToImage', ...payload },
+    super(endpoint, {
+      headers: { Authorization: `Bearer ${token}` },
     });
   }
 
@@ -54,43 +41,78 @@ class OrchestratorCaller extends HttpCaller {
     });
   }
 
-  public getBlob({ payload }: { payload: Orchestrator.Generation.BlobGetPayload }) {
-    return this.post<Orchestrator.Generation.BlobGetResponse>('/v1/consumer/jobs', {
-      payload: { $type: 'blobGet', ...payload },
+  // public getBlob({ payload }: { payload: Orchestrator.Generation.BlobGetPayload }) {
+  //   return this.post<Orchestrator.Generation.BlobGetResponse>('/v1/consumer/jobs', {
+  //     payload: { $type: 'blobGet', ...payload },
+  //   });
+  // }
+
+  // public deleteBlob({ payload }: { payload: Orchestrator.Generation.BlobActionPayload }) {
+  //   return this.post<Orchestrator.Generation.BlobActionPayload>('/v1/consumer/jobs', {
+  //     payload: { $type: 'blobDelete', ...payload },
+  //   });
+  // }
+
+  public imageAutoTag({ payload }: { payload: Orchestrator.Training.ImageAutoTagJobPayload }) {
+    return this.post<Orchestrator.Training.ImageAutoTagJobResponse>('/v1/consumer/jobs', {
+      payload: { $type: 'mediaTagging', ...payload },
     });
   }
 
-  public deleteBlob({ payload }: { payload: Orchestrator.Generation.BlobActionPayload }) {
-    return this.post<Orchestrator.Generation.BlobActionPayload>('/v1/consumer/jobs', {
-      payload: { $type: 'blobDelete', ...payload },
-    });
-  }
-
-  public imageResourceTraining({
+  public imageAutoCaption({
     payload,
   }: {
-    payload: Orchestrator.Training.ImageResourceTrainingJobPayload;
+    payload: Orchestrator.Training.ImageAutoCaptionJobPayload;
   }) {
-    return this.post<Orchestrator.Training.ImageResourceTrainingResponse>('/v1/consumer/jobs', {
-      payload: { $type: 'imageResourceTraining', ...payload },
+    return this.post<Orchestrator.Training.ImageAutoCaptionJobResponse>('/v1/consumer/jobs', {
+      payload: { $type: 'mediaCaptioning', ...payload },
     });
   }
 
-  public getEventById({ id, take, descending }: Orchestrator.Events.QueryParams) {
-    return this.get<Orchestrator.Events.GetResponse>(`/v1/producer/jobs/${id}/events`, {
-      queryParams: { take, descending },
-    });
-  }
+  // public getEventById({ id, take, descending }: Orchestrator.Events.QueryParams) {
+  //   return this.get<Orchestrator.Events.GetResponse>(`/v1/producer/jobs/${id}/events`, {
+  //     queryParams: { take, descending },
+  //   });
+  // }
+  //
+  // public getJobById({ id }: Orchestrator.JobQueryParams) {
+  //   return this.get<Orchestrator.GetJobResponse>(`/v1/consumer/jobs/${id}`);
+  // }
 
-  public getJobById({ id }: Orchestrator.JobQueryParams) {
-    return this.get<Orchestrator.GetJobResponse>(`/v1/consumer/jobs/${id}`);
-  }
+  // public bustModelCache({ modelVersionId }: Orchestrator.Generation.BustModelCache) {
+  //   return this.delete('/v2/models/@civitai/' + modelVersionId);
+  // }
 
-  public prepareModel({ payload }: { payload: Orchestrator.Generation.PrepareModelPayload }) {
-    return this.post<Orchestrator.Generation.PrepareModelResponse>('/v1/consumer/jobs', {
-      payload: { $type: 'prepareModel', ...payload },
-    });
-  }
+  // public taintJobById({ id, payload }: { id: string; payload: Orchestrator.TaintJobByIdPayload }) {
+  //   return this.put(`/v1/consumer/jobs/${id}`, { payload });
+  // }
+
+  // public deleteJobById({ id }: { id: string }) {
+  //   return this.delete(`/v1/consumer/jobs/${id}?force=true`);
+  // }
 }
 
-export default OrchestratorCaller.getInstance();
+const orchestratorCaller = new OrchestratorCaller();
+export default orchestratorCaller;
+
+export const altOrchestratorCaller =
+  env.ALT_ORCHESTRATION_ENDPOINT && env.ALT_ORCHESTRATION_TOKEN
+    ? new OrchestratorCaller(env.ALT_ORCHESTRATION_ENDPOINT, env.ALT_ORCHESTRATION_TOKEN)
+    : orchestratorCaller;
+
+export function getOrchestratorCaller(forTime?: Date, force?: boolean) {
+  if (force === true) return altOrchestratorCaller;
+
+  if (forTime && env.ALT_ORCHESTRATION_TIMEFRAME) {
+    const { start, end } = env.ALT_ORCHESTRATION_TIMEFRAME;
+    if ((!start || forTime > start) && (!end || forTime < end)) {
+      logToAxiom({
+        name: 'orchestrator',
+        type: 'info',
+        message: `Using alt orchestrator caller: ${env.ALT_ORCHESTRATION_ENDPOINT} - ${env.ALT_ORCHESTRATION_TOKEN}`,
+      }).catch();
+      return altOrchestratorCaller;
+    }
+  }
+  return orchestratorCaller;
+}

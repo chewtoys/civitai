@@ -2,115 +2,141 @@ import {
   MasonryAdjustHeightFn,
   MasonryImageDimensionsFn,
 } from '~/components/MasonryColumns/masonry.types';
-import { useWindowEvent } from '@mantine/hooks';
-import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
-import { useDebouncer } from '~/utils/debouncer';
+import { useEffect, useMemo } from 'react';
+import { AdFeedItem, useCreateAdFeed } from '~/components/Ads/ads.utils';
+import { useAdsContext } from '~/components/Ads/AdsProvider';
+import { useBrowsingLevelDebounced } from '~/components/BrowsingLevel/BrowsingLevelProvider';
+import { getIsSafeBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
+import { AdUnitIncontent_1 } from '~/components/Ads/AdUnit';
 
-// don't know if I need memoized
-export const useColumnCount = (width = 0, columnWidth = 0, gutter = 8, maxColumnCount?: number) =>
-  useMemo(
-    () => getColumnCount(width, columnWidth, gutter, maxColumnCount),
-    [width, columnWidth, gutter, maxColumnCount]
-  );
-
-const getColumnCount = (width = 0, columnWidth = 0, gutter = 8, maxColumnCount?: number) => {
-  if (width === 0) return [0, 0];
-  const count =
-    Math.min(Math.floor((width + gutter) / (columnWidth + gutter)), maxColumnCount || Infinity) ||
-    1;
-  const combinedWidth = count * columnWidth + (count - 1) * gutter;
-  return [count, combinedWidth];
-};
-
-export const useMasonryColumns = <TData>(
+export function useMasonryColumns<TData>(
   data: TData[],
   columnWidth: number,
   columnCount: number,
   imageDimensions: MasonryImageDimensionsFn<TData>,
   adjustDimensions?: MasonryAdjustHeightFn<TData>,
-  maxItemHeight?: number
-) =>
-  useMemo(
-    () =>
-      getMasonryColumns(
-        data,
-        columnWidth,
-        columnCount,
-        imageDimensions,
-        adjustDimensions,
-        maxItemHeight
-      ),
-    [data, columnWidth, columnCount, maxItemHeight] // eslint-disable-line
-  );
+  maxItemHeight?: number,
+  withAds?: boolean
+) {
+  const { adsEnabled } = useAdsContext();
+  const browsingLevel = useBrowsingLevelDebounced();
+  const adsReallyAreEnabled = adsEnabled && getIsSafeBrowsingLevel(browsingLevel) && withAds;
+  const createAdFeed = useCreateAdFeed();
+
+  return useMemo(() => {
+    if (columnCount === 0) return [];
+
+    const feed = createAdFeed({
+      data,
+      columnCount,
+      options: adsReallyAreEnabled
+        ? [
+            {
+              width: 300,
+              height: 250,
+              AdUnit: AdUnitIncontent_1,
+            },
+          ]
+        : undefined,
+    });
+
+    const columnHeights: number[] = Array(columnCount).fill(0);
+    const columnItems: ColumnItem<AdFeedItem<TData>>[][] = Array(columnCount).fill([]);
+
+    for (const item of feed) {
+      let height = 0;
+      if (item.type === 'ad') {
+        height = item.data.height;
+      } else {
+        const { width: originalWidth, height: originalHeight } = imageDimensions(item.data);
+
+        const ratioHeight = (originalHeight / originalWidth) * columnWidth;
+        const adjustedHeight =
+          adjustDimensions?.(
+            {
+              imageRatio: columnWidth / ratioHeight,
+              width: columnWidth,
+              height: ratioHeight,
+            },
+            item.data
+          ) ?? ratioHeight;
+        height = Math.floor(
+          maxItemHeight ? Math.min(adjustedHeight, maxItemHeight) : adjustedHeight
+        );
+      }
+
+      // look for the shortest column on each iteration
+      let shortest = 0;
+      for (let j = 1; j < columnCount; ++j) {
+        if (columnHeights[j] < columnHeights[shortest]) {
+          shortest = j;
+        }
+      }
+      columnHeights[shortest] += height;
+      columnItems[shortest] = [...columnItems[shortest], { height, data: item }];
+    }
+
+    return columnItems;
+  }, [data, columnWidth, columnCount, maxItemHeight, adsReallyAreEnabled]);
+}
 
 type ColumnItem<TData> = {
   height: number;
   data: TData;
 };
 
-const getMasonryColumns = <TData>(
-  data: TData[],
-  columnWidth: number,
-  columnCount: number,
-  imageDimensions: MasonryImageDimensionsFn<TData>,
-  adjustHeight?: MasonryAdjustHeightFn<TData>,
-  maxItemHeight?: number
-): ColumnItem<TData>[][] => {
-  // Track the height of each column.
-  // Layout algorithm below always inserts into the shortest column.
-  if (columnCount === 0) return [];
+// const getMasonryColumns = <TData>(
+//   data: TData[],
+//   columnWidth: number,
+//   columnCount: number,
+//   imageDimensions: MasonryImageDimensionsFn<TData>,
+//   adjustHeight?: MasonryAdjustHeightFn<TData>,
+//   maxItemHeight?: number,
+//   showAds?: boolean
+// ): ColumnItem<AdFeedItem<TData>>[][] => {
+//   // Track the height of each column.
+//   // Layout algorithm below always inserts into the shortest column.
+//   if (columnCount === 0) return [];
 
-  const columnHeights: number[] = Array(columnCount).fill(0);
-  const columnItems: ColumnItem<TData>[][] = Array(columnCount).fill([]);
+//   const feed = createAdFeed({
+//     data,
+//     columnCount,
+//     keys: showAds ? ['300x250:Dynamic_Feeds', '300x600:Dynamic_Feeds'] : undefined,
+//   });
 
-  for (const item of data) {
-    const { width: originalWidth, height: originalHeight } = imageDimensions(item);
+//   const columnHeights: number[] = Array(columnCount).fill(0);
+//   const columnItems: ColumnItem<AdFeedItem<TData>>[][] = Array(columnCount).fill([]);
 
-    const ratioHeight = (originalHeight / originalWidth) * columnWidth;
-    const adjustedHeight =
-      adjustHeight?.(
-        {
-          imageRatio: columnWidth / ratioHeight,
-          width: columnWidth,
-          height: ratioHeight,
-        },
-        item
-      ) ?? ratioHeight;
-    const height = maxItemHeight ? Math.min(adjustedHeight, maxItemHeight) : adjustedHeight;
+//   for (const item of feed) {
+//     let height = 0;
+//     if (item.type === 'ad') {
+//       height = item.data.height + 20;
+//     } else {
+//       const { width: originalWidth, height: originalHeight } = imageDimensions(item.data);
 
-    // look for the shortest column on each iteration
-    let shortest = 0;
-    for (let j = 1; j < columnCount; ++j) {
-      if (columnHeights[j] < columnHeights[shortest]) {
-        shortest = j;
-      }
-    }
-    columnHeights[shortest] += height;
-    columnItems[shortest] = [...columnItems[shortest], { height, data: item }];
-  }
+//       const ratioHeight = (originalHeight / originalWidth) * columnWidth;
+//       const adjustedHeight =
+//         adjustHeight?.(
+//           {
+//             imageRatio: columnWidth / ratioHeight,
+//             width: columnWidth,
+//             height: ratioHeight,
+//           },
+//           item.data
+//         ) ?? ratioHeight;
+//       height = maxItemHeight ? Math.min(adjustedHeight, maxItemHeight) : adjustedHeight;
+//     }
 
-  return columnItems;
-};
+//     // look for the shortest column on each iteration
+//     let shortest = 0;
+//     for (let j = 1; j < columnCount; ++j) {
+//       if (columnHeights[j] < columnHeights[shortest]) {
+//         shortest = j;
+//       }
+//     }
+//     columnHeights[shortest] += height;
+//     columnItems[shortest] = [...columnItems[shortest], { height, data: item }];
+//   }
 
-export const useContainerWidth = (elementRef: React.MutableRefObject<HTMLElement | null>) => {
-  const { current: container } = elementRef;
-  const [windowWidth, setWindowWidth] = useState(0);
-  const [width, setWidth] = useState(0);
-
-  const debouncer = useDebouncer(300);
-
-  useWindowEvent('resize', () =>
-    debouncer(() => {
-      setWindowWidth(window.innerWidth);
-    })
-  );
-
-  // using the extra `container?.offsetWidth` dependency because of rapid changes in offsetWidth value on initialize
-  useEffect(() => {
-    const { current } = elementRef;
-    if (!current?.offsetWidth) return;
-    setWidth(current.offsetWidth);
-  }, [windowWidth, container?.offsetWidth, elementRef]);
-
-  return width;
-};
+//   return columnItems;
+// };

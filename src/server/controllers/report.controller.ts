@@ -1,26 +1,39 @@
-import { ReportStatus } from '@prisma/client';
 import { TRPCError } from '@trpc/server';
+import dayjs from 'dayjs';
+import { NotificationCategory } from '~/server/common/enums';
 
 import { Context } from '~/server/createContext';
 import {
   BulkUpdateReportStatusInput,
+  CreateEntityAppealInput,
   CreateReportInput,
+  GetRecentAppealsInput,
   GetReportsInput,
+  ResolveAppealInput,
   SetReportStatusInput,
   UpdateReportSchema,
 } from '~/server/schema/report.schema';
 import { simpleUserSelect } from '~/server/selectors/user.selector';
+import { getImageById } from '~/server/services/image.service';
 import { trackModActivity } from '~/server/services/moderator.service';
+import { createNotification } from '~/server/services/notification.service';
 import {
-  bulkUpdateReports,
+  bulkSetReportStatus,
+  createEntityAppeal,
   createReport,
-  getReportById,
+  getAppealCount,
+  getRecentAppealsByUserId,
   getReports,
+  resolveEntityAppeal,
   updateReportById,
-  getReportByIds,
 } from '~/server/services/report.service';
-import { throwDbError, throwNotFoundError } from '~/server/utils/errorHandling';
-import { reportAcceptedReward } from '~/server/rewards';
+import {
+  throwAuthorizationError,
+  throwDbCustomError,
+  throwDbError,
+  throwNotFoundError,
+} from '~/server/utils/errorHandling';
+import { AppealStatus, EntityType } from '~/shared/utils/prisma/enums';
 
 export async function createReportHandler({
   input,
@@ -61,48 +74,7 @@ export async function setReportStatusHandler({
 }) {
   try {
     const { id, status } = input;
-    const report = await getReportById({
-      id,
-      select: { alsoReportedBy: true, previouslyReviewedCount: true, reason: true },
-    });
-    if (!report) throw throwNotFoundError(`No report with id ${id}`);
-
-    const updatedReport = await updateReportById({
-      id,
-      data: {
-        status,
-        statusSetAt: new Date(),
-        statusSetBy: ctx.user.id,
-        previouslyReviewedCount:
-          status === ReportStatus.Actioned ? report.alsoReportedBy.length + 1 : undefined,
-      },
-    });
-
-    await trackModActivity(ctx.user.id, {
-      entityType: 'report',
-      entityId: id,
-      activity: 'review',
-    });
-
-    // If we're actioning a report, we need to reward all users who reported it
-    if (input.status === ReportStatus.Actioned) {
-      const userIds = [updatedReport.userId, ...updatedReport.alsoReportedBy];
-      await Promise.all(
-        userIds.map((userId) =>
-          reportAcceptedReward.apply({ userId, reportId: updatedReport.id }, ctx.ip)
-        )
-      );
-    }
-
-    // await ctx.track.report({
-    //   type: 'StatusChange',
-    //   entityId: input.id,
-    //   entityType: report.type,
-    //   reason: report.reason,
-    //   status,
-    // });
-
-    return updatedReport;
+    await bulkSetReportStatus({ ids: [id], status, userId: ctx.user.id, ip: ctx.ip });
   } catch (e) {
     if (e instanceof TRPCError) throw e;
     else throw throwDbError(e);
@@ -118,48 +90,7 @@ export async function bulkUpdateReportStatusHandler({
 }) {
   try {
     const { ids, status } = input;
-    const { count } = await bulkUpdateReports({
-      ids,
-      data: {
-        status,
-        statusSetAt: new Date(),
-        statusSetBy: ctx.user.id,
-        previouslyReviewedCount: status === ReportStatus.Actioned ? { increment: 1 } : undefined,
-      },
-    });
-
-    // Track mod activity in the background
-    Promise.all(
-      ids.map((id) =>
-        trackModActivity(ctx.user.id, {
-          entityType: 'report',
-          entityId: id,
-          activity: 'review',
-        })
-      )
-    );
-
-    // If we're actioning reports, we need to reward the users who reported them
-    if (status === ReportStatus.Actioned) {
-      const actionedReports = await getReportByIds({
-        ids,
-        select: { id: true, userId: true, alsoReportedBy: true },
-      });
-      const prepReports = actionedReports.map((report) => ({
-        id: report.id,
-        userIds: [report.userId, ...report.alsoReportedBy],
-      }));
-
-      for (const report of prepReports) {
-        await Promise.all(
-          report.userIds.map((userId) =>
-            reportAcceptedReward.apply({ userId, reportId: report.id }, ctx.ip)
-          )
-        );
-      }
-    }
-
-    return count;
+    await bulkSetReportStatus({ ids, status, userId: ctx.user.id });
   } catch (e) {
     if (e instanceof TRPCError) throw e;
     else throw throwDbError(e);
@@ -167,6 +98,7 @@ export async function bulkUpdateReportStatusHandler({
 }
 
 export type GetReportsProps = AsyncReturnType<typeof getReportsHandler>;
+
 export async function getReportsHandler({ input }: { input: GetReportsInput }) {
   try {
     const { items, ...result } = await getReports({
@@ -299,6 +231,13 @@ export async function getReportsHandler({ input }: { input: GetReportsInput }) {
             },
           },
         },
+        chat: {
+          select: {
+            chat: {
+              select: { id: true },
+            },
+          },
+        },
       },
     });
     return {
@@ -315,6 +254,7 @@ export async function getReportsHandler({ input }: { input: GetReportsInput }) {
           collection: item.collection?.collection,
           bounty: item.bounty?.bounty,
           bountyEntry: item.bountyEntry?.bountyEntry,
+          chat: item.chat?.chat,
         };
       }),
       ...result,
@@ -336,3 +276,80 @@ export const updateReportHandler = async ({ input }: { input: UpdateReportSchema
     else throw throwDbError(error);
   }
 };
+
+export async function createEntityAppealHandler({
+  input,
+  ctx,
+}: {
+  input: CreateEntityAppealInput;
+  ctx: DeepNonNullable<Context>;
+}) {
+  const { id: userId } = ctx.user;
+  try {
+    // Check ownership before creating the appeal
+    switch (input.entityType) {
+      case EntityType.Image:
+        const image = await getImageById({ id: input.entityId });
+        if (!image) throw throwNotFoundError('Image not found');
+        if (image.userId !== userId) throw throwAuthorizationError();
+
+        break;
+      default:
+        throw throwDbCustomError('Entity type not supported for appeals');
+    }
+
+    const appeal = await createEntityAppeal({ ...input, userId });
+
+    return appeal;
+  } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    else throw throwDbError(error);
+  }
+}
+
+export async function getRecentAppealsHandler({
+  input,
+  ctx,
+}: {
+  input: GetRecentAppealsInput;
+  ctx: DeepNonNullable<Context>;
+}) {
+  const sessionUser = ctx.user;
+  try {
+    const userId = input.userId ?? sessionUser.id;
+    const count = await getAppealCount({
+      userId,
+      status: [AppealStatus.Pending, AppealStatus.Rejected],
+      startDate: input.startDate ?? dayjs.utc().subtract(30, 'days').toDate(),
+    });
+
+    return count;
+  } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    else throw throwDbError(error);
+  }
+}
+
+export async function resolveEntityAppealHandler({
+  input,
+  ctx,
+}: {
+  input: ResolveAppealInput;
+  ctx: DeepNonNullable<Context>;
+}) {
+  try {
+    const { id: userId } = ctx.user;
+    const appeals = await resolveEntityAppeal({ ...input, userId });
+
+    await trackModActivity(userId, {
+      entityType: 'image',
+      entityId: input.ids,
+      activity: 'resolveAppeal',
+    });
+
+    return appeals;
+  } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    else throw throwDbError(error);
+  }
+}

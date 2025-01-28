@@ -1,16 +1,16 @@
 import { throwBadRequestError } from '~/server/utils/errorHandling';
 import { ToggleReactionInput, ReactionEntityType } from './../schema/reaction.schema';
 import { dbWrite, dbRead } from '~/server/db/client';
-import { playfab } from '~/server/playfab/client';
 import {
   answerMetrics,
   articleMetrics,
   bountyEntryMetrics,
+  clubPostMetrics,
   imageMetrics,
   postMetrics,
   questionMetrics,
 } from '~/server/metrics';
-import { ReviewReactions } from '@prisma/client';
+import { ReviewReactions } from '~/shared/utils/prisma/enums';
 
 export const toggleReaction = async ({
   entityType,
@@ -30,11 +30,6 @@ export const toggleReaction = async ({
     return 'removed';
   } else {
     await createReaction({ entityType, entityId, userId, reaction });
-    await playfab.trackEvent(userId, {
-      eventName: `user_react_${entityType}`,
-      id: entityId,
-      reaction,
-    });
     return 'created';
   }
 };
@@ -89,6 +84,11 @@ const getReaction = async ({
     case 'bountyEntry':
       return await dbRead.bountyEntryReaction.findFirst({
         where: { userId, reaction, bountyEntryId: entityId },
+        select: { userId: true },
+      });
+    case 'clubPost':
+      return await dbRead.clubPostReaction.findFirst({
+        where: { userId, reaction, clubPostId: entityId },
         select: { userId: true },
       });
     default:
@@ -173,6 +173,16 @@ const deleteReaction = async ({
       });
       await bountyEntryMetrics.queueUpdate(entityId);
       return;
+    case 'clubPost':
+      if (!entityId || !userId || !reaction) {
+        return;
+      }
+
+      await dbWrite.clubPostReaction.deleteMany({
+        where: { userId, reaction, clubPostId: entityId },
+      });
+      await clubPostMetrics.queueUpdate(entityId);
+      return;
     default:
       throw throwBadRequestError();
   }
@@ -227,6 +237,11 @@ const createReaction = async ({
     case 'bountyEntry':
       return await dbWrite.bountyEntryReaction.create({
         data: { ...data, bountyEntryId: entityId },
+        select: { reaction: true },
+      });
+    case 'clubPost':
+      return await dbWrite.clubPostReaction.create({
+        data: { ...data, clubPostId: entityId },
         select: { reaction: true },
       });
     default:

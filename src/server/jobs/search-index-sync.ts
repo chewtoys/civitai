@@ -1,6 +1,5 @@
-import { createJob, UNRUNNABLE_JOB_CRON } from './job';
 import * as searchIndex from '~/server/search-index';
-import { bountiesSearchIndex } from '~/server/search-index';
+import { createJob, JobContext, UNRUNNABLE_JOB_CRON } from './job';
 
 const searchIndexSets = {
   models: searchIndex.modelsSearchIndex,
@@ -9,29 +8,46 @@ const searchIndexSets = {
   images: searchIndex.imagesSearchIndex,
   collections: searchIndex.collectionsSearchIndex,
   bounties: searchIndex.bountiesSearchIndex,
+  imageMetrics: searchIndex.imagesMetricsSearchIndex,
+  imageMetricsUpdateMetrics: searchIndex.imagesMetricsSearchIndexUpdateMetrics,
+  tools: searchIndex.toolsSearchIndex,
+};
+
+type SearchIndexSetKey = keyof typeof searchIndexSets;
+
+const cronTimeMap: Record<SearchIndexSetKey, string> = {
+  models: '*/2 * * * *',
+  users: '*/10 * * * *',
+  articles: '*/5 * * * *',
+  images: '*/20 * * * *',
+  collections: '*/10 * * * *',
+  bounties: '*/5 * * * *',
+  imageMetrics: '*/1 * * * *',
+  imageMetricsUpdateMetrics: '*/1 * * * *',
+  tools: UNRUNNABLE_JOB_CRON,
 };
 
 export const searchIndexJobs = Object.entries(searchIndexSets)
   .map(([name, searchIndexProcessor]) => [
     createJob(
       `search-index-sync-${name}`,
-      `*/5 * * * *`,
-      async () => {
-        const searchIndexSyncTime = await timedExecution(searchIndexProcessor.update);
+      cronTimeMap[name as SearchIndexSetKey],
+      async (e) => {
+        const searchIndexSyncTime = await timedExecution(searchIndexProcessor.update, e);
 
         return {
           [name]: searchIndexSyncTime,
         };
       },
       {
-        lockExpiration: 30 * 60,
+        lockExpiration: 10 * 60,
       }
     ),
     createJob(
       `search-index-sync-${name}-reset`,
       UNRUNNABLE_JOB_CRON,
-      async () => {
-        const searchIndexSyncTime = await timedExecution(searchIndexProcessor.reset);
+      async (e) => {
+        const searchIndexSyncTime = await timedExecution(searchIndexProcessor.reset, e);
         return {
           [`${name}-reset`]: searchIndexSyncTime,
         };
@@ -44,8 +60,8 @@ export const searchIndexJobs = Object.entries(searchIndexSets)
   ])
   .flat();
 
-async function timedExecution<T>(fn: () => Promise<T>) {
+async function timedExecution<T>(fn: (jobContext: JobContext) => Promise<T>, e: JobContext) {
   const start = Date.now();
-  await fn();
+  await fn(e);
   return Date.now() - start;
 }

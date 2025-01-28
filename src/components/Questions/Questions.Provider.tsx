@@ -1,4 +1,4 @@
-import { MetricTimeframe } from '@prisma/client';
+import { MetricTimeframe } from '~/shared/utils/prisma/enums';
 import {
   Popover,
   ActionIcon,
@@ -17,7 +17,7 @@ import {
   Text,
 } from '@mantine/core';
 import { IconCloudOff, IconFilter, IconHeart, IconMessageCircle } from '@tabler/icons-react';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import router, { useRouter } from 'next/router';
 import { SelectMenu } from '~/components/SelectMenu/SelectMenu';
 import { constants } from '~/server/common/constants';
@@ -26,6 +26,7 @@ import { QS } from '~/utils/qs';
 import { slugit, splitUppercase } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
 import { useFiltersContext } from '~/providers/FiltersProvider';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 export function Questions({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
@@ -102,7 +103,7 @@ function QuestionsFilter() {
               checked={status === value}
               onChange={(checked) => setStatus({ status: checked ? value : undefined })}
             >
-              {splitUppercase(value)}
+              <span>{splitUppercase(value)}</span>
             </Chip>
           ))}
         </Stack>
@@ -129,50 +130,48 @@ function QuestionsList() {
           href={`/questions/${question.id}/${slugit(question.title)}`}
           passHref
         >
-          <a>
-            <Paper withBorder p="sm">
-              <Stack spacing="xs">
-                <Title order={3} className={classes.title}>
-                  {question.title}
-                </Title>
-                <Group position="apart" spacing="sm">
-                  <Group spacing={4}>
-                    {question.tags.map((tag, index) => (
-                      <Badge key={index} size="xs">
-                        {tag.name}
-                      </Badge>
-                    ))}
-                  </Group>
-                  <Group spacing={4}>
-                    <Badge
-                      variant={theme.colorScheme === 'dark' ? 'light' : 'filled'}
-                      color={question.rank.heartCount ? 'pink' : 'gray'}
-                      size="xs"
-                      leftSection={
-                        <Center>
-                          <IconHeart size={14} />
-                        </Center>
-                      }
-                    >
-                      {question.rank.heartCount}
+          <Paper withBorder p="sm">
+            <Stack spacing="xs">
+              <Title order={3} className={classes.title}>
+                {question.title}
+              </Title>
+              <Group position="apart" spacing="sm">
+                <Group spacing={4}>
+                  {question.tags.map((tag, index) => (
+                    <Badge key={index} size="xs">
+                      {tag.name}
                     </Badge>
-                    <Badge
-                      variant={theme.colorScheme === 'dark' ? 'light' : 'filled'}
-                      color={question.selectedAnswerId ? 'green' : 'gray'}
-                      size="xs"
-                      leftSection={
-                        <Center>
-                          <IconMessageCircle size={14} />
-                        </Center>
-                      }
-                    >
-                      {question.rank.answerCount}
-                    </Badge>
-                  </Group>
+                  ))}
                 </Group>
-              </Stack>
-            </Paper>
-          </a>
+                <Group spacing={4}>
+                  <Badge
+                    variant={theme.colorScheme === 'dark' ? 'light' : 'filled'}
+                    color={question.rank.heartCount ? 'pink' : 'gray'}
+                    size="xs"
+                    leftSection={
+                      <Center>
+                        <IconHeart size={14} />
+                      </Center>
+                    }
+                  >
+                    {question.rank.heartCount}
+                  </Badge>
+                  <Badge
+                    variant={theme.colorScheme === 'dark' ? 'light' : 'filled'}
+                    color={question.selectedAnswerId ? 'green' : 'gray'}
+                    size="xs"
+                    leftSection={
+                      <Center>
+                        <IconMessageCircle size={14} />
+                      </Center>
+                    }
+                  >
+                    {question.rank.answerCount}
+                  </Badge>
+                </Group>
+              </Group>
+            </Stack>
+          </Paper>
         </Link>
       ))}
       {questions.totalPages > 1 && (
@@ -211,7 +210,7 @@ const useStyles = createStyles((theme) => ({
   title: {
     overflowWrap: 'break-word',
 
-    [`@media(max-width: ${theme.breakpoints.sm}px)`]: {
+    [containerQuery.smallerThan('sm')]: {
       fontSize: 16,
     },
   },

@@ -1,7 +1,7 @@
-import { redis } from '~/server/redis/client';
-import { getHomeBlockData, HomeBlockWithData } from '~/server/services/home-block.service';
-import { HomeBlockType } from '@prisma/client';
+import { redis, REDIS_KEYS } from '~/server/redis/client';
 import { HomeBlockMetaSchema } from '~/server/schema/home-block.schema';
+import { getHomeBlockData, HomeBlockWithData } from '~/server/services/home-block.service';
+import { HomeBlockType } from '~/shared/utils/prisma/enums';
 import { createLogger } from '~/utils/logging';
 
 const CACHE_EXPIRY = {
@@ -9,6 +9,8 @@ const CACHE_EXPIRY = {
   [HomeBlockType.Leaderboard]: 60 * 60, // 1 hr
   [HomeBlockType.Announcement]: 60 * 60, // 1 hr
   [HomeBlockType.Social]: 60 * 3, // 3 min - doesn't actually do anything since this is from metadata
+  [HomeBlockType.Event]: 60 * 3, // 3 min - doesn't actually do anything since this is from metadata
+  [HomeBlockType.CosmeticShop]: 60 * 3, // 3 min
 };
 
 type HomeBlockForCache = {
@@ -26,6 +28,8 @@ function getHomeBlockIdentifier(homeBlock: HomeBlockForCache) {
     case HomeBlockType.Leaderboard:
     case HomeBlockType.Announcement:
       return homeBlock.id;
+    case HomeBlockType.CosmeticShop:
+      return homeBlock.metadata.cosmeticShopSection?.id;
   }
 }
 
@@ -34,12 +38,10 @@ export async function getHomeBlockCached(homeBlock: HomeBlockForCache) {
 
   if (!identifier) return null;
 
-  const redisString = `home-blocks:${homeBlock.type}:${identifier}`;
-  const cachedHomeBlock = await redis.get(redisString);
+  const cacheKey = `${REDIS_KEYS.HOMEBLOCKS.BASE}:${homeBlock.type}:${identifier}` as const;
+  const cachedHomeBlock = await redis.packed.get<HomeBlockWithData>(cacheKey);
 
-  if (cachedHomeBlock) {
-    return JSON.parse(cachedHomeBlock) as HomeBlockWithData;
-  }
+  if (cachedHomeBlock) return cachedHomeBlock;
 
   log(`getHomeBlockCached :: getting home block with identifier ${identifier}`);
 
@@ -52,7 +54,7 @@ export async function getHomeBlockCached(homeBlock: HomeBlockForCache) {
   };
 
   if (homeBlockWithData) {
-    await redis.set(redisString, JSON.stringify(parsedHomeBlock), {
+    await redis.packed.set<HomeBlockWithData>(cacheKey, parsedHomeBlock, {
       EX: CACHE_EXPIRY[homeBlock.type],
     });
 
@@ -63,7 +65,7 @@ export async function getHomeBlockCached(homeBlock: HomeBlockForCache) {
 }
 
 export async function homeBlockCacheBust(type: HomeBlockType, entityId: number) {
-  const redisString = `home-blocks:${type}:${entityId}`;
+  const redisString = `${REDIS_KEYS.HOMEBLOCKS.BASE}:${type}:${entityId}` as const;
   log(`Cache busted: ${redisString}`);
   await redis.del(redisString);
 }

@@ -1,20 +1,18 @@
 import {
   createCustomerHandler,
-  getPlansHandler,
   createSubscriptionSessionHandler,
   createManageSubscriptionSessionHandler,
-  getUserSubscriptionHandler,
   createDonateSessionHandler,
   getBuzzPackagesHandler,
   createBuzzSessionHandler,
   getPaymentIntentHandler,
+  getSetupIntentHandler,
+  createCancelSubscriptionSessionHandler,
 } from './../controllers/stripe.controller';
 import { publicProcedure, router, protectedProcedure } from '~/server/trpc';
 import * as Schema from '../schema/stripe.schema';
 
 export const stripeRouter = router({
-  getPlans: publicProcedure.query(getPlansHandler),
-  getUserSubscription: publicProcedure.query(getUserSubscriptionHandler),
   createCustomer: protectedProcedure
     .input(Schema.createCustomerSchema)
     .mutation(createCustomerHandler),
@@ -23,6 +21,9 @@ export const stripeRouter = router({
     .mutation(createSubscriptionSessionHandler),
   createManageSubscriptionSession: protectedProcedure.mutation(
     createManageSubscriptionSessionHandler
+  ),
+  createCancelSubscriptionSession: protectedProcedure.mutation(
+    createCancelSubscriptionSessionHandler
   ),
   createDonateSession: protectedProcedure
     .input(Schema.createDonateSessionSchema)
@@ -33,5 +34,8 @@ export const stripeRouter = router({
     .mutation(createBuzzSessionHandler),
   getPaymentIntent: protectedProcedure
     .input(Schema.paymentIntentCreationSchema)
-    .query(getPaymentIntentHandler),
+    .mutation(getPaymentIntentHandler),
+  getSetupIntent: protectedProcedure
+    .input(Schema.setupIntentCreateSchema)
+    .query(getSetupIntentHandler),
 });

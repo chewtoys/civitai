@@ -1,3 +1,13 @@
+import { Button, Loader, Text } from '@mantine/core';
+import { MetricTimeframe } from '~/shared/utils/prisma/enums';
+import { IconArrowRight, IconPhoto } from '@tabler/icons-react';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import React, { useMemo } from 'react';
+import { useBrowsingLevelDebounced } from '~/components/BrowsingLevel/BrowsingLevelProvider';
+import { ImageCard } from '~/components/Cards/ImageCard';
+import { useDumbImageFilters, useQueryImages } from '~/components/Image/image.utils';
+import { ImagesProvider } from '~/components/Image/Providers/ImagesProvider';
+import { useInViewDynamic } from '~/components/IntersectionObserver/IntersectionObserverProvider';
 import {
   ProfileSection,
   ProfileSectionNoResults,
@@ -5,30 +15,20 @@ import {
   ProfileSectionProps,
   useProfileSectionStyles,
 } from '~/components/Profile/ProfileSection';
-import { useInView } from 'react-intersection-observer';
-import { IconArrowRight, IconPhoto } from '@tabler/icons-react';
-import React, { useMemo } from 'react';
+import { ShowcaseGrid } from '~/components/Profile/Sections/ShowcaseGrid';
 import { ImageSort } from '~/server/common/enums';
-import { Anchor, Button, Group, Loader, Text } from '@mantine/core';
-import { MetricTimeframe } from '@prisma/client';
-import { useDumbImageFilters, useQueryImages } from '~/components/Image/image.utils';
-import { ImageCard } from '~/components/Cards/ImageCard';
-import Link from 'next/link';
-import { ImagesProvider } from '~/components/Image/Providers/ImagesProvider';
 
 const MAX_IMAGES_DISPLAY = 32; // 2 rows of 7
 
 export const MyImagesSection = ({ user }: ProfileSectionProps) => {
-  const { ref, inView } = useInView({
-    delay: 100,
-    triggerOnce: true,
-  });
+  const [ref, inView] = useInViewDynamic({ id: 'profile-images-section' });
   const { filters } = useDumbImageFilters({
     sort: ImageSort.Newest,
     period: MetricTimeframe.AllTime,
     tags: [],
   });
 
+  const browsingLevel = useBrowsingLevelDebounced();
   const {
     images: _images,
     isLoading,
@@ -37,9 +37,11 @@ export const MyImagesSection = ({ user }: ProfileSectionProps) => {
     {
       ...filters,
       limit: 2 * MAX_IMAGES_DISPLAY,
-      username: user.username,
+      userId: user.id,
       withMeta: false,
       types: undefined,
+      include: ['profilePictures', 'cosmetics'],
+      browsingLevel,
     },
     { keepPreviousData: true, enabled: inView }
   );
@@ -54,50 +56,57 @@ export const MyImagesSection = ({ user }: ProfileSectionProps) => {
 
   const isNullState = !isLoading && !images.length;
 
-  if (isNullState && inView) {
+  if (isNullState) {
     return null;
   }
 
   return (
     <div ref={ref} className={isNullState ? undefined : classes.profileSection}>
-      {isLoading || !inView ? (
-        <ProfileSectionPreview rowCount={2} />
-      ) : (
-        <ProfileSection
-          title="Images"
-          icon={<IconPhoto />}
-          action={
-            !isRefetching && (
-              <Link href={`/user/${user.username}/images?sort=${ImageSort.Newest}`} passHref>
-                <Button
-                  h={34}
-                  component="a"
-                  variant="subtle"
-                  rightIcon={<IconArrowRight size={16} />}
+      {inView &&
+        (isLoading ? (
+          <ProfileSectionPreview rowCount={2} />
+        ) : (
+          <ProfileSection
+            title="Images"
+            icon={<IconPhoto />}
+            action={
+              !isRefetching && (
+                <Link
+                  legacyBehavior
+                  href={`/user/${user.username}/images?sort=${ImageSort.Newest}`}
+                  passHref
                 >
-                  <Text inherit> View all images</Text>
-                </Button>
-              </Link>
-            )
-          }
-        >
-          <div
-            className={cx({
-              [classes.grid]: images.length > 0,
-              [classes.nullState]: !images.length,
-              [classes.loading]: isRefetching,
-            })}
+                  <Button
+                    h={34}
+                    component="a"
+                    variant="subtle"
+                    rightIcon={<IconArrowRight size={16} />}
+                  >
+                    <Text inherit> View all images</Text>
+                  </Button>
+                </Link>
+              )
+            }
           >
-            {!images.length && <ProfileSectionNoResults />}
-            <ImagesProvider images={images}>
-              {images.map((image) => (
-                <ImageCard data={image} key={image.id} />
-              ))}
-            </ImagesProvider>
-            {isRefetching && <Loader className={classes.loader} />}
-          </div>
-        </ProfileSection>
-      )}
+            <ShowcaseGrid
+              itemCount={images.length}
+              rows={2}
+              className={cx({
+                [classes.nullState]: !images.length,
+                [classes.loading]: isRefetching,
+              })}
+            >
+              {!images.length && <ProfileSectionNoResults />}
+
+              <ImagesProvider images={images}>
+                {images.map((image) => (
+                  <ImageCard data={image} key={image.id} />
+                ))}
+              </ImagesProvider>
+              {isRefetching && <Loader className={classes.loader} />}
+            </ShowcaseGrid>
+          </ProfileSection>
+        ))}
     </div>
   );
 };

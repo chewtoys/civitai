@@ -1,27 +1,43 @@
-import { Anchor } from '@mantine/core';
-import { ModelType } from '@prisma/client';
+import { Anchor, Text } from '@mantine/core';
+import { ModelType } from '~/shared/utils/prisma/enums';
 import { IconAlertCircle } from '@tabler/icons-react';
 
 import { AlertWithIcon } from '~/components/AlertWithIcon/AlertWithIcon';
+import { BaseModel } from '~/server/common/constants';
 import { createModelFileDownloadUrl } from '~/server/common/model-helpers';
 
-export const ModelFileAlert = ({ files, modelType, versionId }: ModelFileAlertProps) => {
+export const ModelFileAlert = ({ files, modelType, versionId, baseModel }: ModelFileAlertProps) => {
   let hasNegativeEmbed = false;
   let hasConfig = false;
   let hasVAE = false;
+  let hasPickle = false;
+  let onlyPickle = true;
   const isWildcards = modelType === ModelType.Wildcards;
   const isMotion = modelType === ModelType.MotionModule;
+  const isPony = baseModel === 'Pony';
   if (files) {
     for (const file of files) {
+      if (file.metadata.format === 'PickleTensor') hasPickle = true;
+      if (file.metadata.format !== 'PickleTensor' && file.type === 'Model') onlyPickle = false;
       if (modelType === ModelType.TextualInversion && file.type === 'Negative')
         hasNegativeEmbed = true;
       else if (file.type === 'Config') hasConfig = true;
       else if (modelType === ModelType.Checkpoint && file.type === 'VAE') hasVAE = true;
     }
   }
+  if (!hasPickle) onlyPickle = false;
 
   return (
     <>
+      {onlyPickle && (
+        <AlertWithIcon icon={<IconAlertCircle />} iconColor="yellow" color="yellow">
+          <Text>
+            {modelType === 'TextualInversion' || modelType === 'Hypernetwork'
+              ? "This asset is only available as a PickleTensor which is an insecure format. We've taken precautions to ensure the safety of these files but please be aware that some may harbor malicious code."
+              : 'This asset is only available as a PickleTensor which is a deprecated and insecure format. We caution against using this asset until it can be converted to the modern SafeTensor format.'}
+          </Text>
+        </AlertWithIcon>
+      )}
       {isWildcards && (
         <AlertWithIcon icon={<IconAlertCircle />}>
           This is a Wildcard collection, it requires an{' '}
@@ -99,7 +115,8 @@ export const ModelFileAlert = ({ files, modelType, versionId }: ModelFileAlertPr
 };
 
 type ModelFileAlertProps = {
-  files: { type: string }[];
+  files: { type: string; metadata: { format?: ModelFileFormat } }[];
+  baseModel: BaseModel;
   modelType: ModelType;
   versionId: number;
 };

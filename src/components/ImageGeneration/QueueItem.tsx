@@ -1,264 +1,381 @@
 import {
   ActionIcon,
+  Alert,
   Badge,
-  Button,
   Card,
-  Group,
-  HoverCard,
-  Stack,
+  createStyles,
+  Loader,
+  RingProgress,
+  RingProgressProps,
   Text,
-  ThemeIcon,
-  MantineColor,
   Tooltip,
   TooltipProps,
-  createStyles,
 } from '@mantine/core';
-import { useLocalStorage } from '@mantine/hooks';
-import { openConfirmModal } from '@mantine/modals';
-import { NextLink } from '@mantine/next';
-import { IconBolt, IconPhoto, IconPlayerPlayFilled, IconTrash, IconX } from '@tabler/icons-react';
+import { useClipboard } from '@mantine/hooks';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import {
+  IconAlertTriangleFilled,
+  IconArrowsShuffle,
+  IconBan,
+  IconCheck,
+  IconInfoHexagon,
+  IconTrash,
+} from '@tabler/icons-react';
 
+import { Currency } from '~/shared/utils/prisma/enums';
+import dayjs from 'dayjs';
+import { useEffect, useState } from 'react';
 import { Collection } from '~/components/Collection/Collection';
 import { ContentClamp } from '~/components/ContentClamp/ContentClamp';
-import { openBoostModal } from '~/components/ImageGeneration/BoostModal';
+import { CurrencyBadge } from '~/components/Currency/CurrencyBadge';
 import { GeneratedImage } from '~/components/ImageGeneration/GeneratedImage';
 import { GenerationDetails } from '~/components/ImageGeneration/GenerationDetails';
-import { useDeleteGenerationRequest } from '~/components/ImageGeneration/utils/generationRequestHooks';
+import {
+  useGenerationStatus,
+  useUnstableResources,
+} from '~/components/ImageGeneration/GenerationForm/generation.utils';
+import { GenerationStatusBadge } from '~/components/ImageGeneration/GenerationStatusBadge';
+import {
+  useCancelTextToImageRequest,
+  useDeleteTextToImageRequest,
+} from '~/components/ImageGeneration/utils/generationRequestHooks';
 import { constants } from '~/server/common/constants';
-import { Generation, GenerationRequestStatus } from '~/server/services/generation/generation.types';
+
 import { generationPanel, generationStore } from '~/store/generation.store';
 import { formatDateMin } from '~/utils/date-helpers';
-import { FeedItem } from './FeedItem';
+import { ButtonTooltip } from '~/components/CivitaiWrapped/ButtonTooltip';
+import { PopConfirm } from '~/components/PopConfirm/PopConfirm';
+import {
+  NormalizedGeneratedImageResponse,
+  NormalizedGeneratedImageStep,
+} from '~/server/services/orchestrator';
+import { TimeSpan, WorkflowStatus } from '@civitai/client';
+import { orchestratorPendingStatuses } from '~/shared/constants/generation.constants';
+import { trpc } from '~/utils/trpc';
+import { GenerationCostPopover } from '~/components/ImageGeneration/GenerationForm/GenerationCostPopover';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import { useInViewDynamic } from '~/components/IntersectionObserver/IntersectionObserverProvider';
+import { TwCard } from '~/components/TwCard/TwCard';
+import { GenerationResource } from '~/server/services/generation/generation.service';
 
-const tooltipProps: Omit<TooltipProps, 'children' | 'label'> = {
-  withinPortal: true,
-  withArrow: true,
-  color: 'dark',
-  zIndex: constants.imageGeneration.drawerZIndex + 1,
-};
+const PENDING_PROCESSING_STATUSES: WorkflowStatus[] = [
+  ...orchestratorPendingStatuses,
+  'processing',
+];
+const LONG_DELAY_TIME = 5; // minutes
+const EXPIRY_TIME = 10; // minutes
+const delayTimeouts = new Map<string, NodeJS.Timeout>();
 
-const statusColors: Record<GenerationRequestStatus, MantineColor> = {
-  [GenerationRequestStatus.Pending]: 'gray',
-  [GenerationRequestStatus.Cancelled]: 'gray',
-  [GenerationRequestStatus.Processing]: 'yellow',
-  [GenerationRequestStatus.Succeeded]: 'green',
-  [GenerationRequestStatus.Error]: 'red',
-};
+export function QueueItem({
+  request,
+  step,
+  id,
+  filter,
+}: {
+  request: NormalizedGeneratedImageResponse;
+  step: NormalizedGeneratedImageStep;
+  id: string;
+  filter: { marker?: string } | undefined;
+}) {
+  const { classes, cx } = useStyle();
+  const features = useFeatureFlags();
+  const [ref, inView] = useInViewDynamic({ id });
 
-// export function QueueItem({ data: request, index }: { data: Generation.Request; index: number }) {
-export function QueueItem({ request }: Props) {
-  const [showBoost] = useLocalStorage({ key: 'show-boost-modal', defaultValue: false });
-  const { classes } = useStyle();
-  const status = request.status ?? GenerationRequestStatus.Pending;
-  const pendingProcessing =
-    status === GenerationRequestStatus.Pending || status === GenerationRequestStatus.Processing;
-  const failed = status === GenerationRequestStatus.Error;
+  const generationStatus = useGenerationStatus();
+  const { unstableResources } = useUnstableResources();
 
-  const verbage = pendingProcessing
-    ? {
-        modal: {
-          title: 'Cancel Request',
-          children: `Are you sure you want to cancel this request?`,
-          labels: { confirm: 'Delete', cancel: "No, don't cancel it" },
-        },
-        tooltip: 'Cancel',
-      }
-    : {
-        modal: {
-          title: 'Delete Creation',
-          children: `Are you sure you want to delete this creation?`,
-          labels: { confirm: 'Delete', cancel: "No, don't delete it" },
-        },
-        tooltip: 'Delete',
-      };
+  const { copied, copy } = useClipboard();
 
-  const deleteMutation = useDeleteGenerationRequest();
-  const handleDeleteQueueItem = () => {
-    openConfirmModal({
-      ...verbage.modal,
-      confirmProps: { color: 'red' },
-      zIndex: constants.imageGeneration.drawerZIndex + 1,
-      onConfirm: () => {
-        deleteMutation.mutate({ id: request.id });
-      },
+  const [showDelayedMessage, setShowDelayedMessage] = useState(false);
+  const { status } = request;
+  const { params, resources = [] } = step;
+
+  let { images } = step;
+  const failureReason = images.find((x) => x.status === 'failed' && x.reason)?.reason;
+
+  if (filter && filter.marker) {
+    images = images.filter((image) => {
+      const isFavorite = step.metadata?.images?.[image.id]?.favorite === true;
+      const feedback = step.metadata?.images?.[image.id]?.feedback;
+
+      if (filter.marker === 'favorited') return isFavorite;
+      else if (filter.marker === 'liked' || filter.marker === 'disliked')
+        return feedback === filter.marker;
     });
+  }
+
+  const cost = request.totalCost;
+  const processing = status === 'processing';
+  const pending = orchestratorPendingStatuses.includes(status);
+
+  const cancellable = PENDING_PROCESSING_STATUSES.includes(status);
+
+  useEffect(() => {
+    if (!cancellable) return;
+
+    const id = request.id.toString();
+
+    function removeTimeout(id: string) {
+      const timeout = delayTimeouts.get(id);
+      if (timeout) {
+        clearTimeout(timeout);
+        delayTimeouts.delete(id);
+      }
+    }
+
+    removeTimeout(id);
+    delayTimeouts.set(
+      id,
+      setTimeout(() => {
+        setShowDelayedMessage(true);
+        delayTimeouts.delete(id);
+      }, LONG_DELAY_TIME * 60 * 1000)
+    );
+    return () => {
+      removeTimeout(id);
+    };
+  }, [request.id, request.createdAt, cancellable]);
+
+  const refundTime = dayjs(request.createdAt)
+    .add(step.timeout ? new TimeSpan(step.timeout).minutes : EXPIRY_TIME, 'minute')
+    .toDate();
+
+  const handleCopy = () => {
+    copy(images.map((x) => x.jobId).join('\n'));
   };
 
   const handleGenerate = () => {
-    const { resources, params } = request;
     generationStore.setData({
-      type: 'remix',
-      data: { resources, params: { ...params, seed: undefined } },
+      resources: step.resources ?? [],
+      params: { ...(step.params as any), seed: undefined },
+      remixOfId: step.metadata?.remixOfId,
+      type: images[0].type, // TODO - type based off type of media
+      workflow: step.params.workflow,
+      sourceImage: (step.params as any).sourceImage,
+      engine: (step.params as any).engine,
     });
   };
 
-  const { prompt, ...details } = request.params;
+  const { prompt, ...details } = params;
 
-  // const boost = (request: Generation.Request) => {
-  //   console.log('boost it', request);
-  // };
+  const hasUnstableResources = resources.some((x) => unstableResources.includes(x.id));
+  const overwriteStatusLabel =
+    hasUnstableResources && status === 'failed'
+      ? `${status} - Potentially caused by unstable resources`
+      : status === 'failed'
+      ? `${status} - Generations can error for any number of reasons, try regenerating or swapping what models/additional resources you're using.`
+      : status;
 
-  // TODO - enable this after boosting is ready
-  // const handleBoostClick = () => {
-  //   if (showBoost) openBoostModal({ request, cb: boost });
-  //   else boost(request);
-  // };
+  const actualCost = cost;
+
+  const completedCount = images.filter((x) => x.status === 'succeeded').length;
+  const processingCount = images.filter((x) => x.status === 'processing').length;
+
+  const canRemix = step.params.workflow !== 'img2img-upscale';
+
+  const { data: workflowDefinitions } = trpc.generation.getWorkflowDefinitions.useQuery();
+  const workflowDefinition = workflowDefinitions?.find((x) => x.key === params.workflow);
+
+  const engine =
+    step.metadata.params && 'engine' in step.metadata.params
+      ? (step.metadata.params.engine as string)
+      : undefined;
+
+  const queuePosition = images[0]?.queuePosition;
 
   return (
-    <Card withBorder px="xs">
-      <Card.Section py={4} inheritPadding withBorder>
-        <Group position="apart">
-          <Group spacing={8}>
-            {!!request.images?.length && (
-              <Tooltip label={status} withArrow color="dark">
-                <ThemeIcon
-                  variant={pendingProcessing ? 'filled' : 'light'}
-                  w="auto"
-                  h="auto"
-                  size="sm"
-                  color={statusColors[status]}
-                  px={4}
-                  py={2}
-                  sx={{ cursor: 'default' }}
-                >
-                  <Group spacing={4}>
-                    <IconPhoto size={16} />
-                    <Text size="sm" inline weight={500}>
-                      {request.images.length}
-                    </Text>
-                  </Group>
-                </ThemeIcon>
-              </Tooltip>
-            )}
-            {pendingProcessing && request.queuePosition && (
-              <Button.Group>
-                {request.queuePosition && (
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    color="gray"
-                    sx={{ pointerEvents: 'none' }}
-                    compact
+    <Card ref={ref} withBorder px="xs" id={id}>
+      {inView && (
+        <Card.Section py={4} inheritPadding withBorder>
+          <div className="flex justify-between">
+            <div className="flex flex-wrap items-center gap-1">
+              {!!images.length && (
+                <GenerationStatusBadge
+                  status={request.status}
+                  complete={completedCount}
+                  processing={processingCount}
+                  quantity={images.length}
+                  tooltipLabel={overwriteStatusLabel}
+                  progress
+                />
+              )}
+
+              <Text size="xs" color="dimmed">
+                {formatDateMin(request.createdAt)}
+              </Text>
+              {!!actualCost &&
+                dayjs(request.createdAt).toDate() >=
+                  constants.buzz.generationBuzzChargingStartDate && (
+                  <GenerationCostPopover
+                    workflowCost={request.cost ?? {}}
+                    disabled={!features.creatorComp}
+                    readOnly
                   >
-                    {request.queuePosition.precedingJobs}/{request.queuePosition.jobs}
-                  </Button>
+                    {/* Wrapped in div for the popover to work properly */}
+                    <div className="cursor-pointer">
+                      <CurrencyBadge unitAmount={actualCost} currency={Currency.BUZZ} size="xs" />
+                    </div>
+                  </GenerationCostPopover>
                 )}
-                <HoverCard withArrow position="top" withinPortal zIndex={400}>
-                  <HoverCard.Target>
-                    <Button
-                      size="xs"
-                      rightIcon={showBoost ? <IconBolt size={16} /> : undefined}
-                      compact
-                      // onClick={handleBoostClick}
-                    >
-                      Boost
-                    </Button>
-                  </HoverCard.Target>
-                  <HoverCard.Dropdown title="Coming soon" maw={300}>
-                    <Stack spacing={0}>
-                      <Text weight={500}>Coming soon!</Text>
-                      <Text size="xs">
-                        Want to run this request faster? Boost it to the front of the queue.
-                      </Text>
-                    </Stack>
-                  </HoverCard.Dropdown>
-                </HoverCard>
-              </Button.Group>
-            )}
-            <Text size="xs" color="dimmed">
-              {formatDateMin(request.createdAt)}
-            </Text>
-          </Group>
-          <Group spacing="xs">
-            <Tooltip {...tooltipProps} label="Generate">
-              <ActionIcon size="md" p={4} variant="light" radius={0} onClick={handleGenerate}>
-                <IconPlayerPlayFilled />
-              </ActionIcon>
-            </Tooltip>
-            <Tooltip {...tooltipProps} label={verbage.tooltip}>
-              <ActionIcon
-                size="md"
-                onClick={handleDeleteQueueItem}
-                disabled={deleteMutation.isLoading}
-              >
-                {pendingProcessing ? <IconX size={20} /> : <IconTrash size={20} />}
-              </ActionIcon>
-            </Tooltip>
-          </Group>
-        </Group>
-      </Card.Section>
-      <Stack py="xs" spacing={8} className={classes.container}>
-        <ContentClamp maxHeight={36} labelSize="xs">
-          <Text lh={1.3} sx={{ wordBreak: 'break-all' }}>
-            {prompt}
-          </Text>
-        </ContentClamp>
-        <Collection
-          items={request.resources}
-          limit={3}
-          renderItem={(resource: Generation.Resource) => (
-            <Badge
-              size="sm"
-              sx={{ maxWidth: 200, cursor: 'pointer' }}
-              component={NextLink}
-              href={`/models/${resource.modelId}?modelVersionId=${resource.id}`}
-              onClick={() => generationPanel.close()}
-            >
-              {resource.modelName} - {resource.name}
-            </Badge>
-          )}
-          grouped
-        />
-        {!failed && !!request.images?.length && (
-          <div className={classes.grid}>
-            {request.images.map((image) => (
-              <GeneratedImage key={image.id} image={image} request={request} />
-            ))}
+            </div>
+            <div className="flex gap-1">
+              <ButtonTooltip {...tooltipProps} label="Copy Job IDs">
+                <ActionIcon size="md" p={4} radius={0} onClick={handleCopy}>
+                  {copied ? <IconCheck /> : <IconInfoHexagon />}
+                </ActionIcon>
+              </ButtonTooltip>
+              {generationStatus.available && canRemix && (
+                <ButtonTooltip {...tooltipProps} label="Remix">
+                  <ActionIcon size="md" p={4} radius={0} onClick={handleGenerate}>
+                    <IconArrowsShuffle />
+                  </ActionIcon>
+                </ButtonTooltip>
+              )}
+              <CancelOrDeleteWorkflow workflowId={request.id} cancellable={cancellable} />
+            </div>
           </div>
-        )}
-      </Stack>
-      <Card.Section
-        withBorder
-        sx={(theme) => ({
-          marginLeft: -theme.spacing.xs,
-          marginRight: -theme.spacing.xs,
-        })}
-      >
-        <GenerationDetails
-          label="Additional Details"
-          params={details}
-          labelWidth={150}
-          paperProps={{ radius: 0, sx: { borderWidth: '1px 0 0 0' } }}
-        />
-      </Card.Section>
-      {/* <Card.Section py="xs" inheritPadding>
-        <Group position="apart" spacing={8}>
-          <Text color="dimmed" size="xs">
-            Fulfillment by {item.provider.name}
-          </Text>
-          <Text color="dimmed" size="xs">
-            Started <DaysFromNow date={item.createdAt} />
-          </Text>
-        </Group>
-      </Card.Section> */}
+        </Card.Section>
+      )}
+
+      {inView && (
+        <>
+          <div className="flex flex-col gap-3 py-3 @container">
+            {showDelayedMessage && cancellable && request.steps[0]?.$type !== 'videoGen' && (
+              <Alert color="yellow" p={0}>
+                <div className="flex items-center gap-2 px-2 py-1">
+                  <Text size="xs" color="yellow" lh={1}>
+                    <IconAlertTriangleFilled size={20} />
+                  </Text>
+                  <Text size="xs" lh={1.2} color="yellow">
+                    <Text weight={500} component="span">
+                      This is taking longer than usual.
+                    </Text>
+                    {` Don't want to wait? Cancel this job to get refunded for any undelivered images. If we aren't done by ${formatDateMin(
+                      refundTime
+                    )} we'll refund you automatically.`}
+                  </Text>
+                </div>
+              </Alert>
+            )}
+
+            <ContentClamp maxHeight={36} labelSize="xs">
+              <Text lh={1.3} sx={{ wordBreak: 'break-all' }}>
+                {prompt}
+              </Text>
+            </ContentClamp>
+
+            <div className="-my-2">
+              {workflowDefinition && (
+                <Badge radius="sm" color="violet" size="sm">
+                  {workflowDefinition.label}
+                </Badge>
+              )}
+              {engine && (
+                <Badge radius="sm" color="violet" size="sm">
+                  {engine}
+                </Badge>
+              )}
+            </div>
+            <Collection items={resources} limit={3} renderItem={ResourceBadge} grouped />
+            {failureReason && <Alert color="red">{failureReason}</Alert>}
+
+            <div
+              className={cx(classes.grid, {
+                [classes.asSidebar]: !features.largerGenerationImages,
+              })}
+            >
+              {images.map((image) => (
+                <GeneratedImage
+                  key={`${image.id}_${image.jobId}`}
+                  image={image}
+                  request={request}
+                  step={step}
+                />
+              ))}
+
+              {(pending || processing) && (
+                <TwCard
+                  className="items-center justify-center border"
+                  style={{
+                    aspectRatio: images[0].aspectRatio ?? images[0].width / images[0].height,
+                  }}
+                >
+                  {processing && (
+                    <>
+                      {images[0].type === 'video' &&
+                      images[0].progress &&
+                      images[0].progress < 1 ? (
+                        <ProgressIndicator progress={images[0].progress} />
+                      ) : (
+                        <>
+                          <Loader size={24} />
+                          <Text color="dimmed" size="xs" align="center">
+                            Generating
+                          </Text>
+                        </>
+                      )}
+                    </>
+                  )}
+                  {pending &&
+                    (queuePosition ? (
+                      <>
+                        {queuePosition.support === 'unavailable' && (
+                          <Text color="dimmed" size="xs" align="center">
+                            Currently unavailable
+                          </Text>
+                        )}
+                        {!!queuePosition.precedingJobs && (
+                          <Text color="dimmed" size="xs" align="center">
+                            Your position in queue: {queuePosition.precedingJobs}
+                          </Text>
+                        )}
+                        {queuePosition.startAt && (
+                          <Text size="xs" color="dimmed">
+                            Estimated start time: {formatDateMin(new Date(queuePosition.startAt))}
+                          </Text>
+                        )}
+                      </>
+                    ) : (
+                      <Text color="dimmed" size="xs" align="center">
+                        Pending
+                      </Text>
+                    ))}
+                </TwCard>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {inView && (
+        <Card.Section
+          withBorder
+          sx={(theme) => ({
+            marginLeft: -theme.spacing.xs,
+            marginRight: -theme.spacing.xs,
+          })}
+        >
+          <GenerationDetails
+            label="Additional Details"
+            params={details}
+            labelWidth={150}
+            paperProps={{ radius: 0, sx: { borderWidth: '1px 0 0 0' } }}
+          />
+        </Card.Section>
+      )}
     </Card>
   );
 }
 
-type Props = {
-  request: Generation.Request;
-  // id: number;
-};
-
 const useStyle = createStyles((theme) => ({
+  stopped: {
+    backgroundColor: theme.colorScheme === 'dark' ? theme.colors.dark[7] : theme.colors.gray[1],
+  },
   grid: {
     display: 'grid',
     gap: theme.spacing.xs,
-    gridTemplateColumns: 'repeat(2, 1fr)', // default for larger screens, max 6 columns
+    gridTemplateColumns: 'repeat(1, 1fr)', // default for larger screens, max 6 columns
 
-    // [`@media (max-width: ${theme.breakpoints.xl}px)`]: {
-    //   gridTemplateColumns: 'repeat(4, 1fr)', // 4 columns for screens smaller than xl
-    // },
     [`@container (min-width: 530px)`]: {
       gridTemplateColumns: 'repeat(3, 1fr)', // 3 columns for screens smaller than md
     },
@@ -272,7 +389,100 @@ const useStyle = createStyles((theme) => ({
   asSidebar: {
     gridTemplateColumns: 'repeat(2, 1fr)',
   },
-  container: {
-    containerType: 'inline-size',
-  },
 }));
+
+const ResourceBadge = (props: GenerationResource) => {
+  const { unstableResources } = useUnstableResources();
+
+  const { model, id, name } = props;
+  const unstable = unstableResources?.includes(id);
+
+  const badge = (
+    <Badge
+      size="sm"
+      color={unstable ? 'yellow' : undefined}
+      sx={{ maxWidth: 200, cursor: 'pointer' }}
+      component={Link}
+      href={`/models/${model.id}?modelVersionId=${id}`}
+      onClick={() => generationPanel.close()}
+    >
+      {model.name} - {name}
+    </Badge>
+  );
+
+  return unstable ? <Tooltip label="Unstable resource">{badge}</Tooltip> : badge;
+};
+
+const ProgressIndicator = ({
+  progress,
+  ...ringProgressProps
+}: Omit<RingProgressProps, 'sections'> & { progress: number }) => {
+  const color = progress >= 1 ? 'green' : 'blue';
+  const value = progress * 100;
+
+  return (
+    <RingProgress
+      {...ringProgressProps}
+      size={100}
+      thickness={8}
+      sections={[{ value, color }]}
+      label={
+        <Text color="blue" weight={700} align="center">
+          {value.toFixed(0)}%
+        </Text>
+      }
+    />
+  );
+};
+
+const tooltipProps: Omit<TooltipProps, 'children' | 'label'> = {
+  withinPortal: true,
+  withArrow: true,
+  color: 'dark',
+  zIndex: constants.imageGeneration.drawerZIndex + 1,
+};
+
+function CancelOrDeleteWorkflow({
+  workflowId,
+  cancellable,
+}: {
+  workflowId: string;
+  cancellable: boolean;
+}) {
+  // use `cancelling` state so that users don't try to cancel a workflow multiple times
+  const [cancelling, setCancelling] = useState(false);
+  const deleteMutation = useDeleteTextToImageRequest();
+  const cancelMutation = useCancelTextToImageRequest();
+  const cancellingDeleting = deleteMutation.isLoading || cancelMutation.isLoading || cancelling;
+
+  const handleDeleteQueueItem = () => {
+    deleteMutation.mutate({ workflowId });
+  };
+
+  const handleCancel = () => {
+    cancelMutation.mutateAsync({ workflowId }).then(() => {
+      setCancelling(true);
+    });
+  };
+
+  useEffect(() => {
+    if (!cancellable) {
+      setCancelling(false);
+    }
+  }, [cancellable]);
+
+  return (
+    <PopConfirm
+      message={cancellable ? 'Attempt to cancel?' : 'Are you sure?'}
+      position="bottom-end"
+      onConfirm={cancellable ? handleCancel : handleDeleteQueueItem}
+      disabled={cancellingDeleting}
+    >
+      <ButtonTooltip {...tooltipProps} label={cancellable ? 'Cancel' : 'Delete'}>
+        <ActionIcon size="md" disabled={cancellingDeleting} color="red">
+          {cancellable ? <IconBan size={20} /> : <IconTrash size={20} />}
+        </ActionIcon>
+      </ButtonTooltip>
+    </PopConfirm>
+  );
+}

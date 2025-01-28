@@ -9,7 +9,7 @@ import {
   Button,
   Center,
 } from '@mantine/core';
-import { NextLink } from '@mantine/next';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { IconCircleCheck, IconLayoutDashboard, IconRosette } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
 import { useEffect } from 'react';
@@ -17,11 +17,9 @@ import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
 import { Meta } from '~/components/Meta/Meta';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { enterFall, jelloVertical } from '~/libs/animations';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 
 export default function PaymentSuccess() {
   const router = useRouter();
-  const features = useFeatureFlags();
   const { cid } = router.query as { cid: string };
   const { customerId, refresh } = useCurrentUser() ?? {};
 
@@ -37,7 +35,7 @@ export default function PaymentSuccess() {
 
   return (
     <>
-      <Meta title="Successful Payment | Civitai" deIndex="noindex, nofollow" />
+      <Meta title="Successful Payment | Civitai" deIndex />
       <Container size="xs" mb="lg">
         <Stack>
           <Alert radius="sm" color="green" sx={{ zIndex: 10 }}>
@@ -67,22 +65,17 @@ export default function PaymentSuccess() {
           </Text>
 
           <Group grow>
-            <Button
-              component={NextLink}
-              href={features.alternateHome ? '/models' : '/'}
-              size="md"
-              leftIcon={<IconLayoutDashboard />}
-            >
+            <Button component={Link} href="/models" size="md" leftIcon={<IconLayoutDashboard />}>
               View Models
             </Button>
             <Button
               variant="light"
-              component={NextLink}
+              component={Link}
               href="/user/account"
               size="md"
               rightIcon={<IconRosette />}
             >
-              Edit Profile
+              Customize Profile
             </Button>
           </Group>
           <Text

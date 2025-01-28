@@ -1,5 +1,7 @@
-import { TextProps } from '@mantine/core';
 import { Prisma } from '@prisma/client';
+import { TextProps } from '@mantine/core';
+import { CosmeticEntity, MediaType } from '~/shared/utils/prisma/enums';
+import { ImageProps } from '~/components/ImageViewer/ImageViewer';
 
 export const simpleCosmeticSelect = Prisma.validator<Prisma.CosmeticSelect>()({
   id: true,
@@ -10,18 +12,28 @@ export const simpleCosmeticSelect = Prisma.validator<Prisma.CosmeticSelect>()({
   data: true,
 });
 
-const simpleUser = Prisma.validator<Prisma.CosmeticArgs>()({
+const simpleCosmetic = Prisma.validator<Prisma.CosmeticDefaultArgs>()({
   select: simpleCosmeticSelect,
 });
 
-export type SimpleCosmetic = Prisma.CosmeticGetPayload<typeof simpleUser>;
-
-export type BadgeCosmetic = Omit<SimpleCosmetic, 'data' | 'type'> & {
-  data: { url?: string };
-  obtainedAt: Date;
+export type SimpleCosmetic = Omit<
+  Prisma.CosmeticGetPayload<typeof simpleCosmetic>,
+  'description'
+> & {
+  description?: string | null;
+  equippedToId?: number | null;
+  equippedToType?: CosmeticEntity | null;
+  forId?: number | null;
+  forType?: CosmeticEntity | null;
+  obtainedAt?: Date;
+  inUse?: boolean;
 };
-export type NamePlateCosmetic = Omit<SimpleCosmetic, 'data' | 'type'> & {
-  obtainedAt: Date;
+
+export type BadgeCosmetic = Omit<SimpleCosmetic, 'data'> & {
+  data: { url?: string; animated?: boolean };
+  entityImage?: ImageProps;
+};
+export type NamePlateCosmetic = Omit<SimpleCosmetic, 'data' | 'videoUrl'> & {
   data: Pick<TextProps, 'variant' | 'color'> & {
     gradient?: {
       from: string;
@@ -30,3 +42,24 @@ export type NamePlateCosmetic = Omit<SimpleCosmetic, 'data' | 'type'> & {
     };
   };
 };
+
+export type ContentDecorationCosmetic = Omit<SimpleCosmetic, 'data' | 'videoUrl'> & {
+  entityImage?: ImageProps & { entityId: number; entityType: string };
+  data: {
+    type?: 'holiday-frame';
+    lights?: number;
+    brightness?: number;
+    color?: string;
+    url?: string;
+    offset?: string;
+    crop?: string;
+    cssFrame?: string;
+    glow?: boolean;
+    texture?: { url: string; size: { width: number; height: number } };
+  };
+};
+export type ProfileBackgroundCosmetic = BadgeCosmetic & {
+  data: { textColor?: string; backgroundColor?: string; offset?: string; type?: MediaType };
+};
+
+export type WithClaimKey<T> = T & { claimKey: string };

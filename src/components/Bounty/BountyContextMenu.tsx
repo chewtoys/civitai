@@ -1,20 +1,18 @@
-import { ActionIcon, ActionIconProps, Menu, MenuItemProps, MenuProps } from '@mantine/core';
+import { ActionIconProps, Menu, MenuItemProps, MenuProps } from '@mantine/core';
 import { closeAllModals, openConfirmModal } from '@mantine/modals';
-import { IconDotsVertical, IconEdit, IconReceiptRefund, IconTrash } from '@tabler/icons-react';
-import Link from 'next/link';
+import { IconEdit, IconReceiptRefund, IconTrash } from '@tabler/icons-react';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useRouter } from 'next/router';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { isDefined } from '~/utils/type-guards';
 import { useMutateBounty } from './bounty.utils';
 import { ReportMenuItem } from '../MenuItems/ReportMenuItem';
-import { openContext } from '~/providers/CustomModalsProvider';
 import { ReportEntity } from '~/server/schema/report.schema';
+import { ToggleSearchableMenuItem } from '../MenuItems/ToggleSearchableMenuItem';
+import { openReportModal } from '~/components/Dialog/dialog-registry';
+import { ActionIconDotsVertical } from '~/components/Cards/components/ActionIconDotsVertical';
 
-export function BountyContextMenu({
-  bounty,
-  buttonProps: { iconSize, ...buttonProps } = { iconSize: 16 },
-  ...menuProps
-}: Props) {
+export function BountyContextMenu({ bounty, buttonProps, ...menuProps }: Props) {
   const currentUser = useCurrentUser();
   const router = useRouter();
   const isModerator = currentUser?.isModerator ?? false;
@@ -57,8 +55,13 @@ export function BountyContextMenu({
         Delete
       </Menu.Item>
     ) : null,
+    <ToggleSearchableMenuItem
+      entityType="Bounty"
+      entityId={bounty.id}
+      key="toggle-searchable-menu-item"
+    />,
     isModerator || (!expired && isOwner) ? (
-      <Link key="edit" href={`/bounties/${bounty.id}/edit`} passHref>
+      <Link legacyBehavior key="edit" href={`/bounties/${bounty.id}/edit`} passHref>
         <Menu.Item component="a" icon={<IconEdit size={14} stroke={1.5} />}>
           Edit
         </Menu.Item>
@@ -97,9 +100,7 @@ export function BountyContextMenu({
       <ReportMenuItem
         key="report"
         label="Report bounty"
-        onReport={() =>
-          openContext('report', { entityType: ReportEntity.Bounty, entityId: bounty.id })
-        }
+        onReport={() => openReportModal({ entityType: ReportEntity.Bounty, entityId: bounty.id })}
       />
     ) : null,
   ].filter(isDefined);
@@ -109,18 +110,13 @@ export function BountyContextMenu({
   return (
     <Menu {...menuProps}>
       <Menu.Target>
-        <ActionIcon
-          color="gray"
-          radius="xl"
-          variant="filled"
-          {...buttonProps}
+        <ActionIconDotsVertical
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
           }}
-        >
-          <IconDotsVertical size={iconSize} />
-        </ActionIcon>
+          {...buttonProps}
+        />
       </Menu.Target>
       <Menu.Dropdown>{menuItems}</Menu.Dropdown>
     </Menu>
@@ -134,5 +130,5 @@ type Props = MenuProps & {
     complete: boolean;
     expiresAt: Date;
   };
-  buttonProps?: ActionIconProps & { iconSize?: number };
+  buttonProps?: ActionIconProps;
 };

@@ -4,7 +4,6 @@ import {
   Center,
   Container,
   createStyles,
-  Grid,
   Group,
   List,
   Loader,
@@ -14,7 +13,7 @@ import {
   Title,
 } from '@mantine/core';
 import { IconArrowLeft } from '@tabler/icons-react';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useRouter } from 'next/router';
 
 import { FollowUserButton } from '~/components/FollowUserButton/FollowUserButton';
@@ -25,6 +24,22 @@ import FourOhFour from '~/pages/404';
 import { abbreviateNumber } from '~/utils/number-helpers';
 import { postgresSlugify } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
+import { BlockUserButton } from '~/components/HideUserButton/BlockUserButton';
+import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { dbRead } from '~/server/db/client';
+
+export const getServerSideProps = createServerSideProps({
+  resolver: async ({ ctx }) => {
+    const username = ctx.query.username as string;
+    const user = await dbRead.user.findUnique({ where: { username }, select: { bannedAt: true } });
+
+    if (user?.bannedAt)
+      return {
+        redirect: { destination: `/user/${username}`, permanent: true },
+      };
+  },
+});
 
 const useStyles = createStyles((theme) => ({
   striped: {
@@ -59,18 +74,18 @@ export default function UserLists() {
 
   return (
     <Container size="xs">
-      <Grid gutter="xl">
-        <Grid.Col span={12}>
+      <ContainerGrid gutter="xl">
+        <ContainerGrid.Col span={12}>
           <Group spacing="xl">
-            <Link href={`/user/${username}`} passHref>
+            <Link legacyBehavior href={`/user/${username}`} passHref>
               <ActionIcon component="a">
                 <IconArrowLeft />
               </ActionIcon>
             </Link>
             <Title order={1}>{`@${username}`}</Title>
           </Group>
-        </Grid.Col>
-        <Grid.Col span={12}>
+        </ContainerGrid.Col>
+        <ContainerGrid.Col span={12}>
           <Tabs
             defaultValue={list}
             onTabChange={(value) => router.push(`/user/${username}/${value}`)}
@@ -83,9 +98,14 @@ export default function UserLists() {
                 data?.followersCount ?? 0
               )})`}</Tabs.Tab>
               {isSameUser && (
-                <Tabs.Tab value="hidden">{`Hidden (${abbreviateNumber(
-                  data?.hiddenCount ?? 0
-                )})`}</Tabs.Tab>
+                <>
+                  <Tabs.Tab value="hidden">
+                    {`Hidden (${abbreviateNumber(data?.hiddenCount ?? 0)})`}
+                  </Tabs.Tab>
+                  <Tabs.Tab value="blocked">
+                    {`Blocked (${abbreviateNumber(data?.blockedCount ?? 0)})`}
+                  </Tabs.Tab>
+                </>
               )}
             </Tabs.List>
             {loadingLists && !data ? (
@@ -103,7 +123,7 @@ export default function UserLists() {
                     {data.following.length > 0 ? (
                       data.following.map((user) => (
                         <List.Item key={user.id} p={8}>
-                          <Link href={`/user/${user.username}`} passHref>
+                          <Link legacyBehavior href={`/user/${user.username}`} passHref>
                             <Anchor variant="text">
                               <Group position="apart">
                                 <UserAvatar user={user} withUsername />
@@ -135,7 +155,7 @@ export default function UserLists() {
                     {data.followers.length > 0 ? (
                       data.followers.map((user) => (
                         <List.Item key={user.id} p={8}>
-                          <Link href={`/user/${user.username}`} passHref>
+                          <Link legacyBehavior href={`/user/${user.username}`} passHref>
                             <Anchor variant="text">
                               <Group position="apart">
                                 <UserAvatar user={user} withUsername />
@@ -159,44 +179,78 @@ export default function UserLists() {
                   </List>
                 </Tabs.Panel>
                 {isSameUser && (
-                  <Tabs.Panel value="hidden">
-                    <List
-                      listStyleType="none"
-                      styles={{ itemWrapper: { width: '100%' } }}
-                      className={classes.striped}
-                    >
-                      {data.hidden.length > 0 ? (
-                        data.hidden.map((user) => (
-                          <List.Item key={user.id} p={8}>
-                            <Link href={`/user/${user.username}`} passHref>
-                              <Anchor variant="text">
-                                <Group position="apart">
-                                  <UserAvatar user={user} withUsername />
-                                  <HideUserButton userId={user.id} compact />
-                                </Group>
-                              </Anchor>
-                            </Link>
+                  <>
+                    <Tabs.Panel value="hidden">
+                      <List
+                        listStyleType="none"
+                        styles={{ itemWrapper: { width: '100%' } }}
+                        className={classes.striped}
+                      >
+                        {data.hidden.length > 0 ? (
+                          data.hidden.map((user) => (
+                            <List.Item key={user.id} p={8}>
+                              <Link legacyBehavior href={`/user/${user.username}`} passHref>
+                                <Anchor variant="text">
+                                  <Group position="apart">
+                                    <UserAvatar user={user} withUsername />
+                                    <HideUserButton userId={user.id} compact />
+                                  </Group>
+                                </Anchor>
+                              </Link>
+                            </List.Item>
+                          ))
+                        ) : (
+                          <List.Item>
+                            <Paper p="xl" sx={{ width: '100%' }} withBorder>
+                              <Center>
+                                <Text size="lg" weight="bold">
+                                  There are no hidden users to show
+                                </Text>
+                              </Center>
+                            </Paper>
                           </List.Item>
-                        ))
-                      ) : (
-                        <List.Item>
-                          <Paper p="xl" sx={{ width: '100%' }} withBorder>
-                            <Center>
-                              <Text size="lg" weight="bold">
-                                There are no hidden users to show
-                              </Text>
-                            </Center>
-                          </Paper>
-                        </List.Item>
-                      )}
-                    </List>
-                  </Tabs.Panel>
+                        )}
+                      </List>
+                    </Tabs.Panel>
+                    <Tabs.Panel value="blocked">
+                      <List
+                        listStyleType="none"
+                        styles={{ itemWrapper: { width: '100%' } }}
+                        className={classes.striped}
+                      >
+                        {data.blocked.length > 0 ? (
+                          data.blocked.map((user) => (
+                            <List.Item key={user.id} p={8}>
+                              <Link legacyBehavior href={`/user/${user.username}`} passHref>
+                                <Anchor variant="text">
+                                  <Group position="apart">
+                                    <Text>{user.username}</Text>
+                                    <BlockUserButton userId={user.id} compact />
+                                  </Group>
+                                </Anchor>
+                              </Link>
+                            </List.Item>
+                          ))
+                        ) : (
+                          <List.Item>
+                            <Paper p="xl" sx={{ width: '100%' }} withBorder>
+                              <Center>
+                                <Text size="lg" weight="bold">
+                                  There are no blocked users to show
+                                </Text>
+                              </Center>
+                            </Paper>
+                          </List.Item>
+                        )}
+                      </List>
+                    </Tabs.Panel>
+                  </>
                 )}
               </>
             )}
           </Tabs>
-        </Grid.Col>
-      </Grid>
+        </ContainerGrid.Col>
+      </ContainerGrid>
     </Container>
   );
 }

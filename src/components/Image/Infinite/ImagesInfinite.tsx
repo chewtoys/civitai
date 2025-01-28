@@ -1,62 +1,74 @@
-import { Stack, Text, LoadingOverlay, Center, Loader, ThemeIcon } from '@mantine/core';
+import { Button, Center, Group, Loader, LoadingOverlay } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
+import { MetricTimeframe } from '~/shared/utils/prisma/enums';
 import { isEqual } from 'lodash-es';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useEffect } from 'react';
-
-import { ImagesCard } from '~/components/Image/Infinite/ImagesCard';
-import { removeEmpty } from '~/utils/object-helpers';
-import { BrowsingMode, ImageSort } from '~/server/common/enums';
-import { useImageFilters, useQueryImages } from '~/components/Image/image.utils';
-import { MasonryColumns } from '~/components/MasonryColumns/MasonryColumns';
-import { IconCloudOff } from '@tabler/icons-react';
-import { ImageIngestionStatus, MediaType, MetricTimeframe, ReviewReactions } from '@prisma/client';
+import { useBrowsingLevelDebounced } from '~/components/BrowsingLevel/BrowsingLevelProvider';
 import { EndOfFeed } from '~/components/EndOfFeed/EndOfFeed';
+import { FeedWrapper } from '~/components/Feed/FeedWrapper';
+import {
+  ImagesQueryParamSchema,
+  useImageFilters,
+  useQueryImages,
+} from '~/components/Image/image.utils';
+import { ImagesCard } from '~/components/Image/Infinite/ImagesCard';
+import { ImagesContextState, ImagesProvider } from '~/components/Image/Providers/ImagesProvider';
+import { InViewLoader } from '~/components/InView/InViewLoader';
 import { IsClient } from '~/components/IsClient/IsClient';
 import { MasonryRenderItemProps } from '~/components/MasonryColumns/masonry.types';
+import { MasonryColumns } from '~/components/MasonryColumns/MasonryColumns';
+import { NoContent } from '~/components/NoContent/NoContent';
 import { ImageGetInfinite } from '~/types/router';
-import { ImageIngestionProvider } from '~/components/Image/Ingestion/ImageIngestionProvider';
-import { ImagesProvider } from '~/components/Image/Providers/ImagesProvider';
-import { InViewLoader } from '~/components/InView/InViewLoader';
-
-type ImageFilters = {
-  modelId?: number;
-  modelVersionId?: number;
-  postId?: number;
-  collectionId?: number;
-  username?: string;
-  reviewId?: number;
-  prioritizedUserIds?: number[];
-  period?: MetricTimeframe;
-  sort?: ImageSort;
-  reactions?: ReviewReactions[];
-  types?: MediaType[];
-  withMeta?: boolean;
-  followed?: boolean;
-  browsingMode?: BrowsingMode;
-};
+import { removeEmpty } from '~/utils/object-helpers';
 
 type ImagesInfiniteProps = {
   withTags?: boolean;
-  filters?: ImageFilters;
+  filters?: ImagesQueryParamSchema;
   showEof?: boolean;
   renderItem?: React.ComponentType<MasonryRenderItemProps<ImageGetInfinite[number]>>;
-};
+  filterType?: 'images' | 'videos';
+  showAds?: boolean;
+  showEmptyCta?: boolean;
+  useIndex?: boolean;
+  disableStoreFilters?: boolean;
+} & Pick<ImagesContextState, 'collectionId'>;
 
-export default function ImagesInfinite({
+export default function ImagesInfinite(props: ImagesInfiniteProps) {
+  return (
+    <FeedWrapper>
+      <ImagesInfiniteContent {...props} />
+    </FeedWrapper>
+  );
+}
+
+export function ImagesInfiniteContent({
   withTags,
   filters: filterOverrides = {},
   showEof = false,
   renderItem: MasonryItem,
+  filterType = 'images',
+  showAds,
+  showEmptyCta,
+  useIndex,
+  disableStoreFilters = false,
+  ...imageProviderProps
 }: ImagesInfiniteProps) {
-  const imageFilters = useImageFilters('images');
-  const filters = removeEmpty({ ...imageFilters, ...filterOverrides, withTags });
+  const imageFilters = useImageFilters(filterType);
+  const filters = removeEmpty({
+    ...(disableStoreFilters ? filterOverrides : { ...imageFilters, ...filterOverrides }),
+    useIndex,
+    withTags,
+  });
   showEof = showEof && filters.period !== MetricTimeframe.AllTime;
   const [debouncedFilters, cancel] = useDebouncedValue(filters, 500);
 
-  const { images, isLoading, fetchNextPage, hasNextPage, isRefetching } = useQueryImages(
-    debouncedFilters,
-    { keepPreviousData: true }
-  );
+  const browsingLevel = useBrowsingLevelDebounced();
+  const { images, isLoading, fetchNextPage, hasNextPage, isRefetching, isFetching } =
+    useQueryImages(
+      { ...debouncedFilters, browsingLevel, include: ['cosmetics'] },
+      { keepPreviousData: true }
+    );
 
   //#region [useEffect] cancel debounced filters
   useEffect(() => {
@@ -65,37 +77,38 @@ export default function ImagesInfinite({
   //#endregion
 
   return (
-    <IsClient>
+    <>
       {isLoading ? (
         <Center p="xl">
           <Loader />
         </Center>
-      ) : !!images.length ? (
+      ) : !!images.length || hasNextPage ? (
         <div style={{ position: 'relative' }}>
           <LoadingOverlay visible={isRefetching ?? false} zIndex={9} />
-          <ImageIngestionProvider
-            ids={images
-              .filter((image) => image.ingestion !== ImageIngestionStatus.Scanned)
-              .map(({ id }) => id)}
-          >
-            <ImagesProvider images={images}>
-              <MasonryColumns
-                data={images}
-                imageDimensions={(data) => {
-                  const width = data?.width ?? 450;
-                  const height = data?.height ?? 450;
-                  return { width, height };
-                }}
-                maxItemHeight={600}
-                render={MasonryItem ?? ImagesCard}
-                itemId={(data) => data.id}
-              />
-            </ImagesProvider>
-          </ImageIngestionProvider>
+
+          <ImagesProvider images={images} {...imageProviderProps}>
+            <MasonryColumns
+              data={images}
+              imageDimensions={(data) => {
+                const width = data?.width ?? 450;
+                const height = data?.height ?? 450;
+                return { width, height };
+              }}
+              adjustHeight={({ height }) => {
+                const imageHeight = Math.max(Math.min(height, 600), 150);
+                return imageHeight + 38;
+              }}
+              maxItemHeight={600}
+              render={MasonryItem ?? ImagesCard}
+              itemId={(data) => data.id}
+              withAds={showAds}
+            />
+          </ImagesProvider>
           {hasNextPage && (
             <InViewLoader
               loadFn={fetchNextPage}
-              loadCondition={!isRefetching}
+              loadCondition={!isFetching}
+              // Forces a re-render whenever the amount of images fetched changes. Forces load-more if available.
               style={{ gridColumn: '1/-1' }}
             >
               <Center p="xl" sx={{ height: 36 }} mt="md">
@@ -106,18 +119,21 @@ export default function ImagesInfinite({
           {!hasNextPage && showEof && <EndOfFeed />}
         </div>
       ) : (
-        <Stack align="center" py="lg">
-          <ThemeIcon size={128} radius={100}>
-            <IconCloudOff size={80} />
-          </ThemeIcon>
-          <Text size={32} align="center">
-            No results found
-          </Text>
-          <Text align="center">
-            {"Try adjusting your search or filters to find what you're looking for"}
-          </Text>
-        </Stack>
+        <NoContent py="lg">
+          {showEmptyCta && (
+            <Group>
+              <Link href="/posts/create">
+                <Button variant="default" radius="xl">
+                  Post Media
+                </Button>
+              </Link>
+              <Link href="/generate">
+                <Button radius="xl">Generate</Button>
+              </Link>
+            </Group>
+          )}
+        </NoContent>
       )}
-    </IsClient>
+    </>
   );
 }

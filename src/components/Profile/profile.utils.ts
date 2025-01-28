@@ -63,9 +63,10 @@ export const shouldDisplayUserNullState = ({
   overview,
   userWithProfile,
 }: {
-  overview: UserOverview;
+  overview?: Partial<UserOverview>;
   userWithProfile: UserWithProfile;
 }) => {
+  if (userWithProfile.bannedAt) return true;
   const userSections = (userWithProfile?.profile?.profileSectionsSettings ??
     []) as ProfileSectionSchema[];
 
@@ -82,9 +83,9 @@ export const shouldDisplayUserNullState = ({
 
   return (
     (showcaseItems.length === 0 || !someSectionEnabled(['showcase'])) &&
-    (overview.modelCount === 0 || !someSectionEnabled(['modelsOverview', 'popularModels'])) &&
-    (overview.imageCount === 0 || !someSectionEnabled(['imagesOverview'])) &&
-    (overview.articleCount === 0 || !someSectionEnabled(['popularArticles'])) &&
-    (overview.receivedReviewCount === 0 || !someSectionEnabled(['recentReviews']))
+    (overview?.modelCount === 0 || !someSectionEnabled(['modelsOverview', 'popularModels'])) &&
+    (overview?.imageCount === 0 || !someSectionEnabled(['imagesOverview'])) &&
+    (overview?.articleCount === 0 || !someSectionEnabled(['popularArticles'])) &&
+    (!overview?.hasReceivedReviews || !someSectionEnabled(['recentReviews']))
   );
 };

@@ -15,7 +15,6 @@ import React, { useMemo, useState } from 'react';
 import { useDidUpdate } from '@mantine/hooks';
 import { ShowcaseItemSchema } from '~/server/schema/user-profile.schema';
 import { QuickSearchDropdown } from '~/components/Search/QuickSearchDropdown';
-import { IMAGES_SEARCH_INDEX, MODELS_SEARCH_INDEX } from '~/server/common/constants';
 import { trpc } from '~/utils/trpc';
 import { GenericImageCard } from '~/components/Cards/GenericImageCard';
 import { IconTrash } from '@tabler/icons-react';
@@ -32,6 +31,7 @@ import {
 } from '@dnd-kit/core';
 import { arrayMove, SortableContext, rectSortingStrategy } from '@dnd-kit/sortable';
 import { SortableItem } from '~/components/ImageUpload/SortableItem';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 type ShowcaseItemsInputProps = Omit<InputWrapperProps, 'children' | 'onChange'> & {
   value?: ShowcaseItemSchema[];
@@ -46,7 +46,7 @@ const useStyles = createStyles((theme) => ({
     gridTemplateColumns: `repeat(5, 1fr)`,
     gridGap: 4,
 
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       gridTemplateColumns: `repeat(3, 1fr)`,
     },
   },
@@ -95,6 +95,7 @@ export const ShowcaseItemsInput = ({
     {
       enabled: sortedShowcaseItems.length > 0,
       keepPreviousData: true,
+      trpc: { context: { skipBatch: true } },
     }
   );
 

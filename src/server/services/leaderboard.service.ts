@@ -1,4 +1,5 @@
-import { CosmeticSource, CosmeticType, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { CosmeticSource, CosmeticType } from '~/shared/utils/prisma/enums';
 import dayjs from 'dayjs';
 import { dbRead, dbWrite } from '~/server/db/client';
 import { isModerator } from '~/server/routers/base.router';
@@ -8,13 +9,17 @@ import {
   GetLeaderboardsInput,
   GetLeaderboardsWithResultsInput,
 } from '~/server/schema/leaderboard.schema';
+import { getCosmeticsForUsers, getProfilePicturesForUsers } from '~/server/services/user.service';
 
 export async function isLeaderboardPopulated() {
   const [{ populated }] = await dbWrite.$queryRaw<{ populated: boolean }[]>`
-      SELECT
-        COUNT(DISTINCT "leaderboardId") = (SELECT COUNT(*) FROM "Leaderboard") as "populated"
-      FROM "LeaderboardResult"
-      WHERE date = current_date
+      SELECT (
+        SELECT
+          COUNT(DISTINCT lr."leaderboardId")
+        FROM "LeaderboardResult" lr
+        JOIN "Leaderboard" l ON l.id = lr."leaderboardId"
+        WHERE l.query != '' AND date = current_date::date
+      ) = (SELECT COUNT(*) FROM "Leaderboard" WHERE query != '' AND active) as "populated"
     `;
 
   return populated;
@@ -90,13 +95,16 @@ type LeaderboardRaw = {
   image: string | null;
   cosmetics:
     | {
-        id: number;
-        data: string;
-        type: CosmeticType;
-        source: CosmeticSource;
-        name: string;
-        leaderboardId: string;
-        leaderboardPosition: number;
+        data: MixedObject | null;
+        cosmetic: {
+          id: number;
+          data: string;
+          type: CosmeticType;
+          source: CosmeticSource;
+          name: string;
+          leaderboardId: string;
+          leaderboardPosition: number;
+        };
       }[]
     | null;
   delta: {
@@ -108,7 +116,7 @@ export async function getLeaderboard(input: GetLeaderboardInput) {
   const date = dayjs(input.date ?? dayjs().utc()).format('YYYY-MM-DD');
 
   const leaderboardResultsRaw = await dbRead.$queryRaw<LeaderboardRaw[]>`
-    WITH yesterday AS MATERIALIZED (
+    WITH yesterday AS (
       SELECT
         "userId",
         position,
@@ -116,7 +124,7 @@ export async function getLeaderboard(input: GetLeaderboardInput) {
       FROM "LeaderboardResult"
       WHERE
         "leaderboardId" = ${input.id}
-        AND "createdAt" = date(${date}) - interval '1 day'
+        AND "date" = date(${date}) - interval '1 day'
         AND position < 2000
     )
     SELECT
@@ -128,22 +136,6 @@ export async function getLeaderboard(input: GetLeaderboardInput) {
       u.username,
       u."deletedAt",
       u.image,
-      (
-        SELECT
-          jsonb_agg(jsonb_build_object(
-            'id', c.id,
-            'data', c.data,
-            'type', c.type,
-            'source', c.source,
-            'name', c.name,
-            'leaderboardId', c."leaderboardId",
-            'leaderboardPosition', c."leaderboardPosition"
-          ))
-        FROM "UserCosmetic" uc
-        JOIN "Cosmetic" c ON c.id = uc."cosmeticId"
-        AND "equippedAt" IS NOT NULL
-        WHERE uc."userId" = lr."userId"
-      ) cosmetics,
       (
         SELECT jsonb_build_object(
           'position', lr.position - lro.position,
@@ -162,7 +154,7 @@ export async function getLeaderboard(input: GetLeaderboardInput) {
     ORDER BY lr.position
   `;
 
-  return formatLeaderboardResults(leaderboardResultsRaw, metricOrder);
+  return await formatLeaderboardResults(leaderboardResultsRaw, metricOrder);
 }
 
 export type LeaderboardWithResults = Awaited<ReturnType<typeof getLeaderboardsWithResults>>[number];
@@ -230,58 +222,47 @@ export async function getLeaderboardLegends(input: GetLeaderboardInput) {
       u.username,
       u."deletedAt",
       u.image,
-      (
-        SELECT
-          jsonb_agg(jsonb_build_object(
-            'id', c.id,
-            'data', c.data,
-            'type', c.type,
-            'source', c.source,
-            'name', c.name,
-            'leaderboardId', c."leaderboardId",
-            'leaderboardPosition', c."leaderboardPosition"
-          ))
-        FROM "UserCosmetic" uc
-        JOIN "Cosmetic" c ON c.id = uc."cosmeticId"
-        AND "equippedAt" IS NOT NULL
-        WHERE uc."userId" = s."userId"
-      ) cosmetics,
       null delta
     FROM scores s
     JOIN "User" u ON u.id = s."userId"
     ORDER BY s.score DESC
   `;
 
-  return formatLeaderboardResults(leaderboardResultsRaw, legendsMetricOrder);
+  return await formatLeaderboardResults(leaderboardResultsRaw, legendsMetricOrder);
 }
 
-function formatLeaderboardResults(results: LeaderboardRaw[], metricSortOrder = metricOrder) {
-  return results.map(
-    ({ metrics: metricsRaw, userId, username, deletedAt, image, cosmetics, ...results }) => {
-      const metrics = Object.entries(metricsRaw)
-        .map(([type, value]) => ({
-          type,
-          value,
-        }))
-        .sort((a, b) => {
-          const aIndex = metricSortOrder.indexOf(a.type);
-          const bIndex = metricSortOrder.indexOf(b.type);
-          if (aIndex === -1) return 1;
-          if (bIndex === -1) return -1;
-          return aIndex - bIndex;
-        });
+async function formatLeaderboardResults(results: LeaderboardRaw[], metricSortOrder = metricOrder) {
+  const userIds = results.map((r) => r.userId);
+  const [profilePictures, cosmetics] = await Promise.all([
+    getProfilePicturesForUsers(userIds),
+    getCosmeticsForUsers(userIds),
+  ]);
 
-      return {
-        ...results,
-        user: {
-          id: userId,
-          username,
-          deletedAt,
-          image,
-          cosmetics: cosmetics?.map((cosmetic) => ({ cosmetic })) ?? [],
-        },
-        metrics,
-      };
-    }
-  );
+  return results.map(({ metrics: metricsRaw, userId, username, deletedAt, image, ...results }) => {
+    const metrics = Object.entries(metricsRaw)
+      .map(([type, value]) => ({
+        type,
+        value,
+      }))
+      .sort((a, b) => {
+        const aIndex = metricSortOrder.indexOf(a.type);
+        const bIndex = metricSortOrder.indexOf(b.type);
+        if (aIndex === -1) return 1;
+        if (bIndex === -1) return -1;
+        return aIndex - bIndex;
+      });
+
+    return {
+      ...results,
+      user: {
+        id: userId,
+        username,
+        deletedAt,
+        image,
+        cosmetics: cosmetics[userId] ?? [],
+        profilePicture: profilePictures[userId] ?? null,
+      },
+      metrics,
+    };
+  });
 }

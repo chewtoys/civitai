@@ -1,41 +1,111 @@
+import { Prisma } from '@prisma/client';
 import {
   ArticleEngagementType,
+  ArticleStatus,
+  Availability,
+  CosmeticSource,
+  CosmeticType,
   MetricTimeframe,
-  Prisma,
-  SearchIndexUpdateQueueAction,
   TagTarget,
-} from '@prisma/client';
+} from '~/shared/utils/prisma/enums';
 import { TRPCError } from '@trpc/server';
 import { ManipulateType } from 'dayjs';
 import { truncate } from 'lodash-es';
-import { SessionUser } from 'next-auth';
-
-import { ArticleSort, BrowsingMode } from '~/server/common/enums';
+import { ArticleSort, NsfwLevel, SearchIndexUpdateQueueAction } from '~/server/common/enums';
 import { dbRead, dbWrite } from '~/server/db/client';
+import { eventEngine } from '~/server/events';
 import {
-  GetArticlesByCategorySchema,
+  articleWhereSchema,
   GetInfiniteArticlesSchema,
   UpsertArticleInput,
 } from '~/server/schema/article.schema';
 import { GetAllSchema, GetByIdInput } from '~/server/schema/base.schema';
+import { ImageMetaProps } from '~/server/schema/image.schema';
 import { isNotTag, isTag } from '~/server/schema/tag.schema';
 import { articlesSearchIndex } from '~/server/search-index';
 import { articleDetailSelect } from '~/server/selectors/article.selector';
-import { simpleTagSelect } from '~/server/selectors/tag.selector';
-import { UserWithCosmetics, userWithCosmeticsSelect } from '~/server/selectors/user.selector';
+import { ContentDecorationCosmetic, WithClaimKey } from '~/server/selectors/cosmetic.selector';
+import { imageSelect, profileImageSelect } from '~/server/selectors/image.selector';
+import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
 import {
   getAvailableCollectionItemsFilterForUser,
   getUserCollectionPermissionsById,
 } from '~/server/services/collection.service';
+import { getCosmeticsForEntity } from '~/server/services/cosmetic.service';
+import { createImage, deleteImageById } from '~/server/services/image.service';
 import { getCategoryTags } from '~/server/services/system-cache';
-import { getTypeCategories } from '~/server/services/tag.service';
-import { throwDbError, throwNotFoundError } from '~/server/utils/errorHandling';
+import { amIBlockedByUser } from '~/server/services/user.service';
+import { isImageOwner } from '~/server/services/util.service';
+import {
+  throwAuthorizationError,
+  throwBadRequestError,
+  throwDbError,
+  throwNotFoundError,
+} from '~/server/utils/errorHandling';
 import { getPagination, getPagingData } from '~/server/utils/pagination-helpers';
 import { decreaseDate } from '~/utils/date-helpers';
 import { postgresSlugify, removeTags } from '~/utils/string-helpers';
 import { isDefined } from '~/utils/type-guards';
 import { getFilesByEntity } from './file.service';
+import { userContentOverviewCache } from '~/server/redis/caches';
+import { throwOnBlockedLinkDomain } from '~/server/services/blocklist.service';
+import { ImageMetadata } from '~/server/schema/media.schema';
 
+type ArticleRaw = {
+  id: number;
+  cover?: string | null;
+  coverId?: number | null;
+  title: string;
+  publishedAt: Date | null;
+  userNsfwLevel: number;
+  nsfwLevel: number;
+  availability: Availability;
+  userId: number | null;
+  status: ArticleStatus;
+  stats:
+    | {
+        favoriteCount: number;
+        collectedCount: number;
+        commentCount: number;
+        likeCount: number;
+        dislikeCount: number;
+        heartCount: number;
+        laughCount: number;
+        cryCount: number;
+        viewCount: number;
+        tippedAmountCount: number;
+      }
+    | undefined;
+  tags: {
+    tag: {
+      id: number;
+      name: string;
+      isCategory: boolean;
+    };
+  }[];
+  user: {
+    id: number;
+    username: string | null;
+    deletedAt: Date | null;
+    image: string | null;
+    profilePictureId?: number | null;
+  };
+  userCosmetics: {
+    data: Prisma.JsonValue;
+    cosmetic: {
+      data: Prisma.JsonValue;
+      type: CosmeticType;
+      id: number;
+      name: string;
+      source: CosmeticSource;
+    };
+  }[];
+  cosmetic?: WithClaimKey<ContentDecorationCosmetic> | null;
+};
+
+export type ArticleGetAllRecord = Awaited<ReturnType<typeof getArticles>>['items'][number];
+
+export type ArticleGetAll = AsyncReturnType<typeof getArticles>['items'];
 export const getArticles = async ({
   limit,
   cursor,
@@ -55,24 +125,87 @@ export const getArticles = async ({
   includeDrafts,
   ids,
   collectionId,
-  browsingMode,
   followed,
-}: GetInfiniteArticlesSchema & { sessionUser?: SessionUser }) => {
+  clubId,
+  pending,
+  browsingLevel,
+  include,
+}: GetInfiniteArticlesSchema & {
+  sessionUser?: { id: number; isModerator?: boolean; username?: string };
+  include?: Array<'cosmetics'>;
+}) => {
+  const userId = sessionUser?.id;
+  const isModerator = sessionUser?.isModerator ?? false;
+  const includeCosmetics = !!include?.includes('cosmetics');
   try {
     const take = limit + 1;
     const isMod = sessionUser?.isModerator ?? false;
     const isOwnerRequest =
-      !!sessionUser &&
+      !!sessionUser?.username &&
       !!username &&
       postgresSlugify(sessionUser.username) === postgresSlugify(username);
 
-    const AND: Prisma.Enumerable<Prisma.ArticleWhereInput> = [];
-    if (query) AND.push({ title: { contains: query } });
-    if (!!tags?.length) AND.push({ tags: { some: { tagId: { in: tags } } } });
-    if (!!userIds?.length) AND.push({ userId: { in: userIds } });
-    if (!!ids?.length) AND.push({ id: { in: ids } });
-    if (browsingMode === BrowsingMode.SFW) AND.push({ nsfw: false });
-    if (username) AND.push({ user: { username } });
+    // TODO.clubs: This is temporary until we are fine with displaying club stuff in public feeds.
+    // At that point, we should be relying more on unlisted status which is set by the owner.
+    const hidePrivateArticles =
+      !ids &&
+      !clubId &&
+      !username &&
+      !collectionId &&
+      !followed &&
+      !hidden &&
+      !favorites &&
+      !userIds;
+
+    const AND: Prisma.Sql[] = [];
+    const WITH: Prisma.Sql[] = [];
+
+    if (query) {
+      AND.push(Prisma.raw(`a."title" ILIKE '%${query}%'`));
+    }
+    if (!!tags?.length) {
+      AND.push(
+        Prisma.sql`EXISTS (
+          SELECT 1 FROM "TagsOnArticle" toa WHERE toa."articleId" = a.id AND toa."tagId" IN (${Prisma.join(
+            tags,
+            ','
+          )})
+        )`
+      );
+    }
+
+    if (!!userIds?.length) {
+      AND.push(Prisma.sql`a."userId" IN (${Prisma.join(userIds, ',')})`);
+    }
+    if (!!ids?.length) {
+      AND.push(Prisma.sql`a.id IN (${Prisma.join(ids, ',')})`);
+    }
+
+    if (browsingLevel) {
+      if (pending && (isModerator || userId)) {
+        if (isModerator) {
+          AND.push(Prisma.sql`((a."nsfwLevel" & ${browsingLevel}) != 0 OR a."nsfwLevel" = 0)`);
+        } else if (userId) {
+          AND.push(
+            Prisma.sql`((a."nsfwLevel" & ${browsingLevel}) != 0 OR (a."nsfwLevel" = 0 AND a."userId" = ${userId}))`
+          );
+        }
+      } else {
+        AND.push(Prisma.sql`(a."nsfwLevel" & ${browsingLevel}) != 0`);
+      }
+    }
+
+    if (username) {
+      const targetUser = await dbRead.user.findUnique({
+        where: { username: username ?? '' },
+        select: { id: true },
+      });
+
+      if (!targetUser) throw new Error('User not found');
+
+      AND.push(Prisma.sql`u.id = ${targetUser.id}`);
+    }
+
     if (collectionId) {
       const permissions = await getUserCollectionPermissionsById({
         userId: sessionUser?.id,
@@ -83,34 +216,52 @@ export const getArticles = async ({
         return { items: [] };
       }
 
-      const collectionItemModelsAND: Prisma.Enumerable<Prisma.CollectionItemWhereInput> =
-        getAvailableCollectionItemsFilterForUser({ permissions, userId: sessionUser?.id });
-
-      AND.push({
-        collectionItems: {
-          some: {
-            collectionId,
-            AND: collectionItemModelsAND,
-          },
-        },
+      const { rawAND: collectionItemModelsRawAND } = getAvailableCollectionItemsFilterForUser({
+        permissions,
+        userId: sessionUser?.id,
       });
+
+      AND.push(
+        Prisma.sql`EXISTS (
+        SELECT 1 FROM "CollectionItem" ci
+        WHERE ci."articleId" = a."id"
+        AND ci."collectionId" = ${collectionId}
+        AND ${Prisma.join(collectionItemModelsRawAND, ' AND ')})`
+      );
     }
 
     if (!isOwnerRequest) {
-      if (!!excludedUserIds?.length) AND.push({ userId: { notIn: excludedUserIds } });
-      if (!!excludedIds?.length) AND.push({ id: { notIn: excludedIds } });
-      if (!!excludedTagIds?.length) AND.push({ tags: { none: { tagId: { in: excludedTagIds } } } });
+      if (!!excludedUserIds?.length) {
+        AND.push(Prisma.sql`a."userId" NOT IN (${Prisma.join(excludedUserIds, ',')})`);
+      }
+      if (!!excludedIds?.length) {
+        AND.push(Prisma.sql`a.id NOT IN (${Prisma.join(excludedIds, ',')})`);
+      }
+      if (!!excludedTagIds?.length) {
+        AND.push(
+          Prisma.sql`NOT EXISTS (
+            SELECT 1 FROM "TagsOnArticle" toa WHERE toa."articleId" = a.id AND toa."tagId" IN (${Prisma.join(
+              excludedTagIds,
+              ','
+            )})
+          )`
+        );
+      }
     }
 
     if (sessionUser) {
       if (favorites) {
-        AND.push({
-          engagements: { some: { userId: sessionUser?.id, type: ArticleEngagementType.Favorite } },
-        });
+        AND.push(
+          Prisma.sql`EXISTS (
+            SELECT 1 FROM "ArticleEngagement" ae WHERE ae."articleId" = a.id AND ae."userId" = ${sessionUser?.id} AND ae."type" = ${ArticleEngagementType.Favorite}::"ArticleEngagementType"
+          )`
+        );
       } else if (hidden) {
-        AND.push({
-          engagements: { some: { userId: sessionUser?.id, type: ArticleEngagementType.Hide } },
-        });
+        AND.push(
+          Prisma.sql`EXISTS (
+            SELECT 1 FROM "ArticleEngagement" ae WHERE ae."articleId" = a.id AND ae."userId" = ${sessionUser?.id} AND ae."type" = ${ArticleEngagementType.Hide}::"ArticleEngagementType"
+          )`
+        );
       }
     }
 
@@ -127,91 +278,232 @@ export const getArticles = async ({
       });
       const followedUsersIds =
         followedUsers?.engagingUsers?.map(({ targetUser }) => targetUser.id) ?? [];
-      AND.push({ userId: { in: followedUsersIds } });
+
+      AND.push(Prisma.sql`a."userId" IN (${Prisma.join(followedUsersIds, ',')})`);
     }
 
-    const where: Prisma.ArticleFindManyArgs['where'] = {
-      publishedAt:
-        isMod && includeDrafts
-          ? undefined
-          : period !== MetricTimeframe.AllTime && periodMode !== 'stats'
-          ? { gte: decreaseDate(new Date(), 1, period.toLowerCase() as ManipulateType) }
-          : { not: null },
-      AND: AND.length ? AND : undefined,
-    };
+    const publishedAtFilter: Prisma.Sql | undefined =
+      isMod && includeDrafts
+        ? undefined
+        : period !== MetricTimeframe.AllTime && periodMode !== 'stats'
+        ? Prisma.sql`a."publishedAt" >= ${decreaseDate(
+            new Date(),
+            1,
+            period.toLowerCase() as ManipulateType
+          )}`
+        : Prisma.sql`a."publishedAt" IS NOT NULL AND a.status = 'Published'::"ArticleStatus"`;
 
-    const orderBy: Prisma.ArticleFindManyArgs['orderBy'] = [
-      { publishedAt: { sort: 'desc', nulls: 'last' } },
-    ];
+    if (publishedAtFilter) {
+      AND.push(publishedAtFilter);
+    }
+
+    let orderBy = `a."publishedAt" DESC NULLS LAST`;
     if (sort === ArticleSort.MostBookmarks)
-      orderBy.unshift({ rank: { [`favoriteCount${period}Rank`]: 'asc' } });
+      orderBy = `rank."collectedCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
     else if (sort === ArticleSort.MostComments)
-      orderBy.unshift({ rank: { [`commentCount${period}Rank`]: 'asc' } });
+      orderBy = `rank."commentCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
     else if (sort === ArticleSort.MostReactions)
-      orderBy.unshift({ rank: { [`reactionCount${period}Rank`]: 'asc' } });
+      orderBy = `rank."reactionCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
     else if (sort === ArticleSort.MostCollected)
-      orderBy.unshift({ rank: { [`collectedCount${period}Rank`]: 'asc' } });
-    else if (sort === ArticleSort.MostTipped)
-      orderBy.unshift({ rank: { [`tippedAmountCount${period}Rank`]: 'asc' } });
+      orderBy = `rank."collectedCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
+    // else if (sort === ArticleSort.MostTipped)
+    //   orderBy = `rank."tippedAmountCount${period}Rank" ASC NULLS LAST, ${orderBy}`;
 
-    const articles = await dbRead.article.findMany({
-      take,
-      cursor: cursor ? { id: cursor } : undefined,
-      where,
-      select: {
-        id: true,
-        cover: true,
-        title: true,
-        publishedAt: true,
-        nsfw: true,
-        user: { select: userWithCosmeticsSelect },
-        tags: { select: { tag: { select: simpleTagSelect } } },
-        stats: {
-          select: {
-            [`favoriteCount${period}`]: true,
-            [`commentCount${period}`]: true,
-            [`likeCount${period}`]: true,
-            [`dislikeCount${period}`]: true,
-            [`heartCount${period}`]: true,
-            [`laughCount${period}`]: true,
-            [`cryCount${period}`]: true,
-            [`viewCount${period}`]: true,
-            [`tippedAmountCount${period}`]: true,
-          },
-        },
-      },
-      orderBy,
-    });
+    // eslint-disable-next-line prefer-const
+    let [cursorProp, cursorDirection] = orderBy?.split(' ');
+
+    if (cursorProp === 'a."publishedAt"') {
+      // treats a date as a number of seconds since epoch
+      cursorProp = `extract(epoch from ${cursorProp})`;
+    }
+
+    if (cursor) {
+      const cursorOperator = cursorDirection === 'DESC' ? '<' : '>';
+      AND.push(Prisma.sql`${Prisma.raw(cursorProp)} ${Prisma.raw(cursorOperator)} ${cursor}`);
+    }
+
+    if (clubId) {
+      WITH.push(Prisma.sql`
+      "clubArticles" AS (
+        SELECT DISTINCT ON (a."id") a."id" as "articleId"
+        FROM "EntityAccess" ea
+        JOIN "Article" a ON a."id" = ea."accessToId"
+        LEFT JOIN "ClubTier" ct ON ea."accessorType" = 'ClubTier' AND ea."accessorId" = ct."id" AND ct."clubId" = ${clubId}
+        WHERE (
+            (
+             ea."accessorType" = 'Club' AND ea."accessorId" = ${clubId}
+            )
+            OR (
+              ea."accessorType" = 'ClubTier' AND ct."clubId" = ${clubId}
+            )
+          )
+          AND ea."accessToType" = 'Article'
+      )
+    `);
+    }
+
+    const queryWith = WITH.length > 0 ? Prisma.sql`WITH ${Prisma.join(WITH, ', ')}` : Prisma.sql``;
+    const queryFrom = Prisma.sql`
+      FROM "Article" a
+      LEFT JOIN "User" u ON a."userId" = u.id
+      LEFT JOIN "ArticleStat" stats ON stats."articleId" = a.id
+      LEFT JOIN "ArticleRank" rank ON rank."articleId" = a.id
+      ${clubId ? Prisma.sql`JOIN "clubArticles" ca ON ca."articleId" = a."id"` : Prisma.sql``}
+      WHERE ${Prisma.join(AND, ' AND ')}
+    `;
+    const articles = await dbRead.$queryRaw<(ArticleRaw & { cursorId: number })[]>`
+      ${queryWith}
+      SELECT
+        a.id,
+        a.cover,
+        a."coverId",
+        a.title,
+        a."publishedAt",
+        a."nsfwLevel",
+        a."userNsfwLevel",
+        a."userId",
+        a."createdAt",
+        a."updatedAt",
+        a."unlisted",
+        a."availability",
+        a."userId",
+        a.status,
+        ${Prisma.raw(`
+        jsonb_build_object(
+          'favoriteCount', stats."favoriteCount${period}",
+          'collectedCount', stats."collectedCount${period}",
+          'commentCount', stats."commentCount${period}",
+          'likeCount', stats."likeCount${period}",
+          'dislikeCount', stats."dislikeCount${period}",
+          'heartCount', stats."heartCount${period}",
+          'cryCount', stats."cryCount${period}",
+          'viewCount', stats."viewCount${period}",
+          'tippedAmountCount', stats."tippedAmountCount${period}"
+        ) as "stats",
+        `)}
+        (
+          SELECT COALESCE(
+            jsonb_agg(
+                jsonb_build_object('tag', jsonb_build_object(
+                  'id', t.id,
+                  'name', t.name,
+                  'isCategory', t."isCategory"
+                ))
+            ), '[]'::jsonb
+          ) FROM "TagsOnArticle" at
+            JOIN "Tag" t ON t.id = at."tagId"
+            WHERE at."articleId" = a."id"
+            AND "tagId" IS NOT NULL
+        ) as "tags",
+        jsonb_build_object(
+          'id', u."id",
+          'username', u."username",
+          'deletedAt', u."deletedAt",
+          'image', u."image",
+          'profilePictureId', u."profilePictureId"
+        ) as "user",
+        (
+          SELECT
+            jsonb_agg(
+              jsonb_build_object(
+                'data', uc.data,
+                'cosmetic', jsonb_build_object(
+                  'id', c.id,
+                  'data', c.data,
+                  'type', c.type,
+                  'source', c.source,
+                  'name', c.name,
+                  'leaderboardId', c."leaderboardId",
+                  'leaderboardPosition', c."leaderboardPosition"
+                )
+              )
+            )
+          FROM "UserCosmetic" uc
+          JOIN "Cosmetic" c ON c.id = uc."cosmeticId"
+              AND "equippedAt" IS NOT NULL
+          WHERE uc."userId" = a."userId" AND uc."equippedToId" IS NULL
+          GROUP BY uc."userId"
+        ) as "userCosmetics",
+        ${Prisma.raw(cursorProp ? cursorProp : 'null')} as "cursorId"
+      ${queryFrom}
+      ORDER BY ${Prisma.raw(orderBy)}
+      LIMIT ${take}
+    `;
 
     let nextCursor: number | undefined;
     if (articles.length > limit) {
       const nextItem = articles.pop();
-      nextCursor = nextItem?.id;
+      nextCursor = nextItem?.cursorId || undefined;
     }
 
-    const articleCategories = await getCategoryTags('article');
-    const items = articles.map(({ tags, stats, ...article }) => ({
-      ...article,
-      tags: tags.map(({ tag }) => ({
-        ...tag,
-        isCategory: articleCategories.some((c) => c.id === tag.id),
-      })),
-      stats: stats
-        ? {
-            favoriteCount: stats[`favoriteCount${period}`] as number,
-            commentCount: stats[`commentCount${period}`] as number,
-            likeCount: stats[`likeCount${period}`] as number,
-            dislikeCount: stats[`dislikeCount${period}`] as number,
-            heartCount: stats[`heartCount${period}`] as number,
-            laughCount: stats[`laughCount${period}`] as number,
-            cryCount: stats[`cryCount${period}`] as number,
-            viewCount: stats[`viewCount${period}`] as number,
-            tippedAmountCount: stats[`tippedAmountCount${period}`] as number,
-          }
-        : undefined,
-    }));
+    const profilePictures = await dbRead.image.findMany({
+      where: { id: { in: articles.map((a) => a.user.profilePictureId).filter(isDefined) } },
+      select: { ...profileImageSelect, ingestion: true },
+    });
 
-    return { nextCursor, items };
+    const coverIds = articles.map((x) => x.coverId).filter(isDefined);
+    const coverImages = coverIds.length
+      ? await dbRead.image.findMany({
+          where: { id: { in: coverIds } },
+          select: imageSelect,
+        })
+      : [];
+
+    const articleCategories = await getCategoryTags('article');
+    const cosmetics = includeCosmetics
+      ? await getCosmeticsForEntity({ ids: articles.map((x) => x.id), entity: 'Article' })
+      : {};
+
+    const items = articles
+      .filter((a) => {
+        // This take prio over mod status just so mods can see the same as users.
+        if (hidePrivateArticles && a.availability === Availability.Private) return false;
+        if (sessionUser?.isModerator || a.userId === sessionUser?.id) return true;
+
+        return true;
+      })
+      .map(({ tags, stats, user, userCosmetics, cursorId, ...article }) => {
+        const { profilePictureId, ...u } = user;
+        const profilePicture = profilePictures.find((p) => p.id === profilePictureId) ?? null;
+        const coverImage = coverImages.find((x) => x.id === article.coverId);
+
+        return {
+          ...article,
+          tags: tags.map(({ tag }) => ({
+            ...tag,
+            isCategory: articleCategories.some((c) => c.id === tag.id),
+          })),
+          stats,
+          user: {
+            ...u,
+            profilePicture,
+            cosmetics: userCosmetics,
+          },
+          coverImage: coverImage
+            ? {
+                ...coverImage,
+                // !important - when article `userNsfwLevel` equals article `nsfwLevel`, it's possible that the article `userNsfwLevel` is higher than the cover image `nsfwLevel`. In this case, we update the image to the higher `nsfwLevel` so that it will still pass through front end filters
+                nsfwLevel:
+                  article.nsfwLevel === article.userNsfwLevel
+                    ? article.nsfwLevel
+                    : coverImage.nsfwLevel,
+                meta: coverImage.meta as ImageMetaProps,
+                metadata: coverImage.metadata as ImageMetadata,
+                tags: coverImage?.tags.flatMap((x) => x.tag.id),
+              }
+            : undefined,
+          cosmetic: cosmetics[article.id] ?? null,
+        };
+      });
+
+    return {
+      nextCursor,
+      items: items as Array<
+        Omit<(typeof items)[number], 'cosmetic'> & {
+          cosmetic?: WithClaimKey<ContentDecorationCosmetic> | null;
+        }
+      >,
+    };
   } catch (error) {
     throw throwDbError(error);
   }
@@ -220,7 +512,7 @@ export const getArticles = async ({
 type CivitaiNewsItemRaw = {
   id: number;
   collection: string;
-  cover: string;
+  coverId?: number;
   title: string;
   content: string;
   publishedAt: Date;
@@ -228,22 +520,13 @@ type CivitaiNewsItemRaw = {
   featured: boolean;
   summary?: string;
 };
-export type CivitaiNewsItem = {
-  id: number;
-  cover: string;
-  title: string;
-  content: string;
-  publishedAt: Date;
-  user: UserWithCosmetics;
-  featured: boolean;
-  summary: string;
-};
+export type CivitaiNewsItem = AsyncReturnType<typeof getCivitaiNews>['articles'][number];
 export const getCivitaiNews = async () => {
   const articlesRaw = await dbRead.$queryRaw<CivitaiNewsItemRaw[]>`
     SELECT
       c.name as "collection",
       a.id,
-      cover,
+      "coverId",
       title,
       content,
       "publishedAt",
@@ -254,6 +537,7 @@ export const getCivitaiNews = async () => {
     JOIN "CollectionItem" ci ON ci."articleId" = a.id
     JOIN "Collection" c ON c.id = ci."collectionId"
     WHERE c.name IN ('Newsroom', 'Updates') AND c."userId" = -1 AND a."createdAt" > now() - '1 year'::interval
+      AND a."publishedAt" IS NOT NULL AND a.status = 'Published'::"ArticleStatus"
     ORDER BY a."createdAt" DESC
     LIMIT 10
   `;
@@ -263,49 +547,97 @@ export const getCivitaiNews = async () => {
     select: userWithCosmeticsSelect,
   });
 
-  const news: CivitaiNewsItem[] = [];
-  const updates: CivitaiNewsItem[] = [];
-  for (const article of articlesRaw) {
+  const coverIds = articlesRaw.map((x) => x.coverId).filter(isDefined);
+  const coverImages = coverIds.length
+    ? await dbRead.image.findMany({
+        where: { id: { in: coverIds } },
+        select: imageSelect,
+      })
+    : [];
+
+  const articles = articlesRaw.map((article) => {
     const user = users.find((x) => x.id === article.userId);
-    const item = {
+    const coverImage = coverImages.find((x) => x.id === article.coverId);
+    return {
       ...article,
       user: user ?? null,
       summary: article.summary ?? truncate(removeTags(article.content), { length: 200 }),
-    } as CivitaiNewsItem;
-    if (article.collection === 'Newsroom') news.push(item);
-    if (article.collection === 'Updates') updates.push(item);
-  }
+      coverImage: coverImage
+        ? { ...coverImage, tags: coverImage?.tags.flatMap((x) => x.tag.id) }
+        : undefined,
+      type: article.collection === 'Newsroom' ? 'news' : 'updates',
+    };
+  });
 
   const pressMentions = await dbRead.pressMention.findMany({
     orderBy: { publishedAt: 'desc' },
     where: { publishedAt: { lte: new Date() } },
   });
 
-  return { news, updates, pressMentions };
+  return { articles, pressMentions };
 };
 
-export const getArticleById = async ({ id, user }: GetByIdInput & { user?: SessionUser }) => {
+export const getCivitaiEvents = async () => {
+  const collection = await dbRead.collection.findFirst({
+    where: { name: 'Events', userId: -1 },
+    select: { id: true },
+  });
+  if (!collection) throw new Error('Events collection not found');
+
+  const input = articleWhereSchema.parse({
+    collectionId: collection.id,
+    sort: ArticleSort.Newest,
+  });
+  const events = await getArticles({ ...input, limit: 100, sessionUser: undefined });
+  return events;
+};
+
+export type ArticleGetById = AsyncReturnType<typeof getArticleById>;
+export const getArticleById = async ({
+  id,
+  userId,
+  isModerator,
+}: GetByIdInput & { userId?: number; isModerator?: boolean }) => {
   try {
-    const isMod = user?.isModerator ?? false;
     const article = await dbRead.article.findFirst({
       where: {
         id,
-        OR: !isMod ? [{ publishedAt: { not: null } }, { userId: user?.id }] : undefined,
+        OR: !isModerator
+          ? [{ publishedAt: { not: null }, status: ArticleStatus.Published }, { userId }]
+          : undefined,
       },
       select: articleDetailSelect,
     });
+
     if (!article) throw throwNotFoundError(`No article with id ${id}`);
+    if (userId && !isModerator) {
+      const blocked = await amIBlockedByUser({ userId, targetUserId: article.userId });
+      if (blocked) throw throwNotFoundError(`No article with id ${id}`);
+    }
 
     const articleCategories = await getCategoryTags('article');
-    const attachments = await getFilesByEntity({ id, type: 'Article' });
+    const attachments: Awaited<ReturnType<typeof getFilesByEntity>> = await getFilesByEntity({
+      id,
+      type: 'Article',
+    });
 
     return {
       ...article,
+      nsfwLevel: article.nsfwLevel as NsfwLevel,
       attachments,
       tags: article.tags.map(({ tag }) => ({
         ...tag,
         isCategory: articleCategories.some((c) => c.id === tag.id),
       })),
+      coverImage: article.coverImage
+        ? {
+            ...article.coverImage,
+            nsfwLevel: article.coverImage.nsfwLevel as NsfwLevel,
+            meta: article.coverImage.meta as ImageMetaProps,
+            metadata: article.coverImage.metadata as ImageMetadata,
+            tags: article.coverImage?.tags.flatMap((x) => x.tag.id),
+          }
+        : undefined,
     };
   } catch (error) {
     if (error instanceof TRPCError) throw error;
@@ -313,55 +645,38 @@ export const getArticleById = async ({ id, user }: GetByIdInput & { user?: Sessi
   }
 };
 
-export const getArticlesByCategory = async ({
-  user,
-  cursor,
-  ...input
-}: GetArticlesByCategorySchema & {
-  user?: SessionUser;
-}) => {
-  input.limit ??= 10;
-  let categories = await getTypeCategories({
-    type: 'article',
-    excludeIds: input.excludedTagIds,
-    limit: input.limit + 1,
-    cursor,
-  });
-
-  let nextCursor: number | null = null;
-  if (categories.length > input.limit) nextCursor = categories.pop()?.id ?? null;
-  categories = categories.sort((a, b) => {
-    if (a.priority !== b.priority) return a.priority - b.priority;
-    return Math.random() - 0.5;
-  });
-
-  const items = await Promise.all(
-    categories.map((c) =>
-      getArticles({
-        ...input,
-        limit: Math.ceil((input.articleLimit ?? 12) * 1.25),
-        tags: [c.id],
-        sessionUser: user,
-      }).then(({ items }) => ({ ...c, items }))
-    )
-  );
-
-  return { items, nextCursor };
-};
-
 export const upsertArticle = async ({
   id,
   userId,
   tags,
   attachments,
+  coverImage,
+  isModerator,
   ...data
-}: UpsertArticleInput & { userId: number }) => {
+}: UpsertArticleInput & { userId: number; isModerator?: boolean }) => {
   try {
+    await throwOnBlockedLinkDomain(data.content);
+    // TODO make coverImage required here and in db
+    // create image entity to be attached to article
+    let coverId = coverImage?.id;
+    if (coverImage) {
+      if (!coverId) {
+        const result = await createImage({ ...coverImage, userId });
+        coverId = result.id;
+      } else {
+        const isImgOwner = await isImageOwner({ userId, isModerator, imageId: coverId });
+        if (!isImgOwner) {
+          throw throwAuthorizationError('Invalid cover image');
+        }
+      }
+    }
+
     if (!id) {
       const result = await dbWrite.$transaction(async (tx) => {
         const article = await tx.article.create({
           data: {
             ...data,
+            coverId,
             userId,
             tags: tags
               ? {
@@ -391,17 +706,40 @@ export const upsertArticle = async ({
           });
         }
 
+        await userContentOverviewCache.bust(article.userId);
+
         return article;
       });
 
       return result;
     }
 
+    const article = await dbWrite.article.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        cover: true,
+        coverId: true,
+        userId: true,
+        publishedAt: true,
+        status: true,
+      },
+    });
+    if (!article) throw throwNotFoundError();
+
+    const isOwner = article.userId === userId || isModerator;
+    if (!isOwner) throw throwAuthorizationError('You cannot perform this action');
+
+    const republishing =
+      article.status === ArticleStatus.Unpublished && data.status === ArticleStatus.Published;
+
     const result = await dbWrite.$transaction(async (tx) => {
-      const article = await tx.article.update({
+      const updated = await tx.article.update({
         where: { id },
         data: {
           ...data,
+          publishedAt: republishing ? article.publishedAt : data.publishedAt,
+          coverId,
           tags: tags
             ? {
                 deleteMany: {
@@ -428,7 +766,7 @@ export const upsertArticle = async ({
             : undefined,
         },
       });
-      if (!article) return null;
+      if (!updated) return null;
 
       if (attachments) {
         // Delete any attachments that were removed.
@@ -446,24 +784,37 @@ export const upsertArticle = async ({
             .filter((x) => !x.id)
             .map((attachment) => ({
               ...attachment,
-              entityId: article.id,
+              entityId: updated.id,
               entityType: 'Article',
             })),
         });
       }
 
-      return article;
+      await userContentOverviewCache.bust(updated.userId);
+
+      return updated;
     });
+
     if (!result) throw throwNotFoundError(`No article with id ${id}`);
 
-    // If it was unpublished, need to remove it from the queue.
-    if (!result.publishedAt) {
-      await articlesSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);
+    // remove old cover image
+    if (article.coverId !== coverId && article.coverId) {
+      const isImgOwner = await isImageOwner({ userId, isModerator, imageId: article.coverId });
+      if (isImgOwner) {
+        await deleteImageById({ id: article.coverId });
+      }
     }
 
-    // If tags changed, need to set is so it updates the queue.
-    if (tags) {
-      await articlesSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Update }]);
+    await articlesSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Update }]);
+
+    // If it was published, process it.
+    if (result.publishedAt && result.publishedAt <= new Date()) {
+      await eventEngine.processEngagement({
+        userId: result.userId,
+        type: 'published',
+        entityType: 'article',
+        entityId: result.id,
+      });
     }
 
     return result;
@@ -473,18 +824,30 @@ export const upsertArticle = async ({
   }
 };
 
-export const deleteArticleById = async ({ id }: GetByIdInput) => {
+export const deleteArticleById = async ({
+  id,
+  userId,
+  isModerator,
+}: GetByIdInput & { userId: number; isModerator?: boolean }) => {
   try {
+    const article = await dbWrite.article.findUnique({
+      where: { id },
+      select: { userId: true },
+    });
+    if (!article) throw throwNotFoundError(`No article with id ${id}`);
+
+    const isOwner = article.userId === userId || isModerator;
+    if (!isOwner) throw throwAuthorizationError(`You cannot perform this action`);
+
     const deleted = await dbWrite.$transaction(async (tx) => {
-      const article = await tx.article.delete({ where: { id } });
-      if (!article) return null;
+      const article = await tx.article.delete({ where: { id }, select: { coverId: true } });
 
       await tx.file.deleteMany({ where: { entityId: id, entityType: 'Article' } });
 
       return article;
     });
-    if (!deleted) throw throwNotFoundError(`No article with id ${id}`);
 
+    if (deleted.coverId) await deleteImageById({ id: deleted.coverId });
     await articlesSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);
 
     return deleted;
@@ -503,7 +866,7 @@ export const getDraftArticlesByUserId = async ({
     const { take, skip } = getPagination(limit, page);
     const where: Prisma.ArticleFindManyArgs['where'] = {
       userId,
-      publishedAt: null,
+      status: { in: [ArticleStatus.Draft, ArticleStatus.Unpublished] },
     };
 
     const articles = await dbRead.article.findMany({
@@ -516,6 +879,7 @@ export const getDraftArticlesByUserId = async ({
         title: true,
         createdAt: true,
         updatedAt: true,
+        status: true,
         tags: {
           where: { tag: { isCategory: true } },
           select: { tag: { select: { id: true, name: true } } },
@@ -534,3 +898,35 @@ export const getDraftArticlesByUserId = async ({
     throw throwDbError(error);
   }
 };
+
+export async function unpublishArticleById({
+  id,
+  userId,
+  isModerator,
+}: {
+  id: number;
+  userId: number;
+  isModerator?: boolean;
+}) {
+  const article = await dbRead.article.findUnique({
+    where: { id },
+    select: { userId: true, publishedAt: true, status: true },
+  });
+  if (!article) throw throwNotFoundError(`No article with id ${id}`);
+
+  const isOwner = article.userId === userId || isModerator;
+  if (!isOwner) throw throwAuthorizationError('You cannot perform this action');
+
+  if (!article.publishedAt || article.status !== ArticleStatus.Published)
+    throw throwBadRequestError('Article is not published');
+
+  const updated = await dbWrite.article.update({
+    where: { id },
+    data: { status: ArticleStatus.Unpublished },
+  });
+
+  await articlesSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);
+  await userContentOverviewCache.bust(article.userId);
+
+  return updated;
+}

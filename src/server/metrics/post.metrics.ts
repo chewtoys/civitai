@@ -1,239 +1,281 @@
-import { createMetricProcessor } from '~/server/metrics/base.metrics';
+import { chunk } from 'lodash-es';
+import { createMetricProcessor, MetricProcessorRunContext } from '~/server/metrics/base.metrics';
+import { executeRefresh, getAffected, snippets } from '~/server/metrics/metric-helpers';
+import { limitConcurrency, sleep, Task } from '~/server/utils/concurrency-helpers';
+import { createLogger } from '~/utils/logging';
+import { PostMetric } from '~/shared/utils/prisma/models';
+import dayjs from 'dayjs';
+import { templateHandler } from '~/server/db/db-helpers';
+
+const log = createLogger('metrics:post');
 
 export const postMetrics = createMetricProcessor({
   name: 'Post',
-  async update({ db, lastUpdate }) {
-    await db.$executeRaw`
-    -- Get all post engagements that have happened since then that affect metrics
-    WITH recent_engagements AS
-    (
-      SELECT
-        "postId" AS id
-      FROM "PostReaction"
-      WHERE "createdAt" > ${lastUpdate}
+  async update(baseCtx) {
+    // Update the context to include the update record
+    const ctx = baseCtx as MetricContext;
+    ctx.updates = {};
 
-      UNION
+    // Get the metric tasks
+    //---------------------------------------
+    const fetchTasks = (await Promise.all([
+      getReactionTasks(ctx),
+      getCommentTasks(ctx),
+      getCollectionTasks(ctx),
+    ]).then((x) => x.flat())) as Task[];
+    log('postMetrics update', fetchTasks.length, 'tasks');
+    await limitConcurrency(fetchTasks, 5);
 
-      SELECT t."postId" as id
-      FROM "Thread" t
-      JOIN "CommentV2" c ON c."threadId" = t.id
-      WHERE t."postId" IS NOT NULL AND c."createdAt" > ${lastUpdate}
+    // Update the post metrics
+    //---------------------------------------
+    const updateTasks = chunk(Object.values(ctx.updates), 1000).map((batch, i) => async () => {
+      ctx.jobContext.checkIfCanceled();
+      log('update metrics', i + 1, 'of', updateTasks.length);
 
-      UNION
+      const batchJson = JSON.stringify(batch);
+      const metricInsertColumns = metrics.map((key) => `"${key}" INT[]`).join(', ');
+      const metricInsertKeys = metrics.map((key) => `"${key}"`).join(', ');
+      const metricValues = metrics
+        .map(
+          (key) => `
+        CASE
+          WHEN tf.timeframe = 'Day' THEN COALESCE(d."${key}"[1], im."${key}", 0)
+          WHEN tf.timeframe = 'Month' THEN COALESCE(d."${key}"[2], im."${key}", 0)
+          WHEN tf.timeframe = 'Week' THEN COALESCE(d."${key}"[3], im."${key}", 0)
+          WHEN tf.timeframe = 'Year' THEN COALESCE(d."${key}"[4], im."${key}", 0)
+          WHEN tf.timeframe = 'AllTime' THEN COALESCE(d."${key}"[5], im."${key}", 0)
+        END as "${key}"
+      `
+        )
+        .join(',\n');
+      const metricOverrides = metrics.map((key) => `"${key}" = EXCLUDED."${key}"`).join(',\n');
 
-      SELECT
-        i."postId" AS id
-      FROM "ImageReaction" ir
-      JOIN "Image" i ON ir."imageId" = i.id
-      WHERE ir."createdAt" > ${lastUpdate}
-
-      UNION
-
-      SELECT ci."postId" as id
-      FROM "CollectionItem" ci
-      WHERE ci."postId" IS NOT NULL AND ci."createdAt" > ${lastUpdate}
-
-      UNION
-
-      SELECT
-        "id"
-      FROM "MetricUpdateQueue"
-      WHERE type = 'Post'
-    ),
-    -- Get all affected users
-    affected AS
-    (
-        SELECT DISTINCT
-            r.id
-        FROM recent_engagements r
-        JOIN "Post" p ON p.id = r.id
-        WHERE r.id IS NOT NULL
-    )
-
-    -- upsert metrics for all affected users
-    -- perform a one-pass table scan producing all metrics for all affected users
-    INSERT INTO "PostMetric" ("postId", timeframe, "likeCount", "dislikeCount", "heartCount", "laughCount", "cryCount", "commentCount", "collectedCount")
-    SELECT
-      m.id,
-      tf.timeframe,
-      CASE
-        WHEN tf.timeframe = 'AllTime' THEN like_count
-        WHEN tf.timeframe = 'Year' THEN year_like_count
-        WHEN tf.timeframe = 'Month' THEN month_like_count
-        WHEN tf.timeframe = 'Week' THEN week_like_count
-        WHEN tf.timeframe = 'Day' THEN day_like_count
-      END AS like_count,
-      CASE
-        WHEN tf.timeframe = 'AllTime' THEN dislike_count
-        WHEN tf.timeframe = 'Year' THEN year_dislike_count
-        WHEN tf.timeframe = 'Month' THEN month_dislike_count
-        WHEN tf.timeframe = 'Week' THEN week_dislike_count
-        WHEN tf.timeframe = 'Day' THEN day_dislike_count
-      END AS dislike_count,
-      CASE
-        WHEN tf.timeframe = 'AllTime' THEN heart_count
-        WHEN tf.timeframe = 'Year' THEN year_heart_count
-        WHEN tf.timeframe = 'Month' THEN month_heart_count
-        WHEN tf.timeframe = 'Week' THEN week_heart_count
-        WHEN tf.timeframe = 'Day' THEN day_heart_count
-      END AS heart_count,
-      CASE
-        WHEN tf.timeframe = 'AllTime' THEN laugh_count
-        WHEN tf.timeframe = 'Year' THEN year_laugh_count
-        WHEN tf.timeframe = 'Month' THEN month_laugh_count
-        WHEN tf.timeframe = 'Week' THEN week_laugh_count
-        WHEN tf.timeframe = 'Day' THEN day_laugh_count
-      END AS laugh_count,
-      CASE
-        WHEN tf.timeframe = 'AllTime' THEN cry_count
-        WHEN tf.timeframe = 'Year' THEN year_cry_count
-        WHEN tf.timeframe = 'Month' THEN month_cry_count
-        WHEN tf.timeframe = 'Week' THEN week_cry_count
-        WHEN tf.timeframe = 'Day' THEN day_cry_count
-      END AS cry_count,
-      CASE
-        WHEN tf.timeframe = 'AllTime' THEN comment_count
-        WHEN tf.timeframe = 'Year' THEN year_comment_count
-        WHEN tf.timeframe = 'Month' THEN month_comment_count
-        WHEN tf.timeframe = 'Week' THEN week_comment_count
-        WHEN tf.timeframe = 'Day' THEN day_comment_count
-      END AS comment_count,
-      CASE
-        WHEN tf.timeframe = 'AllTime' THEN collected_count
-        WHEN tf.timeframe = 'Year' THEN year_collected_count
-        WHEN tf.timeframe = 'Month' THEN month_collected_count
-        WHEN tf.timeframe = 'Week' THEN week_collected_count
-        WHEN tf.timeframe = 'Day' THEN day_collected_count
-      END AS collected_count
-    FROM
-    (
-      SELECT
-        q.id,
-        COALESCE(ir.heart_count,0) AS heart_count,
-        COALESCE(ir.year_heart_count,0) AS year_heart_count,
-        COALESCE(ir.month_heart_count,0) AS month_heart_count,
-        COALESCE(ir.week_heart_count,0) AS week_heart_count,
-        COALESCE(ir.day_heart_count,0) AS day_heart_count,
-        COALESCE(ir.laugh_count,0) AS laugh_count,
-        COALESCE(ir.year_laugh_count,0) AS year_laugh_count,
-        COALESCE(ir.month_laugh_count,0) AS month_laugh_count,
-        COALESCE(ir.week_laugh_count,0) AS week_laugh_count,
-        COALESCE(ir.day_laugh_count,0) AS day_laugh_count,
-        COALESCE(ir.cry_count,0) AS cry_count,
-        COALESCE(ir.year_cry_count,0) AS year_cry_count,
-        COALESCE(ir.month_cry_count,0) AS month_cry_count,
-        COALESCE(ir.week_cry_count,0) AS week_cry_count,
-        COALESCE(ir.day_cry_count,0) AS day_cry_count,
-        COALESCE(ir.dislike_count,0) AS dislike_count,
-        COALESCE(ir.year_dislike_count,0) AS year_dislike_count,
-        COALESCE(ir.month_dislike_count,0) AS month_dislike_count,
-        COALESCE(ir.week_dislike_count,0) AS week_dislike_count,
-        COALESCE(ir.day_dislike_count,0) AS day_dislike_count,
-        COALESCE(ir.like_count,0) AS like_count,
-        COALESCE(ir.year_like_count,0) AS year_like_count,
-        COALESCE(ir.month_like_count,0) AS month_like_count,
-        COALESCE(ir.week_like_count,0) AS week_like_count,
-        COALESCE(ir.day_like_count,0) AS day_like_count,
-        COALESCE(c.comment_count, 0) AS comment_count,
-        COALESCE(c.year_comment_count, 0) AS year_comment_count,
-        COALESCE(c.month_comment_count, 0) AS month_comment_count,
-        COALESCE(c.week_comment_count, 0) AS week_comment_count,
-        COALESCE(c.day_comment_count, 0) AS day_comment_count,
-        COALESCE(ci.collected_count, 0) AS collected_count,
-        COALESCE(ci.year_collected_count, 0) AS year_collected_count,
-        COALESCE(ci.month_collected_count, 0) AS month_collected_count,
-        COALESCE(ci.week_collected_count, 0) AS week_collected_count,
-        COALESCE(ci.day_collected_count, 0) AS day_collected_count
-      FROM affected q
-      LEFT JOIN (
+      await executeRefresh(ctx)`
+        -- update post metrics
+        WITH data AS (SELECT * FROM jsonb_to_recordset('${batchJson}') AS x("postId" INT, ${metricInsertColumns}))
+        INSERT INTO "PostMetric" ("postId", "timeframe", "updatedAt", ${metricInsertKeys})
         SELECT
-          ic."postId" AS id,
-          COUNT(*) AS comment_count,
-          SUM(IIF(v."createdAt" >= (NOW() - interval '365 days'), 1, 0)) AS year_comment_count,
-          SUM(IIF(v."createdAt" >= (NOW() - interval '30 days'), 1, 0)) AS month_comment_count,
-          SUM(IIF(v."createdAt" >= (NOW() - interval '7 days'), 1, 0)) AS week_comment_count,
-          SUM(IIF(v."createdAt" >= (NOW() - interval '1 days'), 1, 0)) AS day_comment_count
-        FROM "Thread" ic
-        JOIN "CommentV2" v ON ic."id" = v."threadId"
-        WHERE ic."postId" IS NOT NULL
-        GROUP BY ic."postId"
-      ) c ON q.id = c.id
-      LEFT JOIN (
-        SELECT
-          i."postId" AS id,
-          SUM(IIF(ir.reaction = 'Heart', 1, 0)) AS heart_count,
-          SUM(IIF(ir.reaction = 'Heart' AND ir."createdAt" >= (NOW() - interval '365 days'), 1, 0)) AS year_heart_count,
-          SUM(IIF(ir.reaction = 'Heart' AND ir."createdAt" >= (NOW() - interval '30 days'), 1, 0)) AS month_heart_count,
-          SUM(IIF(ir.reaction = 'Heart' AND ir."createdAt" >= (NOW() - interval '7 days'), 1, 0)) AS week_heart_count,
-          SUM(IIF(ir.reaction = 'Heart' AND ir."createdAt" >= (NOW() - interval '1 days'), 1, 0)) AS day_heart_count,
-          SUM(IIF(ir.reaction = 'Like', 1, 0)) AS like_count,
-          SUM(IIF(ir.reaction = 'Like' AND ir."createdAt" >= (NOW() - interval '365 days'), 1, 0)) AS year_like_count,
-          SUM(IIF(ir.reaction = 'Like' AND ir."createdAt" >= (NOW() - interval '30 days'), 1, 0)) AS month_like_count,
-          SUM(IIF(ir.reaction = 'Like' AND ir."createdAt" >= (NOW() - interval '7 days'), 1, 0)) AS week_like_count,
-          SUM(IIF(ir.reaction = 'Like' AND ir."createdAt" >= (NOW() - interval '1 days'), 1, 0)) AS day_like_count,
-          SUM(IIF(ir.reaction = 'Dislike', 1, 0)) AS dislike_count,
-          SUM(IIF(ir.reaction = 'Dislike' AND ir."createdAt" >= (NOW() - interval '365 days'), 1, 0)) AS year_dislike_count,
-          SUM(IIF(ir.reaction = 'Dislike' AND ir."createdAt" >= (NOW() - interval '30 days'), 1, 0)) AS month_dislike_count,
-          SUM(IIF(ir.reaction = 'Dislike' AND ir."createdAt" >= (NOW() - interval '7 days'), 1, 0)) AS week_dislike_count,
-          SUM(IIF(ir.reaction = 'Dislike' AND ir."createdAt" >= (NOW() - interval '1 days'), 1, 0)) AS day_dislike_count,
-          SUM(IIF(ir.reaction = 'Cry', 1, 0)) AS cry_count,
-          SUM(IIF(ir.reaction = 'Cry' AND ir."createdAt" >= (NOW() - interval '365 days'), 1, 0)) AS year_cry_count,
-          SUM(IIF(ir.reaction = 'Cry' AND ir."createdAt" >= (NOW() - interval '30 days'), 1, 0)) AS month_cry_count,
-          SUM(IIF(ir.reaction = 'Cry' AND ir."createdAt" >= (NOW() - interval '7 days'), 1, 0)) AS week_cry_count,
-          SUM(IIF(ir.reaction = 'Cry' AND ir."createdAt" >= (NOW() - interval '1 days'), 1, 0)) AS day_cry_count,
-          SUM(IIF(ir.reaction = 'Laugh', 1, 0)) AS laugh_count,
-          SUM(IIF(ir.reaction = 'Laugh' AND ir."createdAt" >= (NOW() - interval '365 days'), 1, 0)) AS year_laugh_count,
-          SUM(IIF(ir.reaction = 'Laugh' AND ir."createdAt" >= (NOW() - interval '30 days'), 1, 0)) AS month_laugh_count,
-          SUM(IIF(ir.reaction = 'Laugh' AND ir."createdAt" >= (NOW() - interval '7 days'), 1, 0)) AS week_laugh_count,
-          SUM(IIF(ir.reaction = 'Laugh' AND ir."createdAt" >= (NOW() - interval '1 days'), 1, 0)) AS day_laugh_count
-        FROM "ImageReaction" ir
-        JOIN "Image" i ON i.id = ir."imageId"
-        GROUP BY i."postId"
-      ) ir ON q.id = ir.id
-      LEFT JOIN (
-        SELECT
-          pci."postId" AS id,
-          COUNT(*) AS collected_count,
-          SUM(IIF(pci."createdAt" >= (NOW() - interval '365 days'), 1, 0)) AS year_collected_count,
-          SUM(IIF(pci."createdAt" >= (NOW() - interval '30 days'), 1, 0)) AS month_collected_count,
-          SUM(IIF(pci."createdAt" >= (NOW() - interval '7 days'), 1, 0)) AS week_collected_count,
-          SUM(IIF(pci."createdAt" >= (NOW() - interval '1 days'), 1, 0)) AS day_collected_count
-        FROM "CollectionItem" pci
-        WHERE pci."postId" IS NOT NULL
-        GROUP BY pci."postId"
-      ) ci ON q.id = ci.id
-    ) m
-    CROSS JOIN (
-      SELECT unnest(enum_range(NULL::"MetricTimeframe")) AS timeframe
-    ) tf
-    ON CONFLICT ("postId", timeframe) DO UPDATE
-      SET "commentCount" = EXCLUDED."commentCount", "heartCount" = EXCLUDED."heartCount", "likeCount" = EXCLUDED."likeCount", "dislikeCount" = EXCLUDED."dislikeCount", "laughCount" = EXCLUDED."laughCount", "cryCount" = EXCLUDED."cryCount", "collectedCount" = EXCLUDED."collectedCount";
-  `;
+          d."postId",
+          tf.timeframe,
+          NOW() as "updatedAt",
+          ${metricValues}
+        FROM data d
+        CROSS JOIN (SELECT unnest(enum_range(NULL::"MetricTimeframe")) AS "timeframe") tf
+        LEFT JOIN "PostMetric" im ON im."postId" = d."postId" AND im."timeframe" = tf.timeframe
+        WHERE EXISTS (SELECT 1 FROM "Post" WHERE id = d."postId") -- ensure the post exists
+        ON CONFLICT ("postId", "timeframe") DO UPDATE
+          SET
+            ${metricOverrides},
+            "updatedAt" = NOW()
+      `;
+      await sleep(1000);
+      log('update metrics', i + 1, 'of', updateTasks.length, 'done');
+    });
+    await limitConcurrency(updateTasks, 3);
+
+    // Update the age groups
+    //---------------------------------------
+    const ageGroupUpdatesQuery = await ctx.pg.cancellableQuery<{ postId: number }>(`
+      SELECT "postId"
+      FROM "PostMetric" pm
+      JOIN "Post" p ON p.id = pm."postId"
+      WHERE
+        (p."publishedAt" IS NULL AND "ageGroup" IS NOT NULL) OR
+        ("ageGroup" IS NULL AND p."publishedAt" IS NOT NULL) OR
+        ("ageGroup" IS NOT NULL AND p."publishedAt" > now()) OR
+        ("ageGroup" = 'Year' AND p."publishedAt" < now() - interval '1 year') OR
+        ("ageGroup" = 'Month' AND p."publishedAt" < now() - interval '1 month') OR
+        ("ageGroup" = 'Week' AND p."publishedAt" < now() - interval '1 week') OR
+        ("ageGroup" = 'Day' AND p."publishedAt" < now() - interval '1 day')
+    `);
+    ctx.jobContext.on('cancel', ageGroupUpdatesQuery.cancel);
+    const ageGroupUpdates = await ageGroupUpdatesQuery.result();
+    const affectedIds = ageGroupUpdates.map((x) => x.postId);
+    if (affectedIds.length) {
+      const ageGroupTasks = chunk(affectedIds, 500).map((ids, i) => async () => {
+        log('update ageGroups', i + 1, 'of', ageGroupTasks.length);
+        await executeRefresh(ctx)`
+          UPDATE "PostMetric" pm
+          SET "ageGroup" = CASE
+              WHEN p."publishedAt" IS NULL THEN NULL
+              WHEN p."publishedAt" > now() THEN NULL -- future posts
+              WHEN p."publishedAt" >= now() - interval '1 day' THEN 'Day'::"MetricTimeframe"
+              WHEN p."publishedAt" >= now() - interval '1 week' THEN 'Week'::"MetricTimeframe"
+              WHEN p."publishedAt" >= now() - interval '1 month' THEN 'Month'::"MetricTimeframe"
+              WHEN p."publishedAt" >= now() - interval '1 year' THEN 'Year'::"MetricTimeframe"
+              ELSE 'AllTime'::"MetricTimeframe"
+          END
+          FROM "Post" p
+          WHERE pm."postId" = p.id AND pm."postId" IN (${ids});
+        `;
+        log('update ageGroups', i + 1, 'of', ageGroupTasks.length, 'done');
+      });
+      await limitConcurrency(ageGroupTasks, 10);
+    }
   },
-  async clearDay({ db }) {
-    await db.$executeRaw`
-      UPDATE "PostMetric" SET "heartCount" = 0, "likeCount" = 0, "dislikeCount" = 0, "laughCount" = 0, "cryCount" = 0, "commentCount" = 0, "collectedCount" = 0 WHERE timeframe = 'Day';
-    `;
-  },
-  rank: {
-    table: 'PostRank',
-    primaryKey: 'postId',
-    indexes: [
-      'reactionCountAllTimeRank',
-      'reactionCountDayRank',
-      'reactionCountWeekRank',
-      'reactionCountMonthRank',
-      'reactionCountYearRank',
-      'commentCountAllTimeRank',
-      'commentCountDayRank',
-      'commentCountWeekRank',
-      'commentCountMonthRank',
-      'commentCountYearRank',
-      'collectedCountAllTimeRank',
-      'collectedCountDayRank',
-      'collectedCountWeekRank',
-      'collectedCountMonthRank',
-      'collectedCountYearRank',
-    ],
+  async clearDay(ctx) {
+    // No longer needed based on what Justin said
+    // log('clearDay');
+    // await executeRefresh(ctx)`
+    //   UPDATE "PostMetric"
+    //     SET "heartCount" = 0, "likeCount" = 0, "dislikeCount" = 0, "laughCount" = 0, "cryCount" = 0, "commentCount" = 0, "collectedCount" = 0
+    //   WHERE timeframe = 'Day'
+    //     AND "updatedAt" > date_trunc('day', now() - interval '1 day');
+    // `;
   },
 });
+
+async function getReactionTasks(ctx: MetricContext) {
+  log('getReactionTasks', ctx.lastUpdate);
+  const affectedImages = await ctx.ch.$query<{ imageId: number }>`
+      SELECT DISTINCT entityId as imageId
+      FROM entityMetricEvents
+      WHERE entityType = 'Image'
+      AND createdAt > ${ctx.lastUpdate};
+  `;
+
+  const affected = new Set<number>();
+  const postFetchTasks = chunk(
+    affectedImages.map((x) => x.imageId),
+    30000
+  ).map((ids, i) => async () => {
+    ctx.jobContext.checkIfCanceled();
+    log('getReactionPosts', i + 1, 'of', postFetchTasks.length);
+
+    const postIds = await getAffected(ctx)`
+      -- get recent post image reactions
+      SELECT DISTINCT
+        i."postId" AS id
+      FROM "Image" i
+      WHERE i.id IN (${ids})
+    `;
+    postIds.forEach((x) => affected.add(x));
+    log('getReactionPosts', i + 1, 'of', postFetchTasks.length, 'done');
+  });
+  await limitConcurrency(postFetchTasks, 3);
+
+  const tasks = chunk([...affected], 100).map((ids, i) => async () => {
+    ctx.jobContext.checkIfCanceled();
+    log('getReactionTasks', i + 1, 'of', tasks.length);
+
+    await getMetrics(ctx)`
+      -- get post reaction metrics
+      SELECT
+        i."postId",
+        tf.timeframe,
+        ${snippets.reactionTimeframes()}
+      FROM "ImageReaction" r
+      JOIN "Image" i ON i.id = r."imageId"
+      CROSS JOIN (SELECT unnest(enum_range(NULL::"MetricTimeframe")) AS timeframe) tf
+      WHERE i."postId" IN (${ids})
+      GROUP BY i."postId", tf.timeframe
+    `;
+    log('getReactionTasks', i + 1, 'of', tasks.length, 'done');
+  });
+
+  return tasks;
+}
+
+async function getCommentTasks(ctx: MetricContext) {
+  const affected = await getAffected(ctx)`
+    -- get recent post comments
+    SELECT DISTINCT
+      t."postId" AS id
+    FROM "Thread" t
+    JOIN "CommentV2" c ON c."threadId" = t.id
+    WHERE t."postId" IS NOT NULL AND c."createdAt" > '${ctx.lastUpdate}'
+  `;
+
+  const tasks = chunk(affected, 100).map((ids, i) => async () => {
+    ctx.jobContext.checkIfCanceled();
+    log('getCommentTasks', i + 1, 'of', tasks.length);
+    await getMetrics(ctx)`
+      -- get post comment metrics
+      SELECT
+        t."postId",
+        tf.timeframe,
+        ${snippets.timeframeSum('c."createdAt"')} "commentCount"
+      FROM "Thread" t
+      JOIN "CommentV2" c ON c."threadId" = t.id
+      CROSS JOIN (SELECT unnest(enum_range(NULL::"MetricTimeframe")) AS timeframe) tf
+      WHERE t."postId" IN (${ids})
+      GROUP BY t."postId", tf.timeframe
+    `;
+    log('getCommentTasks', i + 1, 'of', tasks.length, 'done');
+  });
+
+  return tasks;
+}
+
+async function getCollectionTasks(ctx: MetricContext) {
+  const affected = await getAffected(ctx)`
+    -- get recent post collections
+    SELECT DISTINCT
+      "postId" AS id
+    FROM "CollectionItem"
+    WHERE "postId" IS NOT NULL AND "createdAt" > '${ctx.lastUpdate}'
+  `;
+
+  const tasks = chunk(affected, 100).map((ids, i) => async () => {
+    ctx.jobContext.checkIfCanceled();
+    log('getCollectionTasks', i + 1, 'of', tasks.length);
+    await getMetrics(ctx)`
+      -- get post collection metrics
+      SELECT
+        ci."postId",
+        tf.timeframe,
+        ${snippets.timeframeSum('ci."createdAt"')} "collectedCount"
+      FROM "CollectionItem" ci
+      CROSS JOIN (SELECT unnest(enum_range(NULL::"MetricTimeframe")) AS timeframe) tf
+      WHERE ci."postId" IN (${ids})
+      GROUP BY ci."postId", tf.timeframe
+    `;
+    log('getCollectionTasks', i + 1, 'of', tasks.length, 'done');
+  });
+
+  return tasks;
+}
+
+type MetricKey = keyof PostMetric;
+type TimeframeData = [number, number, number, number, number];
+type MetricContext = MetricProcessorRunContext & {
+  updates: Record<number, Record<MetricKey, TimeframeData | number>>;
+  lastViewUpdate: dayjs.Dayjs;
+  setLastViewUpdate: () => void;
+};
+const metrics = [
+  'heartCount',
+  'likeCount',
+  'dislikeCount',
+  'laughCount',
+  'cryCount',
+  'commentCount',
+  'collectedCount',
+] as const;
+const timeframeOrder = ['Day', 'Week', 'Month', 'Year', 'AllTime'] as const;
+
+function getMetrics(ctx: MetricContext) {
+  return templateHandler(async (sql) => {
+    const query = await ctx.pg.cancellableQuery<PostMetric>(sql);
+    ctx.jobContext.on('cancel', query.cancel);
+    const data = await query.result();
+    if (!data.length) return;
+
+    for (const row of data) {
+      const postId = row.postId;
+      const { timeframe } = row;
+      if (!timeframe) continue;
+      const timeframeIndex = timeframeOrder.indexOf(timeframe);
+      if (timeframeIndex === -1) continue;
+
+      ctx.updates[postId] ??= { postId } as Record<MetricKey, TimeframeData | number>;
+      for (const key of Object.keys(row) as MetricKey[]) {
+        if (key === 'postId' || key === 'timeframe') continue;
+        const value = row[key];
+        if (value == null) continue;
+        ctx.updates[postId][key] ??= [0, 0, 0, 0, 0];
+        (ctx.updates[postId][key] as TimeframeData)[timeframeIndex] = Number(value);
+      }
+    }
+  });
+}

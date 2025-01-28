@@ -1,34 +1,42 @@
-import { Button, Container, Group, Stack, Stepper, Title } from '@mantine/core';
-import { ModelUploadType, TrainingStatus } from '@prisma/client';
+import { Button, Group, LoadingOverlay, Popover, Stack, Stepper, Title } from '@mantine/core';
+import { ModelUploadType, TrainingStatus } from '~/shared/utils/prisma/enums';
 import { NextRouter, useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { z } from 'zod';
 import { NotFound } from '~/components/AppLayout/NotFound';
+import { FeatureIntroductionHelpButton } from '~/components/FeatureIntroduction/FeatureIntroduction';
 import { PageLoader } from '~/components/PageLoader/PageLoader';
-import { PostEditWrapper } from '~/components/Post/Edit/PostEditLayout';
 import { Files, UploadStepActions } from '~/components/Resource/Files';
 import { FilesProvider } from '~/components/Resource/FilesProvider';
 import { ModelUpsertForm } from '~/components/Resource/Forms/ModelUpsertForm';
 import { ModelVersionUpsertForm } from '~/components/Resource/Forms/ModelVersionUpsertForm';
-import { PostUpsertForm } from '~/components/Resource/Forms/PostUpsertForm';
+import { PostUpsertForm2 } from '~/components/Resource/Forms/PostUpsertForm2';
 import TrainingSelectFile from '~/components/Resource/Forms/TrainingSelectFile';
+import { useIsChangingLocation } from '~/components/RouterTransition/RouterTransition';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useS3UploadStore } from '~/store/s3-upload.store';
 import { ModelById } from '~/types/router';
+import { QS } from '~/utils/qs';
 import { trpc } from '~/utils/trpc';
 import { isNumber } from '~/utils/type-guards';
+import { TemplateSelect } from './TemplateSelect';
 
 export type ModelWithTags = Omit<ModelById, 'tagsOnModels'> & {
   tagsOnModels: Array<{ isCategory: boolean; id: number; name: string }>;
 };
 
-type WizardState = {
-  step: number;
-};
+const querySchema = z.object({
+  id: z.coerce.number().optional(),
+  templateId: z.coerce.number().optional(),
+  bountyId: z.coerce.number().optional(),
+  modelVersionId: z.coerce.number().optional(),
+  src: z.coerce.string().optional(),
+});
 
 const CreateSteps = ({
   step,
   model,
   modelVersion,
-  hasVersions,
   goBack,
   goNext,
   modelId,
@@ -38,10 +46,9 @@ const CreateSteps = ({
   step: number;
   model?: ModelWithTags;
   modelVersion?: ModelWithTags['modelVersions'][number];
-  hasVersions: boolean | undefined;
   goBack: () => void;
   goNext: () => void;
-  modelId: string | string[] | undefined;
+  modelId: number | undefined;
   router: NextRouter;
   postId: number | undefined;
 }) => {
@@ -50,25 +57,46 @@ const CreateSteps = ({
     (file) => file.meta?.versionId === modelVersion?.id
   );
   const editing = !!model;
+  const hasVersions = model && model.modelVersions.length > 0;
+
+  const result = querySchema.safeParse(router.query);
+  const templateId = result.success ? result.data.templateId : undefined;
+  const bountyId = result.success ? result.data.bountyId : undefined;
+
+  const { data: templateFields, isInitialLoading } = trpc.model.getTemplateFields.useQuery(
+    // Explicit casting since we know it's a number at this point
+    { id: templateId as number },
+    { enabled: !!templateId }
+  );
+  const { data: bountyFields, isInitialLoading: isBountyFieldsInitialLoading } =
+    trpc.model.getModelTemplateFieldsFromBounty.useQuery(
+      // Explicit casting since we know it's a number at this point
+      { id: bountyId as number },
+      { enabled: !!bountyId }
+    );
 
   return (
     <Stepper
       active={step - 1}
       onStepClick={(step) =>
-        router.replace(`/models/${modelId}/wizard?step=${step + 1}`, undefined, { shallow: true })
+        router.replace(getWizardUrl({ id: modelId, step: step + 1, templateId }), undefined, {
+          shallow: true,
+        })
       }
       allowNextStepsSelect={false}
       size="sm"
+      classNames={{ steps: 'container max-w-sm' }}
     >
       {/* Step 1: Model Info */}
       <Stepper.Step label={editing ? 'Edit model' : 'Create your model'}>
-        <Stack>
+        <div className="container relative flex max-w-sm flex-col gap-3">
+          <LoadingOverlay visible={isInitialLoading || isBountyFieldsInitialLoading} />
           <Title order={3}>{editing ? 'Edit model' : 'Create your model'}</Title>
           <ModelUpsertForm
-            model={model}
+            model={model ?? templateFields ?? bountyFields}
             onSubmit={({ id }) => {
               if (editing) return goNext();
-              router.replace(`/models/${id}/wizard?step=2`);
+              router.replace(getWizardUrl({ id, step: 2, templateId, bountyId })).then();
             }}
           >
             {({ loading }) => (
@@ -79,26 +107,30 @@ const CreateSteps = ({
               </Group>
             )}
           </ModelUpsertForm>
-        </Stack>
+        </div>
       </Stepper.Step>
 
       {/* Step 2: Version Info */}
       <Stepper.Step label={hasVersions ? 'Edit version' : 'Add version'}>
-        <Stack>
+        <div className="container flex max-w-sm flex-col gap-3">
           <Title order={3}>{hasVersions ? 'Edit version' : 'Add version'}</Title>
-          <ModelVersionUpsertForm model={model} version={modelVersion} onSubmit={goNext}>
-            {({ loading }) => (
+          <ModelVersionUpsertForm
+            model={model ?? templateFields ?? bountyFields}
+            version={modelVersion ?? templateFields?.version ?? bountyFields?.version}
+            onSubmit={goNext}
+          >
+            {({ loading, canSave }) => (
               <Group mt="xl" position="right">
                 <Button variant="default" onClick={goBack}>
                   Back
                 </Button>
-                <Button type="submit" loading={loading}>
+                <Button type="submit" loading={loading} disabled={!canSave}>
                   Next
                 </Button>
               </Group>
             )}
           </ModelVersionUpsertForm>
-        </Stack>
+        </div>
       </Stepper.Step>
 
       {/* Step 3: Upload Files */}
@@ -107,22 +139,17 @@ const CreateSteps = ({
         loading={uploading > 0}
         color={error + aborted > 0 ? 'red' : undefined}
       >
-        <Stack>
+        <div className="container flex max-w-sm flex-col gap-3">
           <Title order={3}>Upload files</Title>
           <Files />
           <UploadStepActions onBackClick={goBack} onNextClick={goNext} />
-        </Stack>
+        </div>
       </Stepper.Step>
 
       <Stepper.Step label={postId ? 'Edit post' : 'Create a post'}>
-        <Stack>
-          <Title order={3}>{postId ? 'Edit post' : 'Create your post'}</Title>
-          {model && modelVersion && (
-            <PostEditWrapper postId={postId}>
-              <PostUpsertForm modelVersionId={modelVersion.id} modelId={model.id} />
-            </PostEditWrapper>
-          )}
-        </Stack>
+        {model && modelVersion && (
+          <PostUpsertForm2 postId={postId} modelVersionId={modelVersion.id} modelId={model.id} />
+        )}
       </Stepper.Step>
     </Stepper>
   );
@@ -143,7 +170,7 @@ const TrainSteps = ({
   modelVersion: ModelWithTags['modelVersions'][number];
   goBack: () => void;
   goNext: () => void;
-  modelId: string | string[] | undefined;
+  modelId: number | undefined;
   router: NextRouter;
   postId: number | undefined;
 }) => {
@@ -151,10 +178,13 @@ const TrainSteps = ({
     <Stepper
       active={step - 1}
       onStepClick={(step) =>
-        router.replace(`/models/${modelId}/wizard?step=${step + 1}`, undefined, { shallow: true })
+        router.replace(getWizardUrl({ id: modelId, step: step + 1 }), undefined, {
+          shallow: true,
+        })
       }
       allowNextStepsSelect={false}
       size="sm"
+      classNames={{ steps: 'container max-w-sm' }}
     >
       {/* Step 1: Select File */}
       <Stepper.Step
@@ -162,24 +192,30 @@ const TrainSteps = ({
         loading={
           modelVersion.trainingStatus === TrainingStatus.Pending ||
           modelVersion.trainingStatus === TrainingStatus.Submitted ||
+          modelVersion.trainingStatus === TrainingStatus.Paused ||
           modelVersion.trainingStatus === TrainingStatus.Processing
         }
-        color={modelVersion.trainingStatus === TrainingStatus.Failed ? 'red' : undefined}
+        color={
+          modelVersion.trainingStatus === TrainingStatus.Failed ||
+          modelVersion.trainingStatus === TrainingStatus.Denied
+            ? 'red'
+            : undefined
+        }
       >
-        <Stack>
+        <div className="container flex max-w-sm flex-col gap-3">
           <Title order={3}>Select Model File</Title>
           <Title mb="sm" order={5}>
             Choose a model file from the results of your training run.
             <br />
             Sample images are provided for reference.
           </Title>
-          <TrainingSelectFile model={model} onNextClick={goNext} />
-        </Stack>
+          <TrainingSelectFile model={model} modelVersion={modelVersion} onNextClick={goNext} />
+        </div>
       </Stepper.Step>
 
       {/* Step 2: Model Info */}
       <Stepper.Step label="Edit model">
-        <Stack>
+        <div className="container flex max-w-sm flex-col gap-3">
           <Title order={3}>Edit model</Title>
           <ModelUpsertForm model={model} onSubmit={goNext}>
             {({ loading }) => (
@@ -193,47 +229,77 @@ const TrainSteps = ({
               </Group>
             )}
           </ModelUpsertForm>
-        </Stack>
+        </div>
       </Stepper.Step>
 
       {/* Step 3: Version Info */}
       <Stepper.Step label="Edit version">
-        <Stack>
+        <div className="container flex max-w-sm flex-col gap-3">
           <Title order={3}>Edit version</Title>
           <ModelVersionUpsertForm model={model} version={modelVersion} onSubmit={goNext}>
-            {({ loading }) => (
+            {({ loading, canSave }) => (
               <Group mt="xl" position="right">
                 <Button variant="default" onClick={goBack}>
                   Back
                 </Button>
-                <Button type="submit" loading={loading}>
+                <Button type="submit" loading={loading} disabled={!canSave}>
                   Next
                 </Button>
               </Group>
             )}
           </ModelVersionUpsertForm>
-        </Stack>
+        </div>
       </Stepper.Step>
+
+      {/* Step 4: Post Info */}
       <Stepper.Step label={postId ? 'Edit post' : 'Create a post'}>
-        <Stack>
-          <Title order={3}>{postId ? 'Edit post' : 'Create your post'}</Title>
-          {model && modelVersion && (
-            <PostEditWrapper postId={postId}>
-              <PostUpsertForm modelVersionId={modelVersion.id} modelId={model.id} />
-            </PostEditWrapper>
-          )}
-        </Stack>
+        {model && modelVersion && (
+          <PostUpsertForm2 postId={postId} modelVersionId={modelVersion.id} modelId={model.id} />
+        )}
       </Stepper.Step>
     </Stepper>
   );
 };
 
+function getWizardUrl({
+  id,
+  step,
+  templateId,
+  bountyId,
+  modelVersionId,
+  src,
+}: {
+  step: number;
+  id?: number;
+  templateId?: number;
+  bountyId?: number;
+  modelVersionId?: number;
+  src?: string;
+}) {
+  if (!id) return '';
+  const query = QS.stringify({ templateId, bountyId, modelVersionId, step, src });
+  return `/models/${id}/wizard?${query}`;
+}
+
+const MAX_STEPS = 4;
+
 export function ModelWizard() {
+  const currentUser = useCurrentUser();
   const router = useRouter();
 
-  const { id } = router.query;
+  const result = querySchema.safeParse(router.query);
+  const id = result.success ? result.data.id : undefined;
+  const templateId = result.success ? result.data.templateId : undefined;
+  const bountyId = result.success ? result.data.bountyId : undefined;
+  const modelVersionId = result.success ? result.data.modelVersionId : undefined;
+  const src = result.success ? result.data.src : undefined;
+  // Not using zod schema here cause we don't want it failing if step is not a number
+  const routeStep = router.query.step ? Number(router.query.step) : 1;
+  const step = isNumber(routeStep) && routeStep >= 1 && routeStep <= MAX_STEPS ? routeStep : 1;
+
   const isNew = router.pathname.includes('/create');
-  const [state, setState] = useState<WizardState>({ step: 1 });
+  const [opened, setOpened] = useState(false);
+  const isTransitioning = useIsChangingLocation();
 
   const {
     data: model,
@@ -241,58 +307,73 @@ export function ModelWizard() {
     isError: modelError,
   } = trpc.model.getById.useQuery({ id: Number(id) }, { enabled: !!id });
 
-  const maxSteps = 4;
+  const isTraining = model?.uploadType === ModelUploadType.Trained;
 
-  const hasVersions = model && model.modelVersions.length > 0;
-  const modelVersion = hasVersions ? model.modelVersions[0] : undefined;
-  const hasFiles =
-    model &&
-    model.modelVersions.some((version) =>
-      model.uploadType === ModelUploadType.Trained
-        ? version.files.filter((f) => f.type === 'Model' || f.type === 'Pruned Model').length > 0
-        : version.files.length > 0
-    );
+  const modelVersions = model?.modelVersions;
+  const modelVersion =
+    isTraining && !!modelVersionId
+      ? modelVersions?.find((mv) => mv.id === modelVersionId) ?? modelVersions?.[0]
+      : modelVersions?.[0];
 
   const goNext = () => {
-    if (state.step < maxSteps)
-      router.replace(`/models/${id}/wizard?step=${state.step + 1}`, undefined, {
-        shallow: true,
-        scroll: true,
-      });
+    if (isTransitioning) return;
+    if (step < MAX_STEPS) {
+      router
+        .replace(
+          getWizardUrl({ id, step: step + 1, templateId, bountyId, modelVersionId, src }),
+          undefined,
+          {
+            shallow: !isNew,
+          }
+        )
+        .then();
+    }
   };
 
   const goBack = () => {
-    if (state.step > 1)
-      router.replace(`/models/${id}/wizard?step=${state.step - 1}`, undefined, {
-        shallow: true,
-        scroll: true,
-      });
+    if (step > 1) {
+      router
+        .replace(
+          getWizardUrl({ id, step: step - 1, templateId, bountyId, modelVersionId, src }),
+          undefined,
+          {
+            shallow: !isNew,
+          }
+        )
+        .then();
+    }
   };
 
   useEffect(() => {
     // redirect to correct step if missing values
     if (!isNew) {
-      // don't redirect for Trained type
-      if (model?.uploadType === ModelUploadType.Trained) return;
+      // don't redirect for trained type or if model is not loaded
+      if (isTraining || !model) return;
 
-      if (!hasVersions) router.replace(`/models/${id}/wizard?step=2`, undefined, { shallow: true });
+      const hasVersions = model.modelVersions.length > 0;
+      const hasFiles = model.modelVersions.some((version) => version.files.length > 0);
+
+      if (!hasVersions)
+        router
+          .replace(getWizardUrl({ id, step: 2, templateId, bountyId, src }), undefined, {
+            shallow: true,
+          })
+          .then();
       else if (!hasFiles)
-        router.replace(`/models/${id}/wizard?step=3`, undefined, { shallow: true });
-      else router.replace(`/models/${id}/wizard?step=4`, undefined, { shallow: true });
+        router
+          .replace(getWizardUrl({ id, step: 3, templateId, bountyId, src }), undefined, {
+            shallow: true,
+          })
+          .then();
+      else
+        router
+          .replace(getWizardUrl({ id, step: 4, templateId, bountyId, src }), undefined, {
+            shallow: true,
+          })
+          .then();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasFiles, hasVersions, id, isNew, model]);
-
-  useEffect(() => {
-    // set current step based on query param
-    if (state.step.toString() !== router.query.step) {
-      const rawStep = router.query.step;
-      const step = Number(rawStep);
-      const validStep = isNumber(step) && step >= 1 && step <= maxSteps;
-
-      setState((current) => ({ ...current, step: validStep ? step : 1 }));
-    }
-  }, [isNew, router.query.step, state.step]);
+  }, [id, isNew, model, templateId, bountyId, src]);
 
   const postId = modelVersion?.posts[0]?.id;
 
@@ -305,44 +386,70 @@ export function ModelWizard() {
 
   return (
     <FilesProvider model={modelFlatTags} version={modelVersion}>
-      <Container size="sm">
+      <div className="container flex max-w-sm flex-col gap-3">
         {modelLoading ? (
           <PageLoader text="Loading model..." />
         ) : modelError ? (
           <NotFound />
         ) : (
           <Stack pb="xl">
-            <Title mb="sm" order={2}>
-              Publish a Model
-            </Title>
-
-            {model?.uploadType === ModelUploadType.Trained ? (
-              <TrainSteps
-                model={modelFlatTags!}
-                modelVersion={modelVersion!}
-                goBack={goBack}
-                goNext={goNext}
-                modelId={id}
-                step={state.step}
-                router={router}
-                postId={postId}
-              />
-            ) : (
-              <CreateSteps
-                model={modelFlatTags}
-                modelVersion={modelVersion}
-                hasVersions={hasVersions}
-                goBack={goBack}
-                goNext={goNext}
-                modelId={id}
-                step={state.step}
-                router={router}
-                postId={postId}
-              />
-            )}
+            <Group position="apart" noWrap>
+              <Group spacing={8} noWrap>
+                <Title order={2}>Publish a Model</Title>
+                <FeatureIntroductionHelpButton
+                  feature="model-upload"
+                  contentSlug={['feature-introduction', 'model-upload']}
+                />
+              </Group>
+              {isNew && !isTraining && currentUser && (
+                <Popover
+                  opened={opened}
+                  width={400}
+                  position="bottom-end"
+                  onChange={setOpened}
+                  withArrow
+                >
+                  <Popover.Target>
+                    <Button variant="subtle" onClick={() => setOpened(true)}>
+                      {templateId ? 'Swap template' : 'Use a template'}
+                    </Button>
+                  </Popover.Target>
+                  <Popover.Dropdown p={4}>
+                    <TemplateSelect userId={currentUser.id} onSelect={() => setOpened(false)} />
+                  </Popover.Dropdown>
+                </Popover>
+              )}
+            </Group>
           </Stack>
         )}
-      </Container>
+      </div>
+      {!modelLoading && !modelError && (
+        <>
+          {isTraining ? (
+            <TrainSteps
+              model={modelFlatTags!}
+              modelVersion={modelVersion!}
+              goBack={goBack}
+              goNext={goNext}
+              modelId={id}
+              step={step}
+              router={router}
+              postId={postId}
+            />
+          ) : (
+            <CreateSteps
+              model={modelFlatTags}
+              modelVersion={modelVersion}
+              goBack={goBack}
+              goNext={goNext}
+              modelId={id}
+              step={step}
+              router={router}
+              postId={postId}
+            />
+          )}
+        </>
+      )}
     </FilesProvider>
   );
 }

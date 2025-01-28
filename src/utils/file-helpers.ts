@@ -1,8 +1,9 @@
-import { Prisma, ScanResultCode } from '@prisma/client';
+import { ScanResultCode } from '~/shared/utils/prisma/enums';
 import { ModelFileInput } from '~/server/schema/model-file.schema';
 
 export function getModelFileFormat(filename: string): ModelFileFormat {
-  if (filename.endsWith('.safetensors')) return 'SafeTensor';
+  if (filename.endsWith('.safetensors') || filename.endsWith('.sft')) return 'SafeTensor';
+  else if (filename.endsWith('.gguf')) return 'GGUF';
   else if (filename.endsWith('.pt') || filename.endsWith('.ckpt')) return 'PickleTensor';
   else if (filename.endsWith('.zip')) return 'Diffusers';
 
@@ -12,7 +13,7 @@ export function getModelFileFormat(filename: string): ModelFileFormat {
 const unscannedFile = {
   scannedAt: null,
   scanRequestedAt: null,
-  rawScanResult: Prisma.JsonNull,
+  rawScanResult: null,
   virusScanMessage: null,
   virusScanResult: ScanResultCode.Pending,
   pickleScanMessage: null,

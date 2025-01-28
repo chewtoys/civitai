@@ -2,31 +2,28 @@ import {
   Anchor,
   Button,
   ButtonProps,
-  Grid,
   Group,
   Stack,
   StackProps,
   Text,
-  ThemeIcon,
   Title,
   Tooltip,
   TooltipProps,
   createStyles,
   ActionIcon,
   Paper,
+  Input,
 } from '@mantine/core';
-import { TagTarget } from '@prisma/client';
+import { ArticleStatus, TagTarget } from '~/shared/utils/prisma/enums';
 import { IconQuestionMark, IconTrash } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 
 import { BackButton } from '~/components/BackButton/BackButton';
-import { hiddenLabel, matureLabel } from '~/components/Post/Edit/EditPostControls';
 import { useFormStorage } from '~/hooks/useFormStorage';
 import {
   Form,
-  InputCheckbox,
   InputMultiFileUpload,
   InputRTE,
   InputSelect,
@@ -37,21 +34,26 @@ import {
 } from '~/libs/form';
 import { hideMobile, showMobile } from '~/libs/sx-helpers';
 import { upsertArticleInput } from '~/server/schema/article.schema';
-import { ArticleGetById } from '~/types/router';
+import type { ArticleGetById } from '~/server/services/article.service';
 import { formatDate } from '~/utils/date-helpers';
 import { showErrorNotification } from '~/utils/notifications';
 import { parseNumericString } from '~/utils/query-string-helpers';
 import { titleCase } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
+import { FeatureIntroductionHelpButton } from '../FeatureIntroduction/FeatureIntroduction';
+import { ContentPolicyLink } from '../ContentPolicyLink/ContentPolicyLink';
+import { InfoPopover } from '~/components/InfoPopover/InfoPopover';
+import { constants } from '~/server/common/constants';
+import { imageSchema } from '~/server/schema/image.schema';
+import { browsingLevelLabels, browsingLevels } from '~/shared/constants/browsingLevel.constants';
+import { openBrowsingLevelGuide } from '~/components/Dialog/dialog-registry';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 
-const schema = upsertArticleInput.extend({
+const schema = upsertArticleInput.omit({ coverImage: true, userNsfwLevel: true }).extend({
   categoryId: z.number().min(0, 'Please select a valid category'),
-  cover: z
-    .preprocess(
-      (val) => (typeof val === 'string' ? { url: val } : val),
-      z.object({ url: z.string().nonempty() })
-    )
-    .refine((data) => !!data.url, { message: 'Please upload a cover image' }),
+  coverImage: imageSchema.refine((data) => !!data.url, { message: 'Please upload a cover image' }),
+  userNsfwLevel: z.string().optional(),
 });
 const querySchema = z.object({
   category: z.preprocess(parseNumericString, z.number().optional().default(-1)),
@@ -62,6 +64,8 @@ const tooltipProps: Partial<TooltipProps> = {
   multiline: true,
   position: 'bottom',
   withArrow: true,
+  zIndex: 10,
+  withinPortal: true,
 };
 
 const useStyles = createStyles((theme) => ({
@@ -71,36 +75,65 @@ const useStyles = createStyles((theme) => ({
   },
 }));
 
+export const browsingLevelSelectOptions = browsingLevels.map((level) => ({
+  label: browsingLevelLabels[level],
+  value: String(level),
+}));
+
 export function ArticleUpsertForm({ article }: Props) {
+  const currentUser = useCurrentUser();
   const { classes } = useStyles();
-  const queryUtils = trpc.useContext();
+  const queryUtils = trpc.useUtils();
   const router = useRouter();
   const result = querySchema.safeParse(router.query);
 
   const defaultCategory = result.success ? result.data.category : -1;
-  const defaultValues: z.infer<typeof schema> = {
-    ...article,
-    title: article?.title ?? '',
-    content: article?.content ?? '',
-    categoryId: article?.tags.find((tag) => tag.isCategory)?.id ?? defaultCategory,
-    tags: article?.tags.filter((tag) => !tag.isCategory) ?? [],
-    cover: article?.cover ? { url: article.cover ?? '' } : { url: '' },
-  };
-  const form = useForm({ schema, defaultValues, shouldUnregister: false });
+
+  const lockedPropertiesRef = useRef<string[]>(article?.lockedProperties ?? []);
+  const canEditUserNsfwLevel = !currentUser?.isModerator
+    ? !article?.lockedProperties?.includes('userNsfwLevel')
+    : true;
+
+  const form = useForm({
+    schema,
+    shouldUnregister: false,
+    defaultValues: {
+      ...article,
+      title: article?.title ?? '',
+      content: article?.content ?? '',
+      userNsfwLevel: article?.userNsfwLevel ? String(article.userNsfwLevel) : undefined,
+      categoryId: article?.tags.find((tag) => tag.isCategory)?.id ?? defaultCategory,
+      tags: article?.tags.filter((tag) => !tag.isCategory) ?? [],
+      coverImage: article?.coverImage ?? null,
+    } as any,
+  });
   const clearStorage = useFormStorage({
     schema,
     form,
     timeout: 1000,
     key: `article${article?.id ? `_${article?.id}` : 'new'}`,
-    watch: ({ content, cover, categoryId, nsfw, tags, title }) => ({
+    watch: ({ content, coverImage, categoryId, tags, title }) => ({
       content,
-      cover,
+      coverImage,
       categoryId,
-      nsfw,
       tags,
       title,
     }),
   });
+  const [userNsfwLevel] = form.watch(['userNsfwLevel']);
+  useEffect(() => {
+    if (currentUser?.isModerator) {
+      if (userNsfwLevel)
+        lockedPropertiesRef.current = [
+          ...new Set([...lockedPropertiesRef.current, 'userNsfwLevel']),
+        ];
+      else
+        lockedPropertiesRef.current = lockedPropertiesRef.current.filter(
+          (x) => x !== 'userNsfwLevel'
+        );
+    }
+  }, [currentUser?.isModerator, userNsfwLevel]);
+
   const [publishing, setPublishing] = useState(false);
 
   const { data, isLoading: loadingCategories } = trpc.tag.getAll.useQuery({
@@ -117,20 +150,32 @@ export function ArticleUpsertForm({ article }: Props) {
   const handleSubmit = ({
     categoryId,
     tags: selectedTags,
-    cover,
+    coverImage,
+    userNsfwLevel,
     ...rest
   }: z.infer<typeof schema>) => {
     const selectedCategory = data?.items.find((cat) => cat.id === categoryId);
     const tags =
       selectedTags && selectedCategory ? selectedTags.concat([selectedCategory]) : selectedTags;
     upsertArticleMutation.mutate(
-      { ...rest, tags, publishedAt: publishing ? new Date() : null, cover: cover.url },
+      {
+        ...rest,
+        userNsfwLevel: canEditUserNsfwLevel
+          ? userNsfwLevel
+            ? Number(userNsfwLevel)
+            : 0
+          : undefined,
+        tags,
+        publishedAt: publishing ? new Date() : null,
+        status: publishing ? ArticleStatus.Published : undefined,
+        coverImage: coverImage,
+        lockedProperties: lockedPropertiesRef.current,
+      },
       {
         async onSuccess(result) {
           await router.push(`/articles/${result.id}`);
           await queryUtils.article.getById.invalidate({ id: result.id });
           await queryUtils.article.getInfinite.invalidate();
-          await queryUtils.article.getByCategory.invalidate();
           clearStorage();
         },
         onError(error) {
@@ -145,12 +190,16 @@ export function ArticleUpsertForm({ article }: Props) {
 
   return (
     <Form form={form} onSubmit={handleSubmit}>
-      <Grid gutter="xl">
-        <Grid.Col xs={12} md={8}>
+      <ContainerGrid gutter="xl">
+        <ContainerGrid.Col xs={12} md={8}>
           <Stack spacing="xl">
-            <Group spacing={4}>
+            <Group spacing={8} noWrap>
               <BackButton url="/articles" />
               <Title>{article?.id ? 'Editing article' : 'Create an Article'}</Title>
+              <FeatureIntroductionHelpButton
+                feature="article-create"
+                contentSlug={['feature-introduction', 'article-create']}
+              />
             </Group>
             <InputText
               name="title"
@@ -175,8 +224,8 @@ export function ArticleUpsertForm({ article }: Props) {
               stickyToolbar
             />
           </Stack>
-        </Grid.Col>
-        <Grid.Col xs={12} md={4}>
+        </ContainerGrid.Col>
+        <ContainerGrid.Col xs={12} md={4}>
           <Stack className={classes.sidebar} spacing="xl">
             <ActionButtons
               article={article}
@@ -192,32 +241,62 @@ export function ArticleUpsertForm({ article }: Props) {
               }}
               sx={hideMobile}
             />
-            <InputCheckbox
-              name="nsfw"
+            <InputSelect
+              name="userNsfwLevel"
+              data={browsingLevelSelectOptions}
               label={
-                <Group spacing={4}>
-                  Mature
-                  <Tooltip label={matureLabel} {...tooltipProps}>
-                    <ThemeIcon radius="xl" size="xs" color="gray">
-                      <IconQuestionMark />
-                    </ThemeIcon>
-                  </Tooltip>
+                <Group spacing={4} noWrap>
+                  Maturity Level
+                  <ActionIcon
+                    radius="xl"
+                    size="xs"
+                    variant="outline"
+                    onClick={openBrowsingLevelGuide}
+                  >
+                    <IconQuestionMark />
+                  </ActionIcon>
+                  <ContentPolicyLink size="xs" variant="text" color="dimmed" td="underline" />
                 </Group>
               }
             />
-            <InputSimpleImageUpload name="cover" label="Cover Image" withAsterisk />
+            <InputSimpleImageUpload
+              name="coverImage"
+              label="Cover Image"
+              description={`Suggested resolution: ${constants.article.coverImageWidth} x ${constants.article.coverImageHeight}`}
+              withAsterisk
+            />
             <InputSelect
               name="categoryId"
-              label="Category"
+              label={
+                <Group spacing={4} noWrap>
+                  <Input.Label required>Category</Input.Label>
+                  <InfoPopover type="hover" size="xs" iconProps={{ size: 14 }}>
+                    <Text>
+                      Categories determine what kind of article you&apos;re making. Selecting a
+                      category that&apos;s the closest match to your subject helps users find your
+                      article
+                    </Text>
+                  </InfoPopover>
+                </Group>
+              }
               placeholder="Select a category"
               data={categories}
               nothingFound="Nothing found"
               loading={loadingCategories}
-              withAsterisk
             />
             <InputTags
               name="tags"
-              label="Tags"
+              label={
+                <Group spacing={4} noWrap>
+                  <Input.Label>Tags</Input.Label>
+                  <InfoPopover type="hover" size="xs" iconProps={{ size: 14 }}>
+                    <Text>
+                      Tags are how users filter content on the site. It&apos;s important to
+                      correctly tag your content so it can be found by interested users
+                    </Text>
+                  </InfoPopover>
+                </Group>
+              }
               target={[TagTarget.Article]}
               filter={(tag) =>
                 data && tag.name ? !data.items.map((cat) => cat.name).includes(tag.name) : true
@@ -225,7 +304,17 @@ export function ArticleUpsertForm({ article }: Props) {
             />
             <InputMultiFileUpload
               name="attachments"
-              label="Attachments"
+              label={
+                <Group spacing={4} noWrap>
+                  <Input.Label>Attachments</Input.Label>
+                  <InfoPopover type="hover" size="xs" iconProps={{ size: 14 }}>
+                    <Text>
+                      Attachments may be additional context for your article, training data, or
+                      larger files that don&apos;t make sense to post as a model
+                    </Text>
+                  </InfoPopover>
+                </Group>
+              }
               dropzoneProps={{
                 maxSize: 30 * 1024 ** 2, // 30MB
                 maxFiles: 10,
@@ -275,8 +364,8 @@ export function ArticleUpsertForm({ article }: Props) {
               sx={showMobile}
             />
           </Stack>
-        </Grid.Col>
-      </Grid>
+        </ContainerGrid.Col>
+      </ContainerGrid>
     </Form>
   );
 }
@@ -294,7 +383,7 @@ function ActionButtons({
     <Stack spacing={8} {...stackProps}>
       {article?.publishedAt ? (
         <Button {...publishButtonProps} type="submit" fullWidth>
-          Save
+          {article.status !== ArticleStatus.Published ? 'Publish' : 'Save'}
         </Button>
       ) : (
         <>
@@ -313,7 +402,10 @@ function ActionButtons({
       ) : (
         <Text size="xs" color="dimmed">
           Your article is currently{' '}
-          <Tooltip label={hiddenLabel} {...tooltipProps}>
+          <Tooltip
+            label="Click the publish button to make your article public to share with the Civitai community for comments and reactions."
+            {...tooltipProps}
+          >
             <Text span underline>
               hidden
             </Text>

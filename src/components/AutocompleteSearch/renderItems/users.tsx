@@ -1,21 +1,20 @@
 import React, { forwardRef } from 'react';
-import { AutocompleteItem, Group, Image, Rating, Stack, Text, ThemeIcon } from '@mantine/core';
-import { IconDownload, IconHeart, IconUpload, IconUser, IconUsers } from '@tabler/icons-react';
+import { AutocompleteItem, Group, Image, Stack, Text, ThemeIcon } from '@mantine/core';
+import { IconDownload, IconUpload, IconUser, IconUsers } from '@tabler/icons-react';
 import { abbreviateNumber } from '~/utils/number-helpers';
-import { Hit } from 'instantsearch.js';
-import { UserSearchIndexRecord } from '~/server/search-index/users.search-index';
 import { ActionIconBadge, ViewMoreItem } from '~/components/AutocompleteSearch/renderItems/common';
 import { getEdgeUrl } from '~/client-utils/cf-images-utils';
 import { Username } from '~/components/User/Username';
-import { StarRating } from '~/components/StartRating/StarRating';
+import { SearchIndexDataMap } from '~/components/Search/search.utils2';
+import { ThumbsUpIcon } from '~/components/ThumbsIcon/ThumbsIcon';
 
 export const UserSearchItem = forwardRef<
   HTMLDivElement,
-  AutocompleteItem & { hit: Hit<UserSearchIndexRecord> }
+  AutocompleteItem & { hit: SearchIndexDataMap['users'][number] }
 >(({ value, hit, ...props }, ref) => {
   if (!hit) return <ViewMoreItem ref={ref} value={value} {...props} />;
 
-  const { image, username, stats } = hit;
+  const { image, username, metrics } = hit;
 
   return (
     <Group ref={ref} {...props} key={hit.id} spacing="md" align="flex-start" noWrap>
@@ -36,22 +35,19 @@ export const UserSearchItem = forwardRef<
         <Text size="md" lineClamp={1}>
           <Username {...hit} inherit />
         </Text>
-        {stats && (
+        {metrics && (
           <Group spacing={4}>
-            <ActionIconBadge icon={<StarRating value={stats.ratingAllTime} size={12} />}>
-              {abbreviateNumber(stats.ratingCountAllTime)}
-            </ActionIconBadge>
             <ActionIconBadge icon={<IconUpload size={12} stroke={2.5} />}>
-              {abbreviateNumber(stats.uploadCountAllTime)}
+              {abbreviateNumber(metrics.uploadCount)}
             </ActionIconBadge>
             <ActionIconBadge icon={<IconUsers size={12} stroke={2.5} />}>
-              {abbreviateNumber(stats.followerCountAllTime)}
+              {abbreviateNumber(metrics.followerCount)}
             </ActionIconBadge>
-            <ActionIconBadge icon={<IconHeart size={12} stroke={2.5} />}>
-              {abbreviateNumber(stats.favoriteCountAllTime)}
+            <ActionIconBadge icon={<ThumbsUpIcon size={12} />}>
+              {abbreviateNumber(metrics.thumbsUpCount ?? 0)}
             </ActionIconBadge>
             <ActionIconBadge icon={<IconDownload size={16} />}>
-              {abbreviateNumber(stats.downloadCountAllTime)}
+              {abbreviateNumber(metrics.downloadCount ?? 0)}
             </ActionIconBadge>
           </Group>
         )}

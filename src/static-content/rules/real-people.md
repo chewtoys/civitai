@@ -5,10 +5,12 @@ title: "Content Rules: Real People"
 As our community grows, we're committed to keeping it an enjoyable and respectful space for everyone. A place where we can harness the power of AI, while ensuring everyone's privacy and consent are respected. To this end, we've been refining our guidelines regarding the use of images depicting real people.
 
 ## Depicting Real People
-Portraying real people in any mature or suggestive context is strictly prohibited. This includes:
+Portraying real people in any mature, suggestive, disparaging, or misleading context is strictly prohibited. This includes:
 1. **Clothing:** No low-cut shirts/dresses, short skirts or anything that wouldn't pass a conservative high school dress code. Think, "Would I wear this to a professional job interview?" If not, it's best to refrain.
 2. **Body Parts:** Exaggerated depictions of breasts, butts, thighs, or genitalia are a no-go zone. We're all about capturing likeness, not exaggeration or objectification.
 3. **Poses:** Let's keep it professional, folks! Avoid suggestive poses like looking over the shoulder, bending over, or any poses meant to accentuate body features. The same goes for facial expressions meant to infer arousal.
+4. **Defamation:** Content intended to defame, slander, or disparage real people is strictly prohibited. This includes any content designed to harm someone’s reputation, spread false information, or portray them in a deliberately negative or damaging light. There is difference between a celebrity being depicted in prison, and depicting harm or violence against them while in prison. Content can be humorous or satirical without being cruel. 
+5. **Misleading Realism:** Content created with the intent to trick others into believing it is a real photograph, video, or audio clip of a person is not allowed. All content on Civitai is AI generated, attempting to pass off content of a real person that is AI generated as authentic is not permitted.
 
 ## FAQs
 
@@ -37,7 +39,9 @@ Portraying real people in any mature or suggestive context is strictly prohibite
 **A:** Fictional characters are generally fair game, but remember, if likeness is very obvious (Tom Cruise as Ethan Hunt from Mission Impossible for example), it's important to adhere to the same guidelines we use for real people.
 
 ### Q: I am the real person or a legal representitive of the real person displayed in these images. I did not consent to the use of my likeness, can they be taken down?
-**A:** We care a lot about the rights of individuals and the use of their likeness. If you find an image thats depicting your likeness you can request to have removed by filling out [this form](https://forms.clickup.com/8459928/f/825mr-6491/4EW9JSIS4J9I1AUM6J), or by emailing us at digital-likeness@civitai.com
+**A:** We care a lot about the rights of individuals and the use of their likeness. If you find an image thats depicting your likeness you can request to have removed by filling out **[this form](https://forms.clickup.com/8459928/f/825mr-6491/4EW9JSIS4J9I1AUM6J)**, or by emailing us at digital-likeness@civitai.com
+
+#### [Request removal of your likeness](https://forms.clickup.com/8459928/f/825mr-6491/4EW9JSIS4J9I1AUM6J)
 
 ### Q: Are there any restrictions on using AI to create child-like models?
 **A:** Models intended for the photo-realistic depiction of minors are prohibited. You can read more about our requirements for content depicting minors [here](/content/rules/minors)

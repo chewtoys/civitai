@@ -1,16 +1,27 @@
 import OneKeyMap from '@essentials/one-key-map';
 import trieMemoize from 'trie-memoize';
-import { createStyles } from '@mantine/core';
+import { Button, createStyles, useMantineTheme } from '@mantine/core';
 import React, { useMemo } from 'react';
-import { useMasonryContainerContext } from '~/components/MasonryColumns/MasonryContainer';
 import { MasonryRenderItemProps } from '~/components/MasonryColumns/masonry.types';
+import { useCreateAdFeed } from '~/components/Ads/ads.utils';
+import { useAdsContext } from '~/components/Ads/AdsProvider';
+import { useMasonryContext } from '~/components/MasonryColumns/MasonryProvider';
+import { Text } from '@mantine/core';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { IconCaretRightFilled } from '@tabler/icons-react';
+import Image from 'next/image';
+import { AdUnitIncontent_1 } from '~/components/Ads/AdUnit';
+import { TwCard } from '~/components/TwCard/TwCard';
+import { useBrowsingLevelDebounced } from '~/components/BrowsingLevel/BrowsingLevelProvider';
+import { getIsSafeBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
+import { AdUnitRenderable } from '~/components/Ads/AdUnitRenderable';
 
 type Props<TData> = {
   data: TData[];
   render: React.ComponentType<MasonryRenderItemProps<TData>>;
   itemId?: (data: TData) => string | number;
   empty?: React.ReactNode;
-  maxRows?: number;
+  withAds?: boolean;
 };
 
 export function MasonryGrid<TData>({
@@ -18,37 +29,122 @@ export function MasonryGrid<TData>({
   render: RenderComponent,
   itemId,
   empty = null,
-  maxRows,
+  withAds,
 }: Props<TData>) {
-  const { columnCount, columnWidth, columnGap, rowGap, maxSingleColumnWidth } =
-    useMasonryContainerContext();
+  const theme = useMantineTheme();
+  const { columnCount, columnWidth, columnGap, rowGap, maxSingleColumnWidth } = useMasonryContext();
 
   const { classes } = useStyles({
-    columnCount,
     columnWidth,
     columnGap,
     rowGap,
-    maxSingleColumnWidth,
   });
 
-  const items = useMemo(() => {
-    if (!maxRows) return data;
-    const wholeRows = Math.floor(data.length / columnCount);
-    const rows = maxRows > wholeRows ? wholeRows : maxRows;
-    if (rows < 1) return data;
-    return data.slice(0, rows * columnCount);
-  }, [columnCount, data, maxRows]);
+  const { adsEnabled } = useAdsContext();
+  const browsingLevel = useBrowsingLevelDebounced();
+  const adsReallyAreEnabled = adsEnabled && getIsSafeBrowsingLevel(browsingLevel) && withAds;
+  const createAdFeed = useCreateAdFeed();
+  const items = useMemo(
+    () =>
+      createAdFeed({
+        data,
+        columnCount,
+        options: [
+          {
+            width: 300,
+            height: 250,
+            AdUnit: AdUnitIncontent_1,
+          },
+        ],
+      }),
+    [columnCount, data, adsReallyAreEnabled]
+  );
 
   return items.length ? (
-    <div className={classes.grid}>
+    <div
+      className={classes.grid}
+      style={{
+        gridTemplateColumns:
+          columnCount === 1
+            ? `minmax(${columnWidth}px, ${maxSingleColumnWidth}px)`
+            : `repeat(${columnCount}, ${columnWidth}px)`,
+      }}
+    >
       {items.map((item, index) => {
-        const key = itemId?.(item) ?? index;
-        return (
-          <div key={key} id={key.toString()}>
-            {/* <RenderComponent index={index} data={item} width={columnWidth} height={columnWidth} /> */}
-            {createRenderElement(RenderComponent, index, item, columnWidth)}
-          </div>
+        const key = item.type === 'data' ? itemId?.(item.data) ?? index : `ad_${index}`;
+
+        return item.type === 'data' ? (
+          <RenderComponent
+            key={key}
+            index={index}
+            data={item.data}
+            width={columnWidth}
+            height={columnWidth}
+          />
+        ) : (
+          <AdUnitRenderable key={key}>
+            <TwCard className="mx-auto min-w-80 justify-between gap-2 border p-2 shadow">
+              <div className="flex flex-col items-center  gap-2">
+                <Image
+                  src={`/images/logo_${theme.colorScheme}_mode.png`}
+                  alt="Civitai logo"
+                  height={30}
+                  width={142}
+                />
+                <Text>Become a Member to turn off ads today.</Text>
+                <Button
+                  component={Link}
+                  href="/pricing"
+                  compact
+                  color="green"
+                  variant="outline"
+                  className="w-24"
+                >
+                  <Text weight={500}>Do It</Text>
+                  <IconCaretRightFilled size={16} />
+                </Button>
+              </div>
+              <div>
+                <item.data.AdUnit />
+              </div>
+            </TwCard>
+          </AdUnitRenderable>
         );
+        // return (
+        //   <React.Fragment key={key}>
+        //     {item.type === 'data' &&
+        //       createRenderElement(RenderComponent, index, item.data, columnWidth)}
+        //     {item.type === 'ad' && (
+        //       <AdUnitRenderable>
+        //         <TwCard className="mx-auto min-w-80 justify-between gap-2 border p-2 shadow">
+        //           <div className="flex flex-col items-center  gap-2">
+        //             <Image
+        //               src={`/images/logo_${theme.colorScheme}_mode.png`}
+        //               alt="Civitai logo"
+        //               height={30}
+        //               width={142}
+        //             />
+        //             <Text>Become a Member to turn off ads today.</Text>
+        //             <Button
+        //               component={Link}
+        //               href="/pricing"
+        //               compact
+        //               color="green"
+        //               variant="outline"
+        //               className="w-24"
+        //             >
+        //               <Text weight={500}>Do It</Text>
+        //               <IconCaretRightFilled size={16} />
+        //             </Button>
+        //           </div>
+        //           <div>
+        //             <item.data.AdUnit />
+        //           </div>
+        //         </TwCard>
+        //       </AdUnitRenderable>
+        //     )}
+        //   </React.Fragment>
+        // );
       })}
     </div>
   ) : (
@@ -60,31 +156,22 @@ const useStyles = createStyles(
   (
     theme,
     {
-      columnCount,
       columnWidth,
       columnGap,
       rowGap,
-      maxSingleColumnWidth,
     }: {
-      columnCount: number;
       columnWidth: number;
       columnGap: number;
       rowGap: number;
-      maxSingleColumnWidth?: number;
     }
   ) => ({
     empty: { height: columnWidth },
     grid: {
-      display: 'flex',
-      flexDirection: 'row',
-      flexWrap: 'wrap',
+      display: 'grid',
+
       columnGap,
       rowGap,
-
-      '& > div': {
-        width: columnCount === 1 ? '100%' : columnWidth,
-        maxWidth: maxSingleColumnWidth,
-      },
+      justifyContent: 'center',
     },
   })
 );

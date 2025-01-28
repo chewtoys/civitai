@@ -1,4 +1,10 @@
-import { BountyEntryMode, BountyMode, BountyType, Currency, MetricTimeframe } from '@prisma/client';
+import {
+  BountyEntryMode,
+  BountyMode,
+  BountyType,
+  Currency,
+  MetricTimeframe,
+} from '~/shared/utils/prisma/enums';
 import dayjs from 'dayjs';
 import { z } from 'zod';
 import { constants } from '~/server/common/constants';
@@ -8,6 +14,9 @@ import { BountySort, BountyStatus } from '../common/enums';
 import { infiniteQuerySchema } from './base.schema';
 import { baseFileSchema } from './file.schema';
 import { tagSchema } from './tag.schema';
+import utc from 'dayjs/plugin/utc';
+import { stripTime } from '~/utils/date-helpers';
+dayjs.extend(utc);
 
 export type GetInfiniteBountySchema = z.infer<typeof getInfiniteBountySchema>;
 export const getInfiniteBountySchema = infiniteQuerySchema.merge(
@@ -23,6 +32,7 @@ export const getInfiniteBountySchema = infiniteQuerySchema.merge(
     userId: z.number().optional(),
     baseModels: z.enum(constants.baseModels).array().optional(),
     limit: z.coerce.number().min(1).max(200).default(60),
+    excludedUserIds: z.number().array().optional(),
   })
 );
 
@@ -44,10 +54,15 @@ export const createBountyInputSchema = z.object({
     .min(constants.bounties.minCreateAmount)
     .max(constants.bounties.maxCreateAmount),
   currency: z.nativeEnum(Currency),
-  expiresAt: z
+  expiresAt: z.coerce
     .date()
-    .min(dayjs().add(1, 'day').startOf('day').toDate(), 'Expiration date must be in the future'),
-  startsAt: z.date().min(dayjs().startOf('day').toDate(), 'Start date must be in the future'),
+    .min(
+      dayjs.utc(stripTime(new Date())).add(1, 'day').toDate(),
+      'Expiration date must come after the start date'
+    ),
+  startsAt: z.coerce
+    .date()
+    .min(dayjs.utc(stripTime(new Date())).toDate(), 'Start date must be in the future'),
   mode: z.nativeEnum(BountyMode),
   type: z.nativeEnum(BountyType),
   details: bountyDetailsSchema.passthrough().partial().optional(),
@@ -82,17 +97,19 @@ export const updateBountyInputSchema = createBountyInputSchema
   })
   .extend({
     id: z.number(),
-    startsAt: z.date(),
-    expiresAt: z
+    startsAt: z.coerce.date(),
+    expiresAt: z.coerce
       .date()
       .min(dayjs().add(1, 'day').startOf('day').toDate(), 'Expiration date must be in the future'),
+    lockedProperties: z.string().array().optional(),
   });
 
 export type UpsertBountyInput = z.infer<typeof upsertBountyInputSchema>;
 export const upsertBountyInputSchema = createBountyInputSchema.extend({
   id: z.number().optional(),
-  startsAt: z.date(),
-  expiresAt: z.date(),
+  startsAt: z.string(),
+  expiresAt: z.string(),
+  lockedProperties: z.string().array().optional(),
 });
 
 export type AddBenefactorUnitAmountInputSchema = z.infer<typeof addBenefactorUnitAmountInputSchema>;
@@ -102,7 +119,7 @@ export const addBenefactorUnitAmountInputSchema = z.object({
 });
 
 export type GetBountyEntriesInputSchema = z.infer<typeof getBountyEntriesInputSchema>;
-export const getBountyEntriesInputSchema = z.object({
+export const getBountyEntriesInputSchema = infiniteQuerySchema.extend({
   id: z.number(),
   owned: z.boolean().optional(),
 });

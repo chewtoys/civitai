@@ -11,7 +11,7 @@ export function useLoginRedirect({ reason, returnUrl }: HookProps) {
   const router = useRouter();
   const user = useCurrentUser();
 
-  const requireLogin = (fn: () => void, overrides?: HookProps) => {
+  const requireLogin = (fn?: () => void, overrides?: HookProps) => {
     if (!user) {
       router.push(
         getLoginLink({
@@ -20,7 +20,7 @@ export function useLoginRedirect({ reason, returnUrl }: HookProps) {
         })
       );
     } else {
-      fn();
+      fn?.();
     }
   };
 
@@ -44,11 +44,3 @@ export function LoginRedirect({ children, reason, returnUrl }: Props) {
       })
     : children;
 }
-
-//TODO: Briant - consider using a hook to return a function that accepts an onclick callback
-/*
-  const loginRedirect = useLoginRedirect()
-  const handleClick = () => {
-    loginRedirect(() => {...do something})
-  }
-*/

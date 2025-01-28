@@ -1,9 +1,17 @@
+import Head from 'next/head';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+
 export function MetaPWA() {
+  const featureFlags = useFeatureFlags();
+  const { isGreen } = featureFlags;
+
   return (
-    <>
+    <Head>
       <meta name="viewport" content="maximum-scale=1, initial-scale=1, width=device-width" />
       <link rel="manifest" href="/site.webmanifest" />
       <meta name="apple-mobile-web-app-capable" content="yes" />
+      {/* exoclick ad meta tag */}
+      <meta name="6a97888e-site-verification" content="f517e489c958cfe10876b8f7daa294c2"></meta>
       <link
         rel="apple-touch-startup-image"
         href="/images/splash/apple-splash-2048-2732.jpg"
@@ -304,6 +312,7 @@ export function MetaPWA() {
         href="/images/splash/apple-splash-dark-1136-640.jpg"
         media="(prefers-color-scheme: dark) and (device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)"
       />
-    </>
+      <link rel="icon" href={`/favicon-${isGreen ? 'green' : 'blue'}.ico`} type="image/x-icon" />
+    </Head>
   );
 }

@@ -8,25 +8,18 @@ import {
   createSubscribeSession,
   createManageSubscriptionSession,
   createDonateSession,
-  getUserSubscription,
   getBuzzPackages,
   createBuzzSession,
   getPaymentIntent,
+  getSetupIntent,
+  createCancelSubscriptionSession,
 } from './../services/stripe.service';
 import { Context } from '~/server/createContext';
 import * as Schema from '../schema/stripe.schema';
 
-import { getPlans } from '~/server/services/stripe.service';
 import { getTRPCErrorFromUnknown } from '@trpc/server';
-
-export const getPlansHandler = async () => {
-  return await getPlans();
-};
-
-export const getUserSubscriptionHandler = async ({ ctx }: { ctx: Context }) => {
-  if (!ctx.user?.id || !ctx.user.subscriptionId) return null;
-  return await getUserSubscription({ userId: ctx.user.id });
-};
+import { createRecaptchaAssesment } from '../recaptcha/client';
+import { RECAPTCHA_ACTIONS } from '../common/constants';
 
 export const createCustomerHandler = async ({
   input,
@@ -143,6 +136,25 @@ export const getPaymentIntentHandler = async ({
 
     if (!email) throw throwAuthorizationError('email required');
 
+    const { recaptchaToken } = input;
+
+    if (!recaptchaToken) throw throwAuthorizationError('recaptchaToken required');
+
+    const { score, reasons } = await createRecaptchaAssesment({
+      token: recaptchaToken,
+      recaptchaAction: RECAPTCHA_ACTIONS.STRIPE_TRANSACTION,
+    });
+
+    if ((score || 0) < 0.7) {
+      if (reasons.length) {
+        throw throwAuthorizationError(
+          `Recaptcha Failed. The following reasons were detected: ${reasons.join(', ')}`
+        );
+      } else {
+        throw throwAuthorizationError('We could not verify the authenticity of your request.');
+      }
+    }
+
     const result = await getPaymentIntent({
       ...input,
       user: {
@@ -153,6 +165,46 @@ export const getPaymentIntentHandler = async ({
     });
 
     return result;
+  } catch (error) {
+    throw getTRPCErrorFromUnknown(error);
+  }
+};
+
+export const getSetupIntentHandler = async ({
+  input,
+  ctx,
+}: {
+  input: Schema.SetupIntentCreateSchema;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  try {
+    const { id, email, customerId } = ctx.user;
+
+    if (!email) throw throwAuthorizationError('email required');
+
+    const result = await getSetupIntent({
+      ...input,
+      user: {
+        id,
+        email,
+      },
+      customerId,
+    });
+
+    return result;
+  } catch (error) {
+    throw getTRPCErrorFromUnknown(error);
+  }
+};
+
+export const createCancelSubscriptionSessionHandler = async ({
+  ctx,
+}: {
+  ctx: DeepNonNullable<Context>;
+}) => {
+  if (!ctx.user.customerId) throw throwNotFoundError('customerId not found');
+  try {
+    return await createCancelSubscriptionSession({ customerId: ctx.user.customerId });
   } catch (error) {
     throw getTRPCErrorFromUnknown(error);
   }

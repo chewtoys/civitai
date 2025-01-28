@@ -24,7 +24,7 @@ import {
   Box,
   Badge,
 } from '@mantine/core';
-import { NextLink } from '@mantine/next';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { showNotification } from '@mantine/notifications';
 import {
   IconDownload,
@@ -151,19 +151,7 @@ function AboutCivitaiLink() {
         <Center p="md" pb={0}>
           <CivitaiLinkSvg />
         </Center>
-        <Text my="xs">
-          Interact with your{' '}
-          <Text
-            component="a"
-            variant="link"
-            href="https://github.com/AUTOMATIC1111/stable-diffusion-webui"
-            target="_blank"
-            rel="nofollow noreferrer"
-          >
-            Automatic1111 Stable Diffusion
-          </Text>{' '}
-          instance in realtime from Civitai
-        </Text>
+        <Text my="xs">Interact with any Stable Diffusion instance in realtime from Civitai</Text>
       </Stack>
       <Divider />
       <Group spacing={0} grow>
@@ -176,7 +164,7 @@ function AboutCivitaiLink() {
         >
           Video Demo
         </Button>
-        <Button rightIcon={<IconHeart size={18} />} radius={0} component={NextLink} href="/pricing">
+        <Button rightIcon={<IconHeart size={18} />} radius={0} component={Link} href="/pricing">
           Become a Supporter
         </Button>
       </Group>
@@ -204,9 +192,6 @@ function LinkDropdown() {
             <Title order={4} size="sm">
               Civitai Link
             </Title>
-            <Badge size="xs" color="yellow">
-              alpha
-            </Badge>
           </Group>
           {canToggleManageInstances && (
             <Tooltip label="Manage instances">
@@ -369,19 +354,7 @@ function GetStarted() {
         <Center p="md" pb={0}>
           <CivitaiLinkSvg />
         </Center>
-        <Text my="xs">
-          Interact with your{' '}
-          <Text
-            component="a"
-            variant="link"
-            href="https://github.com/AUTOMATIC1111/stable-diffusion-webui"
-            target="_blank"
-            rel="nofollow noreferrer"
-          >
-            Automatic1111 Stable Diffusion
-          </Text>{' '}
-          instance in realtime from Civitai
-        </Text>
+        <Text my="xs">Interact with any Stable Diffusion instance in realtime from Civitai</Text>
       </Stack>
       <Divider />
       <Stack>

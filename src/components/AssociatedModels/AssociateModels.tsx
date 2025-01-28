@@ -22,16 +22,21 @@ import {
   SelectItemProps,
   Box,
 } from '@mantine/core';
-import { AssociationType } from '@prisma/client';
-import { IconGripVertical, IconSearch, IconTrash, IconUser } from '@tabler/icons-react';
+import { AssociationType } from '~/shared/utils/prisma/enums';
+import { IconGripVertical, IconTrash, IconUser } from '@tabler/icons-react';
 import { isEqual } from 'lodash-es';
-import { forwardRef, useEffect, useMemo, useState } from 'react';
-import { ClearableAutoComplete } from '~/components/ClearableAutoComplete/ClearableAutoComplete';
+import { forwardRef, useEffect, useState } from 'react';
 import { SortableItem } from '~/components/ImageUpload/SortableItem';
 import { AssociatedResourceModel } from '~/server/selectors/model.selector';
 import { ModelGetAssociatedResourcesSimple } from '~/types/router';
-import { useDebouncer } from '~/utils/debouncer';
 import { trpc } from '~/utils/trpc';
+import { QuickSearchDropdown, QuickSearchDropdownProps } from '../Search/QuickSearchDropdown';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
+import {
+  getIsSafeBrowsingLevel,
+  allBrowsingLevelsFlag,
+} from '~/shared/constants/browsingLevel.constants';
+import { SearchIndexDataMap } from '~/components/Search/search.utils2';
 
 type State = Array<Omit<ModelGetAssociatedResourcesSimple[number], 'id'> & { id?: number }>;
 
@@ -46,26 +51,23 @@ export function AssociateModels({
   onSave?: () => void;
   limit?: number;
 }) {
-  const queryUtils = trpc.useContext();
+  const currentUser = useCurrentUser();
+  const queryUtils = trpc.useUtils();
   const [changed, setChanged] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
-  const [query, setQuery] = useState('');
 
-  const {
-    data: { models, articles } = { models: [], articles: [] },
-    refetch,
-    isFetching,
-  } = trpc.model.findResourcesToAssociate.useQuery({ query }, { enabled: false });
   const { data = [], isLoading } = trpc.model.getAssociatedResourcesSimple.useQuery({
     fromId,
     type,
+    browsingLevel: allBrowsingLevelsFlag,
   });
   const [associatedResources, setAssociatedResources] = useState<State>(data);
+  const [searchMode, setSearchMode] = useState<'me' | 'all'>('all');
 
   const { mutate, isLoading: isSaving } = trpc.model.setAssociatedResources.useMutation({
     onSuccess: async () => {
       queryUtils.model.getAssociatedResourcesSimple.setData(
-        { fromId, type },
+        { fromId, type, browsingLevel: allBrowsingLevelsFlag },
         () => associatedResources as ModelGetAssociatedResourcesSimple
       );
       await queryUtils.model.getAssociatedResourcesCardData.invalidate({ fromId, type });
@@ -73,33 +75,6 @@ export function AssociateModels({
       onSave?.();
     },
   });
-
-  const debouncer = useDebouncer(500);
-  const handleSearchChange = (value: string) => {
-    setQuery(value);
-    debouncer(() => {
-      if (!value.length) return;
-      refetch();
-    });
-  };
-
-  const handleItemSubmit = ({
-    item,
-    group,
-  }: {
-    value: string;
-    item: (typeof models)[number] | (typeof articles)[number];
-    group: 'Models' | 'Articles';
-  }) => {
-    setChanged(true);
-    setAssociatedResources((resources) => [
-      ...resources,
-      ...(group === 'Models'
-        ? [{ resourceType: 'model' as const, item }]
-        : [{ resourceType: 'article' as const, item }]),
-    ]);
-    setQuery('');
-  };
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -115,6 +90,23 @@ export function AssociateModels({
     }
   };
 
+  const handleSelect: QuickSearchDropdownProps['onItemSelected'] = (item, data) => {
+    setChanged(true);
+    setAssociatedResources((resources) => {
+      if (item.entityType === 'Model') {
+        const itemData = data as SearchIndexDataMap['models'][number];
+        return resources.some((r) => r.item.id === item.entityId) || item.entityId === fromId
+          ? resources
+          : [...resources, { resourceType: 'model' as const, item: itemData }];
+      }
+
+      const itemData = data as SearchIndexDataMap['articles'][number];
+      return resources.some((r) => r.item.id === item.entityId) || item.entityId === fromId
+        ? resources
+        : [...resources, { resourceType: 'article' as const, item: itemData }];
+    });
+  };
+
   const handleRemove = (id: number) => {
     const models = [...associatedResources.filter(({ item }) => item.id !== id)];
     setAssociatedResources(models);
@@ -125,6 +117,7 @@ export function AssociateModels({
     setChanged(false);
     setAssociatedResources(data);
   };
+
   const handleSave = () => {
     mutate({
       fromId,
@@ -137,26 +130,7 @@ export function AssociateModels({
     });
   };
 
-  const autocompleteData = useMemo(
-    () => [
-      ...models
-        .filter(
-          (x) => !associatedResources.map(({ item }) => item?.id).includes(x.id) && x.id !== fromId
-        )
-        .map((model) => ({ value: model.name, nsfw: model.nsfw, item: model, group: 'Models' })),
-      ...articles
-        .filter(
-          (x) => !associatedResources.map(({ item }) => item?.id).includes(x.id) && x.id !== fromId
-        )
-        .map((article) => ({
-          value: article.title,
-          nsfw: article.nsfw,
-          item: article,
-          group: 'Articles',
-        })),
-    ],
-    [articles, associatedResources, fromId, models]
-  );
+  const toggleSearchMode = () => setSearchMode((current) => (current === 'me' ? 'all' : 'me'));
 
   useEffect(() => {
     if (!associatedResources.length && data.length) {
@@ -165,21 +139,23 @@ export function AssociateModels({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
+  const onlyMe = searchMode === 'me';
+
   return (
     <Stack>
       {associatedResources.length < limit && (
-        <ClearableAutoComplete
-          // label={`Add up to ${limit} models`}
-          placeholder="Search..."
-          icon={<IconSearch />}
-          data={autocompleteData}
-          value={query}
-          onChange={handleSearchChange}
-          onItemSubmit={handleItemSubmit}
-          itemComponent={SearchItem}
-          nothingFound={isFetching ? 'Searching...' : 'Nothing found'}
-          limit={20}
-          clearable={!!query}
+        <QuickSearchDropdown
+          supportedIndexes={['models', 'articles']}
+          onItemSelected={handleSelect}
+          filters={onlyMe && currentUser ? `user.username='${currentUser.username}'` : undefined}
+          rightSectionWidth={100}
+          rightSection={
+            <Button size="xs" variant="light" onClick={toggleSearchMode} compact>
+              {onlyMe ? 'Only mine' : 'Everywhere'}
+            </Button>
+          }
+          dropdownItemLimit={25}
+          clearable={false}
         />
       )}
 
@@ -225,7 +201,7 @@ export function AssociateModels({
                                     {association.item.user.username}
                                   </Group>
                                 </Badge>
-                                {association.item.nsfw && (
+                                {!getIsSafeBrowsingLevel(association.item.nsfwLevel) && (
                                   <Badge color="red" size="xs">
                                     NSFW
                                   </Badge>

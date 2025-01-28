@@ -1,25 +1,5 @@
-import {
-  Badge,
-  BadgeProps,
-  Group,
-  HoverCard,
-  Stack,
-  Text,
-  ThemeIcon,
-  UnstyledButton,
-} from '@mantine/core';
-import React from 'react';
-import { FeedCard } from '~/components/Cards/FeedCard';
-import { useCardStyles } from '~/components/Cards/Cards.styles';
-import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
-import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
-import { useRouter } from 'next/router';
-import { abbreviateNumber } from '~/utils/number-helpers';
-import { IconBadge } from '~/components/IconBadge/IconBadge';
-import { getDisplayName, slugit } from '~/utils/string-helpers';
-import { BountyGetAll } from '~/types/router';
-import { ImageGuard } from '~/components/ImageGuard/ImageGuard';
-import { MediaHash } from '~/components/ImageHash/ImageHash';
+import { Badge, BadgeProps, HoverCard, Text, ThemeIcon } from '@mantine/core';
+import { Currency } from '~/shared/utils/prisma/enums';
 import {
   IconAlertCircle,
   IconClockHour4,
@@ -28,13 +8,18 @@ import {
   IconSwords,
   IconViewfinder,
 } from '@tabler/icons-react';
-import { BountyContextMenu } from '../Bounty/BountyContextMenu';
-import { CurrencyBadge } from '~/components/Currency/CurrencyBadge';
-import { Currency } from '@prisma/client';
+import React from 'react';
 import { useBountyEngagement } from '~/components/Bounty/bounty.utils';
+import { useCardStyles } from '~/components/Cards/Cards.styles';
+import { CurrencyBadge } from '~/components/Currency/CurrencyBadge';
+import { IconBadge } from '~/components/IconBadge/IconBadge';
+import { BountyGetAll } from '~/types/router';
+import { abbreviateNumber } from '~/utils/number-helpers';
+import { getDisplayName, slugit } from '~/utils/string-helpers';
+import { BountyContextMenu } from '../Bounty/BountyContextMenu';
 import { DaysFromNow } from '../Dates/DaysFromNow';
-
-const IMAGE_CARD_WIDTH = 332;
+import { AspectRatioImageCard } from '~/components/CardTemplates/AspectRatioImageCard';
+import { UserAvatarSimple } from '~/components/UserAvatar/UserAvatarSimple';
 
 const sharedBadgeProps: Omit<BadgeProps, 'children'> = {
   radius: 'xl',
@@ -46,9 +31,8 @@ const sharedBadgeProps: Omit<BadgeProps, 'children'> = {
 
 export function BountyCard({ data }: Props) {
   const { classes, cx, theme } = useCardStyles({ aspectRatio: 1 });
-  const router = useRouter();
-  const { id, name, images, user, type, expiresAt, stats, complete } = data;
-  const cover = images?.[0];
+  const { id, name, images, type, expiresAt, stats, complete } = data;
+  const image = images?.[0];
   const expired = expiresAt < new Date();
 
   const { engagements } = useBountyEngagement();
@@ -95,90 +79,37 @@ export function BountyCard({ data }: Props) {
       : countdownBadge;
 
   return (
-    <FeedCard href={`/bounties/${id}/${slugit(name)}`} aspectRatio="square">
-      <div className={classes.root}>
-        <ImageGuard
-          images={cover ? [cover] : []}
-          connect={{ entityId: id, entityType: 'bounty' }}
-          render={(image) => (
-            <ImageGuard.Content>
-              {({ safe }) => (
-                <>
-                  <Group
-                    spacing={4}
-                    position="apart"
-                    className={cx(classes.contentOverlay, classes.top)}
-                    noWrap
-                  >
-                    <Group spacing={4}>
-                      <ImageGuard.ToggleConnect position="static" />
-                      {type && (
-                        <Badge
-                          className={cx(classes.infoChip, classes.chip)}
-                          variant="light"
-                          radius="xl"
-                        >
-                          <Text color="white" size="xs" transform="capitalize">
-                            {getDisplayName(type)}
-                          </Text>
-                        </Badge>
-                      )}
-                    </Group>
-                    {deadlineBadge}
-                    <BountyContextMenu
-                      bounty={data}
-                      buttonProps={{ ml: 'auto', variant: 'transparent' }}
-                      position="bottom-end"
-                      withinPortal
-                    />
-                  </Group>
-                  {image ? (
-                    safe ? (
-                      <EdgeMedia
-                        src={image.url}
-                        name={image.name ?? image.id.toString()}
-                        alt={image.name ?? undefined}
-                        type={image.type}
-                        width={IMAGE_CARD_WIDTH}
-                        className={classes.image}
-                      />
-                    ) : (
-                      <MediaHash {...cover} />
-                    )
-                  ) : (
-                    <Text color="dimmed">This bounty has no image</Text>
-                  )}
-                </>
-              )}
-            </ImageGuard.Content>
-          )}
-        />
-        <Stack
-          className={cx(classes.contentOverlay, classes.bottom, classes.fullOverlay)}
-          spacing="sm"
-        >
-          {user ? (
-            user?.id !== -1 && (
-              <UnstyledButton
-                sx={{ color: 'white', alignSelf: 'flex-start' }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-
-                  router.push(`/user/${user.username}`);
-                }}
-              >
-                <UserAvatar user={user} avatarProps={{ radius: 'md', size: 32 }} withUsername />
-              </UnstyledButton>
-            )
-          ) : (
-            <UserAvatar user={user} />
-          )}
-          <Group position="apart" align="start" spacing={8}>
+    <AspectRatioImageCard
+      href={`/bounties/${id}/${slugit(name)}`}
+      aspectRatio="square"
+      contentType="bounty"
+      contentId={id}
+      image={image}
+      header={
+        <div className="flex w-full justify-between">
+          <div className="flex gap-1">
+            {type && (
+              <Badge className={cx(classes.infoChip, classes.chip)} variant="light" radius="xl">
+                <Text color="white" size="xs" transform="capitalize">
+                  {getDisplayName(type)}
+                </Text>
+              </Badge>
+            )}
+            {deadlineBadge}
+          </div>
+          <BountyContextMenu bounty={data} position="bottom-end" withinPortal />
+        </div>
+      }
+      footerGradient
+      footer={
+        <div className="flex w-full flex-col gap-2">
+          <UserAvatarSimple {...data.user} />
+          <div className="flex items-start justify-between gap-2"></div>
+          <div className="flex items-start justify-between gap-2">
             <Text size="xl" weight={700} lineClamp={2} lh={1.2}>
               {name}
             </Text>
-            {!cover.scannedAt && (
+            {!image.scannedAt && (
               <HoverCard width={300} position="top-end" withinPortal withArrow>
                 <HoverCard.Target>
                   <ThemeIcon radius="xl" size="md" color="yellow">
@@ -186,7 +117,7 @@ export function BountyCard({ data }: Props) {
                   </ThemeIcon>
                 </HoverCard.Target>
                 <HoverCard.Dropdown>
-                  <Stack spacing={0}>
+                  <div>
                     <Text color="yellow" weight={590}>
                       Pending scan
                     </Text>
@@ -194,12 +125,12 @@ export function BountyCard({ data }: Props) {
                       This bounty won&apos;t be visible publicly until it has completed the image
                       scan process
                     </Text>
-                  </Stack>
+                  </div>
                 </HoverCard.Dropdown>
               </HoverCard>
             )}
-          </Group>
-          <Group spacing={8} position="apart">
+          </div>
+          <div className="flex items-center justify-between gap-2">
             <CurrencyBadge
               currency={Currency.BUZZ}
               unitAmount={stats?.unitAmountCountAllTime ?? 0}
@@ -216,7 +147,7 @@ export function BountyCard({ data }: Props) {
               px={8}
               variant="filled"
             >
-              <Group spacing="xs" noWrap>
+              <div className="flex items-center gap-2">
                 <IconBadge
                   icon={
                     <IconViewfinder
@@ -268,12 +199,12 @@ export function BountyCard({ data }: Props) {
                 >
                   <Text size="xs">{abbreviateNumber(stats?.entryCountAllTime ?? 0)}</Text>
                 </IconBadge>
-              </Group>
+              </div>
             </Badge>
-          </Group>
-        </Stack>
-      </div>
-    </FeedCard>
+          </div>
+        </div>
+      }
+    />
   );
 }
 

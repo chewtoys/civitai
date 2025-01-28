@@ -1,10 +1,13 @@
-import { User } from '@prisma/client';
-import { JWT } from 'next-auth/jwt';
-import { getSessionUser } from '~/server/services/user.service';
-import { createLogger } from '~/utils/logging';
-import { redis } from '~/server/redis/client';
-import { generateSecretHash } from '~/server/utils/key-generator';
 import { Session } from 'next-auth';
+import { JWT } from 'next-auth/jwt';
+import { v4 as uuid } from 'uuid';
+import { missingSignedAtCounter } from '~/server/prom/client';
+import { redis, REDIS_KEYS, REDIS_SYS_KEYS, sysRedis } from '~/server/redis/client';
+import { getSessionUser } from '~/server/services/user.service';
+import { clearCacheByPattern } from '~/server/utils/cache-helpers';
+import { generateSecretHash } from '~/server/utils/key-generator';
+import { User } from '~/shared/utils/prisma/models';
+import { createLogger } from '~/utils/logging';
 
 const DEFAULT_EXPIRATION = 60 * 60 * 24 * 30; // 30 days
 const log = createLogger('session-helpers', 'green');
@@ -15,25 +18,57 @@ declare global {
   var sessionsFetch: Promise<Record<number, Date>> | null;
 }
 
+const TOKEN_ID_ENFORCEMENT = 1713139200000;
+
+export async function invalidateToken(token: JWT) {
+  if (!token?.id || typeof token.id !== 'string') return;
+
+  await sysRedis.hSet(REDIS_SYS_KEYS.SESSION.INVALID_TOKENS, token.id as string, Date.now());
+  log(`Invalidated token ${token.id}`);
+}
+
 export async function refreshToken(token: JWT) {
   if (!token.user) return token;
   const user = token.user as User;
+  if (!!(user as any).clearedAt) return null;
   if (!user.id) return token;
 
-  const userDateStr = await redis.get(`session:${user.id}`);
-  const userDate = userDateStr ? new Date(userDateStr) : undefined;
-  const allInvalidationDateStr = await redis.get('session:all');
-  const allInvalidationDate = allInvalidationDateStr ? new Date(allInvalidationDateStr) : undefined;
-  const invalidationDate =
-    userDate && allInvalidationDate
-      ? new Date(Math.max(userDate.getTime(), allInvalidationDate.getTime()))
-      : userDate ?? allInvalidationDate;
+  let shouldRefresh = false;
 
-  if (
-    !invalidationDate ||
-    (token.signedAt && new Date(token.signedAt as string) > invalidationDate)
-  )
-    return token;
+  // Enforce Token Validity
+  if (!token.id) {
+    if (Date.now() > TOKEN_ID_ENFORCEMENT) return null;
+    shouldRefresh = true;
+  } else {
+    const tokenInvalid = await sysRedis.hExists(
+      REDIS_SYS_KEYS.SESSION.INVALID_TOKENS,
+      token.id as string
+    );
+    if (tokenInvalid) return null;
+  }
+
+  // Enforce Token Refresh
+  if (!shouldRefresh) {
+    const userDateStr = await redis.get(`${REDIS_KEYS.SESSION.BASE}:${user.id}`);
+    const userDate = userDateStr ? new Date(userDateStr) : undefined;
+    const allInvalidationDateStr = await sysRedis.get(REDIS_SYS_KEYS.SESSION.ALL);
+    const allInvalidationDate = allInvalidationDateStr
+      ? new Date(allInvalidationDateStr)
+      : undefined;
+    const invalidationDate =
+      userDate && allInvalidationDate
+        ? new Date(Math.max(userDate.getTime(), allInvalidationDate.getTime()))
+        : userDate ?? allInvalidationDate;
+
+    if (!token.signedAt) {
+      missingSignedAtCounter?.inc();
+      shouldRefresh = true;
+    } else if (invalidationDate && token.signedAt) {
+      shouldRefresh = invalidationDate.getTime() > (token.signedAt as number);
+    }
+  }
+
+  if (!shouldRefresh) return token;
 
   const refreshedUser = await getSessionUser({ userId: user.id });
   setToken(token, refreshedUser);
@@ -43,7 +78,7 @@ export async function refreshToken(token: JWT) {
 }
 
 function setToken(token: JWT, session: AsyncReturnType<typeof getSessionUser>) {
-  if (!session || session.deletedAt) {
+  if (!session) {
     token.user = undefined;
     return;
   }
@@ -56,20 +91,26 @@ function setToken(token: JWT, session: AsyncReturnType<typeof getSessionUser>) {
     else if (typeof _user[key] === 'undefined') delete _user[key];
   }
 
-  token.signedAt = new Date();
+  token.id = token.id ?? uuid();
+  token.signedAt = Date.now();
 }
 
 export async function invalidateSession(userId: number) {
-  await redis.set(`session:${userId}`, new Date().toISOString(), {
-    EX: DEFAULT_EXPIRATION, // 30 days
-  });
+  await Promise.all([
+    redis.set(`${REDIS_KEYS.SESSION.BASE}:${userId}`, new Date().toISOString(), {
+      EX: DEFAULT_EXPIRATION, // 30 days
+    }),
+    redis.del(`${REDIS_KEYS.USER.SESSION}:${userId}`),
+    redis.del(`${REDIS_KEYS.CACHES.MULTIPLIERS_FOR_USER}:${userId}`),
+  ]);
   log(`Scheduling refresh session for user ${userId}`);
 }
 
-export function invalidateAllSessions(asOf: Date | undefined = new Date()) {
-  redis.set('session:all', asOf.toISOString(), {
+export async function invalidateAllSessions(asOf: Date | undefined = new Date()) {
+  await sysRedis.set(REDIS_SYS_KEYS.SESSION.ALL, asOf.toISOString(), {
     EX: DEFAULT_EXPIRATION, // 30 days
   });
+  await clearCacheByPattern(`${REDIS_KEYS.USER.SESSION}:*`);
   log(`Scheduling session refresh for all users`);
 }
 

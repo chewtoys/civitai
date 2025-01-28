@@ -2,15 +2,15 @@ import {
   ActionIcon,
   AutocompleteItem,
   AutocompleteProps,
-  CloseButton,
   Code,
   Group,
   HoverCard,
   Select,
+  Stack,
   Text,
   createStyles,
 } from '@mantine/core';
-import { getHotkeyHandler, useClickOutside, useDebouncedValue, useHotkeys } from '@mantine/hooks';
+import { getHotkeyHandler, useDebouncedValue, useHotkeys } from '@mantine/hooks';
 import { IconChevronDown, IconSearch } from '@tabler/icons-react';
 import type { Hit } from 'instantsearch.js';
 import { useRouter } from 'next/router';
@@ -21,45 +21,42 @@ import React, {
   useMemo,
   useRef,
   useState,
+  Fragment,
 } from 'react';
 import {
   Configure,
   InstantSearch,
   InstantSearchProps,
   SearchBoxProps,
-  useHits,
+  useInstantSearch,
   useSearchBox,
 } from 'react-instantsearch';
 import { ClearableAutoComplete } from '~/components/ClearableAutoComplete/ClearableAutoComplete';
-import type { ModelSearchIndexRecord } from '~/server/search-index/models.search-index';
 import { slugit } from '~/utils/string-helpers';
 import { instantMeiliSearch } from '@meilisearch/instant-meilisearch';
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
 import { ModelSearchItem } from '~/components/AutocompleteSearch/renderItems/models';
 import { ArticlesSearchItem } from '~/components/AutocompleteSearch/renderItems/articles';
 import { UserSearchItem } from '~/components/AutocompleteSearch/renderItems/users';
 import { ImagesSearchItem } from '~/components/AutocompleteSearch/renderItems/images';
 import { TimeoutLoader } from '~/components/Search/TimeoutLoader';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
-import {
-  applyUserPreferencesArticles,
-  applyUserPreferencesBounties,
-  applyUserPreferencesCollections,
-  applyUserPreferencesImages,
-  applyUserPreferencesModels,
-  applyUserPreferencesUsers,
-} from '~/components/Search/search.utils';
-import { ArticleSearchIndexRecord } from '~/server/search-index/articles.search-index';
-import { ImageSearchIndexRecord } from '~/server/search-index/images.search-index';
-import { UserSearchIndexRecord } from '~/server/search-index/users.search-index';
-import { SearchPathToIndexMap } from '~/components/Search/useSearchState';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { useIsMobile } from '~/hooks/useIsMobile';
 import { CollectionsSearchItem } from '~/components/AutocompleteSearch/renderItems/collections';
-import { CollectionSearchIndexRecord } from '~/server/search-index/collections.search-index';
 import { BountiesSearchItem } from '~/components/AutocompleteSearch/renderItems/bounties';
-import { BountySearchIndexRecord } from '~/server/search-index/bounties.search-index';
+import { useTrackEvent } from '../TrackView/track.utils';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { SearchIndexDataMap, useHitsTransformed } from '~/components/Search/search.utils2';
+import {
+  ReverseSearchIndexKey,
+  SearchIndexKey,
+  reverseSearchIndexMap,
+  searchIndexMap,
+} from '~/components/Search/search.types';
+import { paired } from '~/utils/type-guards';
+import { BrowsingLevelFilter } from '../Search/CustomSearchComponents';
+import { QS } from '~/utils/qs';
+import { ToolSearchItem } from '~/components/AutocompleteSearch/renderItems/tools';
 
 const meilisearch = instantMeiliSearch(
   env.NEXT_PUBLIC_SEARCH_HOST as string,
@@ -67,7 +64,7 @@ const meilisearch = instantMeiliSearch(
   { primaryKey: 'id' }
 );
 
-type Props = Omit<AutocompleteProps, 'data'> & {
+type Props = Omit<AutocompleteProps, 'data' | 'onSubmit'> & {
   onClear?: VoidFunction;
   onSubmit?: VoidFunction;
   searchBoxProps?: SearchBoxProps;
@@ -179,26 +176,6 @@ const useStyles = createStyles((theme) => ({
   },
 }));
 
-type TargetIndex = keyof DataIndex;
-type DataIndex = {
-  models: ModelSearchIndexRecord[];
-  images: ImageSearchIndexRecord[];
-  articles: ArticleSearchIndexRecord[];
-  users: UserSearchIndexRecord[];
-  collections: CollectionSearchIndexRecord[];
-  bounties: BountySearchIndexRecord[];
-};
-type Boxed<Mapping> = { [K in keyof Mapping]: { key: K; value: Mapping[K] } }[keyof Mapping];
-/**
- * boxes a key and corresponding value from a mapping and returns {key: , value: } structure
- * the type of return value is setup so that a switch over the key field will guard type of value
- * It is intentionally not checked that key and value actually correspond to each other so that
- * this can return a union of possible pairings, intended to be put in a switch statement over the key field.
- */
-function paired<Mapping>(key: keyof Mapping, value: Mapping[keyof Mapping]) {
-  return { key, value } as Boxed<Mapping>;
-}
-
 const targetData = [
   { value: 'models', label: 'Models' },
   { value: 'images', label: 'Images' },
@@ -206,19 +183,37 @@ const targetData = [
   { value: 'users', label: 'Users' },
   { value: 'collections', label: 'Collections' },
   { value: 'bounties', label: 'Bounties' },
+  { value: 'tools', label: 'Tools' },
 ] as const;
 
 export const AutocompleteSearch = forwardRef<{ focus: () => void }, Props>(({ ...props }, ref) => {
-  const [targetIndex, setTargetIndex] = useState<TargetIndex>('models');
-  const handleTargetChange = (value: TargetIndex) => {
+  const [targetIndex, setTargetIndex] = useState<SearchIndexKey>('models');
+  const handleTargetChange = (value: SearchIndexKey) => {
     setTargetIndex(value);
   };
+
+  const indexSupportsNsfwLevel = useMemo(
+    () =>
+      [
+        searchIndexMap.articles,
+        searchIndexMap.bounties,
+        searchIndexMap.models,
+        searchIndexMap.images,
+        searchIndexMap.collections,
+        searchIndexMap.tools,
+      ].some((i) => i === searchIndexMap[targetIndex]),
+    [targetIndex]
+  );
 
   return (
     <InstantSearch
       searchClient={searchClient}
-      indexName={SearchPathToIndexMap[targetIndex as keyof typeof SearchPathToIndexMap]}
+      indexName={searchIndexMap[targetIndex as keyof typeof searchIndexMap]}
+      future={{ preserveSharedStateOnUnmount: false }}
     >
+      {indexSupportsNsfwLevel && (
+        <BrowsingLevelFilter attributeName={indexSupportsNsfwLevel ? 'nsfwLevel' : ''} />
+      )}
       <AutocompleteSearchContent
         {...props}
         indexName={targetIndex}
@@ -231,44 +226,39 @@ export const AutocompleteSearch = forwardRef<{ focus: () => void }, Props>(({ ..
 
 AutocompleteSearch.displayName = 'AutocompleteSearch';
 
-// declare module 'react' {
-//   function forwardRef<T, P = Record<string, unknown>>(
-//     render: (
-//       props: P,
-//       ref: React.Ref<T>
-//     ) => ForwardRefExoticComponent<PropsWithoutRef<P> & RefAttributes<T>>
-//   ): (
-//     props: P & React.RefAttributes<T>
-//   ) => ForwardRefExoticComponent<PropsWithoutRef<P> & RefAttributes<T>>;
-// }
-
-type AutocompleteSearchProps<T> = Props & {
+type AutocompleteSearchProps<T extends SearchIndexKey> = Props & {
   indexName: T;
-  onTargetChange: (target: TargetIndex) => void;
+  onTargetChange: (target: T) => void;
 };
 
-function AutocompleteSearchContentInner<TKey extends TargetIndex>(
+function AutocompleteSearchContentInner<TKey extends SearchIndexKey>(
   {
     onClear,
     onSubmit,
     className,
     searchBoxProps,
-    indexName,
+    indexName: indexNameProp,
     onTargetChange,
     ...autocompleteProps
   }: AutocompleteSearchProps<TKey>,
   ref: React.ForwardedRef<{ focus: () => void }>
 ) {
-  const currentUser = useCurrentUser();
+  // const currentUser = useCurrentUser();
   const { classes } = useStyles();
   const router = useRouter();
   const isMobile = useIsMobile();
   const features = useFeatureFlags();
   const inputRef = useRef<HTMLInputElement>(null);
-  const wrapperRef = useClickOutside(() => onClear?.());
+
+  const { status } = useInstantSearch({
+    catchError: true,
+  });
 
   const { query, refine: setQuery } = useSearchBox(searchBoxProps);
-  const { hits, results } = useHits<any>();
+  const { hits, results } = useHitsTransformed<TKey>();
+  const indexName = results?.index
+    ? reverseSearchIndexMap[results.index as ReverseSearchIndexKey]
+    : indexNameProp;
 
   const [selectedItem, setSelectedItem] = useState<AutocompleteItem | null>(null);
   const [search, setSearch] = useState(query);
@@ -276,74 +266,24 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
   const [searchPageQuery, setSearchPageQuery] = useState('');
   const [debouncedSearch] = useDebouncedValue(search, 300);
 
-  const {
-    models: hiddenModels,
-    images: hiddenImages,
-    tags: hiddenTags,
-    users: hiddenUsers,
-    isLoading: loadingPreferences,
-  } = useHiddenPreferencesContext();
+  const { trackSearch } = useTrackEvent();
+  const searchErrorState = status === 'error';
+
+  const { key, value } = paired<SearchIndexDataMap>(indexName, hits as SearchIndexDataMap[TKey]);
+  const { items: filtered } = useApplyHiddenPreferences({
+    type: key,
+    data: value,
+  });
 
   const items = useMemo(() => {
-    if (!results || !results.nbHits) return [];
-
-    const getFilteredResults = () => {
-      const opts = {
-        currentUserId: currentUser?.id,
-        hiddenImages: hiddenImages,
-        hiddenTags: hiddenTags,
-        hiddenUsers: hiddenUsers,
-        hiddenModels,
-      };
-
-      const pair = paired<DataIndex>(indexName, hits);
-      switch (pair.key) {
-        case 'models':
-          return applyUserPreferencesModels({ ...opts, items: pair.value });
-        case 'images':
-          return applyUserPreferencesImages({ ...opts, items: pair.value });
-        case 'articles':
-          return applyUserPreferencesArticles({ ...opts, items: pair.value });
-        case 'bounties':
-          return applyUserPreferencesBounties({ ...opts, items: pair.value });
-        case 'collections':
-          return applyUserPreferencesCollections({ ...opts, items: pair.value });
-        case 'users':
-          return applyUserPreferencesUsers({ ...opts, items: pair.value });
-        default:
-          return [];
-      }
-    };
-
-    const filteredResults = getFilteredResults();
-
-    type Item = AutocompleteItem & { hit: any | null };
-    const items: Item[] = filteredResults.map((hit) => {
-      const anyHit = hit as any;
-
-      return {
-        // Value isn't really used, but better safe than sorry:
-        value: anyHit?.name || anyHit?.title || anyHit?.username || anyHit?.id,
-        hit,
-      };
-    });
-    // If there are more results than the default limit,
-    // then we add a "view more" option
-    if (results.nbHits > DEFAULT_DROPDOWN_ITEM_LIMIT)
-      items.push({ key: 'view-more', value: query, hit: null });
-
+    if (status === 'stalled') {
+      return []; // Wait it out
+    }
+    const items = filtered.map((hit) => ({ key: String(hit.id), hit, value: '' }));
+    if (!!results?.nbHits && results.nbHits > DEFAULT_DROPDOWN_ITEM_LIMIT)
+      items.push({ key: 'view-more', value: query, hit: null as any });
     return items;
-  }, [
-    hits,
-    query,
-    results,
-    hiddenModels,
-    hiddenImages,
-    hiddenTags,
-    hiddenUsers,
-    indexName,
-    currentUser?.id,
-  ]);
+  }, [status, filtered, results?.nbHits, query]);
 
   const focusInput = () => inputRef.current?.focus();
   const blurInput = () => inputRef.current?.blur();
@@ -353,16 +293,17 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
   }));
 
   const handleSubmit = () => {
-    if (query) {
-      router.push(
-        `/search/${indexName}?query=${encodeURIComponent(query)}&${
-          searchPageQuery.length ? `${searchPageQuery}` : ''
-        }`,
-        undefined,
-        {
-          shallow: false,
-        }
+    if (search) {
+      const { query: cleanedSearch, searchPageQuery: currSearchPageQuery } = parseQuery(
+        indexName,
+        search
       );
+      const queryString = QS.stringify({
+        query: cleanedSearch.trim(), // Search should be more accurate than query as it was the latest written.
+        ...QS.parse(currSearchPageQuery),
+      });
+
+      router.push(`/search/${indexName}?${queryString}`, undefined, { shallow: false });
 
       blurInput();
     }
@@ -375,6 +316,22 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
     onClear?.();
   };
 
+  const handleItemClick = (item: AutocompleteItem) => {
+    if (item.hit) {
+      // when an item is clicked
+      router.push(processHitUrl(item.hit));
+      trackSearch({ query: search, index: searchIndexMap[indexName] }).catch(() => null);
+    } else {
+      // when view more is clicked
+      router.push(`/search/${indexName}?query=${encodeURIComponent(item.value)}`, undefined, {
+        shallow: false,
+      });
+    }
+
+    setSelectedItem(item);
+    onSubmit?.();
+  };
+
   useHotkeys([
     ['/', focusInput],
     ['mod+k', focusInput],
@@ -383,7 +340,15 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
   useEffect(() => {
     // Only set the query when the debounced search changes
     // and user didn't select from the list
-    if (debouncedSearch === query || selectedItem) return;
+    if (debouncedSearch === query || selectedItem || searchErrorState) return;
+
+    // Check if the query is an AIR
+    const air = checkAIR(indexName, debouncedSearch);
+    if (air) {
+      // If it is, redirect to the appropriate page
+      router.push(air);
+      return;
+    }
 
     const {
       query: cleanedSearch,
@@ -394,7 +359,6 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
     setQuery(cleanedSearch);
     setFilters(filters);
     setSearchPageQuery(searchPageQuery);
-
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedSearch, query]);
 
@@ -408,9 +372,12 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
       case 'articles':
         return `/${indexName}/${hit.id}/${slugit(hit.title)}`;
       case 'images':
+      case 'collections':
         return `/${indexName}/${hit.id}`;
       case 'users':
         return `/user/${hit.username}`;
+      case 'tools':
+        return `/${indexName}/${slugit(hit.name)}`;
       case 'models':
       default:
         return `/${indexName}/${hit.id}/${slugit(hit.name)}`;
@@ -420,7 +387,7 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
   return (
     <>
       <Configure hitsPerPage={DEFAULT_DROPDOWN_ITEM_LIMIT} filters={filters} />
-      <Group ref={wrapperRef} className={classes.wrapper} spacing={0} noWrap>
+      <Group className={classes.wrapper} spacing={0} noWrap>
         <Select
           classNames={{
             root: classes.targetSelectorRoot,
@@ -430,12 +397,18 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
           maxDropdownHeight={280}
           defaultValue={targetData[0].value}
           // Ensure we disable search targets if they are not enabled
-          data={targetData
-            .filter((value) => (features.imageSearch ? true : value.value !== 'images'))
-            .filter((value) => (features.bounties ? true : value.value !== 'bounties'))}
+          data={targetData.filter(
+            ({ value }) =>
+              (features.imageSearch ? true : value !== 'images') &&
+              (features.bounties ? true : value !== 'bounties') &&
+              (features.articles ? true : value !== 'articles') &&
+              (features.toolSearch ? true : value !== 'tools')
+          )}
           rightSection={<IconChevronDown size={16} color="currentColor" />}
           sx={{ flexShrink: 1 }}
           onChange={onTargetChange}
+          autoComplete="off"
+          withinPortal
         />
         <ClearableAutoComplete
           ref={inputRef}
@@ -445,8 +418,15 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
           placeholder="Search Civitai"
           type="search"
           nothingFound={
-            query && !hits.length ? (
-              <TimeoutLoader delay={1500} renderTimeout={() => <Text>No results found</Text>} />
+            searchErrorState ? (
+              <Stack spacing={0} align="center">
+                <Text>There was an error while performing your request&hellip;</Text>
+                <Text size="xs">Please try again later</Text>
+              </Stack>
+            ) : query && !hits.length ? (
+              <Stack spacing={0} align="center">
+                <TimeoutLoader delay={1500} renderTimeout={() => <Text>No results found</Text>} />
+              </Stack>
             ) : undefined
           }
           limit={
@@ -458,26 +438,13 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
           value={search}
           data={items}
           onChange={setSearch}
+          onBlur={handleClear}
           onClear={handleClear}
           onKeyDown={getHotkeyHandler([
             ['Escape', blurInput],
             ['Enter', handleSubmit],
           ])}
-          // onBlur={() => (!isMobile ? onClear?.() : undefined)}
-          onItemSubmit={(item) => {
-            item.hit
-              ? router.push(processHitUrl(item.hit)) // when a model is clicked
-              : router.push(
-                  `/search/${indexName}?query=${encodeURIComponent(item.value)}`,
-                  undefined,
-                  {
-                    shallow: false,
-                  }
-                ); // when view more is clicked
-
-            setSelectedItem(item);
-            onSubmit?.();
-          }}
+          onItemSubmit={handleItemClick}
           itemComponent={IndexRenderItem[indexName] ?? ModelSearchItem}
           rightSection={
             <HoverCard withArrow width={300} shadow="sm" openDelay={500}>
@@ -515,14 +482,14 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
           // prevent default filtering behavior
           filter={() => true}
           clearable={query.length > 0}
-          maxDropdownHeight={isMobile ? 450 : undefined}
+          maxDropdownHeight={isMobile ? 'calc(90vh - var(--header-height))' : undefined}
           {...autocompleteProps}
         />
         <ActionIcon
           className={classes.searchButton}
           variant="filled"
           size={36}
-          onClick={handleSubmit}
+          onMouseDown={handleSubmit}
         >
           <IconSearch size={18} />
         </ActionIcon>
@@ -533,23 +500,26 @@ function AutocompleteSearchContentInner<TKey extends TargetIndex>(
 
 const AutocompleteSearchContent = React.forwardRef(AutocompleteSearchContentInner);
 
-const IndexRenderItem: Record<string, React.FC> = {
+const IndexRenderItem: Record<SearchIndexKey, React.FC> = {
   models: ModelSearchItem,
   articles: ArticlesSearchItem,
   users: UserSearchItem,
   images: ImagesSearchItem,
   collections: CollectionsSearchItem,
   bounties: BountiesSearchItem,
+  tools: ToolSearchItem,
 };
 
 const queryFilters: Record<
   string,
-  { filters: Record<string, RegExp>; searchPageMap: Record<string, string> }
+  { AIR?: RegExp; filters: Record<string, RegExp>; searchPageMap: Record<string, string> }
 > = {
   models: {
+    AIR: /^civitai:(?<modelId>\d+)@(?<modelVersionId>\d+)/g,
     filters: {
       'tags.name': /(^|\s+)(?<not>!|-)?#(?<value>\w+)/g,
       'user.username': /(^|\s+)(?<not>!|-)?@(?<value>\w+)/g,
+      'versions.hashes': /(^|\s+)(?<not>!|-)?hash:(?<value>[A-Za-z0-9_.-]+)/g,
     },
     searchPageMap: {
       'user.username': 'users',
@@ -557,6 +527,31 @@ const queryFilters: Record<
     },
   },
 };
+
+function checkAIR(index: string, query: string) {
+  const filterAttributes = queryFilters[index] ?? {};
+
+  if (!filterAttributes?.AIR) {
+    return null;
+  }
+
+  const { AIR } = filterAttributes;
+  const [match] = query.matchAll(AIR);
+
+  if (!match) return null;
+
+  if (index === 'models') {
+    const modelId = match?.groups?.modelId;
+    const modelVersionId = match?.groups?.modelVersionId;
+
+    if (!modelId || !modelVersionId) return null;
+
+    return `/models/${modelId}?modelVersionId=${modelVersionId}`;
+  }
+
+  return null;
+}
+
 function parseQuery(index: string, query: string) {
   const filterAttributes = queryFilters[index];
   const filters = [];

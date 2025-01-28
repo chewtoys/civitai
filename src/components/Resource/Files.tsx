@@ -160,7 +160,10 @@ function FileCard({ data: versionFile, index }: { data: FileFromContextProps; in
 
   const deleteFileMutation = trpc.modelFile.delete.useMutation({
     async onSuccess() {
-      await queryUtils.modelVersion.getById.invalidate({ id: versionFile.versionId });
+      await queryUtils.modelVersion.getById.invalidate({
+        id: versionFile.versionId,
+        withFiles: true,
+      });
       if (modelId) await queryUtils.model.getById.invalidate({ id: modelId });
       removeFile(versionFile.uuid);
     },
@@ -429,7 +432,7 @@ function FileEditForm({
     switch (extension) {
       case 'ckpt':
       case 'safetensors':
-        return ['Model', 'VAE'].includes(value);
+        return ['Model', 'Negative', 'VAE'].includes(value);
       case 'pt':
         return ['Model', 'Negative', 'VAE'].includes(value);
       case 'zip':
@@ -491,11 +494,11 @@ function FileEditForm({
 
           <Select
             label="Precision"
-            placeholder="fp16, fp32, bf16"
+            placeholder="fp16, fp32, bf16, fp8, nf4"
             data={constants.modelFileFp}
             error={error?.fp?._errors[0]}
             value={versionFile.fp ?? null}
-            onChange={(value: 'fp16' | 'fp32' | 'bf16' | null) => {
+            onChange={(value: ModelFileFp | null) => {
               updateFile(versionFile.uuid, { fp: value });
             }}
             withAsterisk
@@ -505,7 +508,7 @@ function FileEditForm({
           {versionFile.name.endsWith('.zip') && (
             <Select
               label="Format"
-              placeholder="Diffusers, Core ML"
+              placeholder="Diffusers, Core ML, ONNX"
               data={zipModelFileTypes.map((x) => ({ label: x, value: x }))}
               error={error?.format?._errors[0]}
               value={versionFile.format ?? null}

@@ -1,8 +1,4 @@
-import {
-  IndexToLabel,
-  SearchPathToIndexMap,
-  useSearchStore,
-} from '~/components/Search/useSearchState';
+import { IndexToLabel, useSearchStore } from '~/components/Search/useSearchState';
 import { useInstantSearch, usePagination, useSearchBox } from 'react-instantsearch';
 import {
   Box,
@@ -25,6 +21,7 @@ import {
   IconUsers,
   IconLayoutCollage,
   IconMoneybag,
+  IconTools,
 } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
 import { removeEmpty } from '~/utils/object-helpers';
@@ -36,14 +33,17 @@ import {
   COLLECTIONS_SEARCH_INDEX,
   IMAGES_SEARCH_INDEX,
   MODELS_SEARCH_INDEX,
+  TOOLS_SEARCH_INDEX,
   USERS_SEARCH_INDEX,
 } from '~/server/common/constants';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { isDefined } from '~/utils/type-guards';
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { searchIndexMap } from '~/components/Search/search.types';
 
 const useStyles = createStyles((theme) => ({
   wrapper: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       overflow: 'auto',
       maxWidth: '100%',
     },
@@ -57,7 +57,7 @@ const useStyles = createStyles((theme) => ({
   root: {
     backgroundColor: 'transparent',
     gap: 8,
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       overflow: 'visible',
       maxWidth: '100%',
     },
@@ -101,8 +101,8 @@ export const SearchHeader = () => {
 
   const onChangeIndex = (value: string) => {
     setSearchParamsByUiState(uiState);
-    const keyPath = Object.keys(SearchPathToIndexMap).find(
-      (key) => SearchPathToIndexMap[key as keyof typeof SearchPathToIndexMap] === value
+    const keyPath = Object.keys(searchIndexMap).find(
+      (key) => searchIndexMap[key as keyof typeof searchIndexMap] === value
     );
 
     if (keyPath && states.hasOwnProperty(keyPath)) {
@@ -239,6 +239,26 @@ export const SearchHeader = () => {
       ),
       value: USERS_SEARCH_INDEX,
     },
+    features.toolSearch
+      ? {
+          label: (
+            <Group align="center" spacing={8} noWrap>
+              <ThemeIcon
+                size={30}
+                color={index === TOOLS_SEARCH_INDEX ? theme.colors.dark[7] : 'transparent'}
+                p={6}
+                radius="xl"
+              >
+                <IconTools />
+              </ThemeIcon>
+              <Text size="sm" inline>
+                Tools
+              </Text>
+            </Group>
+          ),
+          value: TOOLS_SEARCH_INDEX,
+        }
+      : undefined,
   ].filter(isDefined);
 
   const loading = status === 'loading' || status === 'stalled';
@@ -255,22 +275,13 @@ export const SearchHeader = () => {
     const hitsString =
       nbHits === 1000 ? `Over ${numberWithCommas(nbHits)}` : numberWithCommas(nbHits);
 
-    const queryItem = (
-      <Text color="blue" span>
-        &lsquo;{query}&rsquo;
-      </Text>
-    );
-
     return (
-      <Text>
-        {nbHits > 0 ? (
-          <>
-            {hitsString} results for {queryItem}
-          </>
-        ) : (
-          <>No results for {queryItem}</>
-        )}
-      </Text>
+      <>
+        <span>{nbHits > 0 ? `${hitsString} results for ` : `No results for `}</span>
+        <Text color="blue" span>
+          &lsquo;{query}&rsquo;
+        </Text>
+      </>
     );
   })();
 

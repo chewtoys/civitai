@@ -1,6 +1,8 @@
-import { Badge, Group, MantineNumberSize } from '@mantine/core';
+import { Badge, BadgeProps, Group, MantineNumberSize } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { Fragment } from 'react';
+import OneKeyMap from '@essentials/one-key-map';
+import trieMemoize from 'trie-memoize';
 
 export function Collection<T>({
   items,
@@ -8,8 +10,9 @@ export function Collection<T>({
   limit = 5,
   spacing = 4,
   grouped = false,
+  badgeProps,
 }: Props<T>) {
-  const [opened, { open }] = useDisclosure();
+  const [opened, { open, close }] = useDisclosure();
 
   if (!items.length) return null;
 
@@ -19,18 +22,41 @@ export function Collection<T>({
   const renderedItems = (
     <>
       {displayedItems.map((item, index) => (
-        <Fragment key={index}>{renderItem(item, index)}</Fragment>
+        <Fragment key={'displayed' + index}>
+          {createRenderElement(renderItem, index, item)}
+        </Fragment>
       ))}
       {collapsedItems.length > 0 && opened
         ? collapsedItems.map((item, index) => (
-            <Fragment key={index}>{renderItem(item, index)}</Fragment>
+            <Fragment key={'collapsed' + index}>
+              {createRenderElement(renderItem, index, item)}
+            </Fragment>
           ))
         : null}
-      {collapsedItems.length > 0 && !opened ? (
-        <Badge component="button" color="gray" size="sm" onClick={open} sx={{ cursor: 'pointer' }}>
-          + {collapsedItems.length}
-        </Badge>
-      ) : null}
+      {collapsedItems.length > 0 &&
+        (!opened ? (
+          <Badge
+            component="button"
+            color="gray"
+            size="sm"
+            {...badgeProps}
+            onClick={open}
+            sx={{ cursor: 'pointer' }}
+          >
+            + {collapsedItems.length}
+          </Badge>
+        ) : (
+          <Badge
+            component="button"
+            color="gray"
+            size="sm"
+            {...badgeProps}
+            onClick={close}
+            sx={{ cursor: 'pointer' }}
+          >
+            - Hide
+          </Badge>
+        ))}
     </>
   );
 
@@ -43,4 +69,11 @@ type Props<T> = {
   limit?: number;
   spacing?: MantineNumberSize;
   grouped?: boolean;
+  badgeProps?: Omit<BadgeProps, 'children'>;
 };
+
+// supposedly ~5.5x faster than createElement without the memo
+const createRenderElement = trieMemoize(
+  [OneKeyMap, {}, WeakMap],
+  (RenderComponent, index, item) => <RenderComponent index={index} {...item} />
+);

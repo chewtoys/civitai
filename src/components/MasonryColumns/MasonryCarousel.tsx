@@ -1,19 +1,8 @@
 import OneKeyMap from '@essentials/one-key-map';
 import { Carousel } from '@mantine/carousel';
-import {
-  Box,
-  Button,
-  Center,
-  createStyles,
-  Group,
-  Loader,
-  LoadingOverlay,
-  Stack,
-  Text,
-} from '@mantine/core';
 import trieMemoize from 'trie-memoize';
 import { MasonryRenderItemProps } from '~/components/MasonryColumns/masonry.types';
-import { useMasonryContainerContext } from '~/components/MasonryColumns/MasonryContainer';
+import { useMasonryContext } from '~/components/MasonryColumns/MasonryProvider';
 
 type Props<TData> = {
   data: TData[];
@@ -24,6 +13,7 @@ type Props<TData> = {
   id?: string | number;
   empty?: React.ReactNode;
   itemWrapperProps?: React.HTMLAttributes<HTMLDivElement>;
+  viewportClassName?: string;
 };
 
 export function MasonryCarousel<TData>({
@@ -35,9 +25,9 @@ export function MasonryCarousel<TData>({
   id,
   empty,
   itemWrapperProps,
+  viewportClassName,
 }: Props<TData>) {
-  const { classes } = useStyles();
-  const { columnCount, columnWidth, maxSingleColumnWidth } = useMasonryContainerContext();
+  const { columnCount, columnWidth, maxSingleColumnWidth } = useMasonryContext();
 
   const totalItems = data.length + (extra ? 1 : 0);
   // const key = id ?? (itemId ? data.map(itemId).join('_') : undefined);
@@ -45,15 +35,16 @@ export function MasonryCarousel<TData>({
   return data.length ? (
     <Carousel
       key={id}
-      classNames={classes}
-      slideSize={`${100 / columnCount}%`}
-      slideGap="md"
+      classNames={{ viewport: viewportClassName }}
+      slideSize={columnCount > 1 ? '336px' : '100%'}
+      slideGap={16}
       align={totalItems <= columnCount ? 'start' : 'end'}
       withControls={totalItems > columnCount ? true : false}
       slidesToScroll={columnCount}
+      controlSize={32}
       // height={columnCount === 1 ? maxSingleColumnWidth : '100%'}
       loop
-      sx={{
+      style={{
         width: columnCount === 1 ? maxSingleColumnWidth : '100%',
         maxWidth: '100%',
         margin: '0 auto',
@@ -63,37 +54,34 @@ export function MasonryCarousel<TData>({
       {data.map((item, index) => {
         const key = itemId ? itemId(item) : index;
         return (
-          <Carousel.Slide key={key} id={key.toString()}>
-            <div style={{ position: 'relative', paddingTop: '100%' }} {...itemWrapperProps}>
-              {createRenderElement(RenderComponent, index, item, height)}
-            </div>
+          <Carousel.Slide {...itemWrapperProps} key={key} id={key.toString()}>
+            {createRenderElement(RenderComponent, index, item, height)}
           </Carousel.Slide>
         );
       })}
-      {extra && (
-        <Carousel.Slide>
-          <div style={{ position: 'relative', paddingTop: '100%' }}>{extra}</div>
-        </Carousel.Slide>
-      )}
+      {extra && <Carousel.Slide>{extra}</Carousel.Slide>}
     </Carousel>
   ) : (
     <div style={{ height: columnWidth }}>{empty}</div>
   );
 }
 
-const useStyles = createStyles((theme) => ({
-  control: {
-    svg: {
-      width: 32,
-      height: 32,
-
-      [theme.fn.smallerThan('sm')]: {
-        minWidth: 16,
-        minHeight: 16,
-      },
-    },
-  },
-}));
+// const useStyles = createStyles(() => ({
+//   control: {
+//     svg: {
+//       width: 32,
+//       height: 32,
+//       [containerQuery.smallerThan('sm')]: {
+//         minWidth: 16,
+//         minHeight: 16,
+//       },
+//     },
+//     '&[data-inactive]': {
+//       opacity: 0,
+//       cursor: 'default',
+//     },
+//   },
+// }));
 
 // supposedly ~5.5x faster than createElement without the memo
 const createRenderElement = trieMemoize(

@@ -1,5 +1,8 @@
+import { Air } from '@civitai/client';
 import { truncate } from 'lodash-es';
 import slugify from 'slugify';
+import { BaseModel, baseModelSets } from '~/server/common/constants';
+import { ModelType } from '~/shared/utils/prisma/enums';
 
 import allowedUrls from '~/utils/allowed-third-party-urls.json';
 import { toJson } from '~/utils/json-helpers';
@@ -10,25 +13,64 @@ function getUrlDomain(url: string) {
   return new URL(url).hostname.split('.').slice(-2).join('.');
 }
 
-export function splitUppercase(value: string) {
+export function splitUppercase(value: string, options?: { splitNumbers?: boolean }) {
   return value
     .trim()
-    .split(/([A-Z][a-z]+|[0-9]+)/)
+    .split(options?.splitNumbers ? /([A-Z][a-z]+|[0-9]+)/ : /([A-Z][a-z]+)/)
     .map((word) => word.trim())
     .filter(Boolean)
     .join(' ');
 }
 
+const stripeCurrencyMap: Record<string, [string, number]> = {
+  usd: ['$', 100],
+  aud: ['$', 100],
+  cad: ['$', 100],
+  eur: ['€', 100],
+  gbp: ['£', 100],
+  jpy: ['¥', 1],
+  krw: ['₩', 1],
+};
+
+export function getStripeCurrencyDisplay(unitAmount: number, currency: string) {
+  const [symbol, divisor] = stripeCurrencyMap[currency.toLowerCase()] ?? ['$', 100];
+
+  const hasDecimals = (unitAmount / divisor).toFixed(2).split('.')[1] !== '00';
+
+  return (
+    symbol +
+    (unitAmount / divisor).toLocaleString(undefined, { minimumFractionDigits: hasDecimals ? 2 : 0 })
+  );
+}
+
 const nameOverrides: Record<string, string> = {
   LoCon: 'LyCORIS',
   LORA: 'LoRA',
+  DoRA: 'DoRA',
   scheduler: 'Sampler',
   TextualInversion: 'Embedding',
   MotionModule: 'Motion',
   BenefactorsOnly: 'Supporters Only',
+  ModelVersion: 'Model Version',
+  ClubMembership: 'Club Membership',
+  Redeemable: 'Redeemed Code',
+  'PixArt E': 'PixArt Σ',
+  'PixArt a': 'PixArt α',
+  ProfileDecoration: 'Avatar Decoration',
+  CogVideoX: 'CogVideoX',
+  minimax: 'Hailou by MiniMax',
 };
-export function getDisplayName(value: string) {
-  return nameOverrides[value] ?? splitUppercase(value);
+
+export function getDisplayName(
+  value: string,
+  options?: { splitNumbers?: boolean; overwrites?: Record<string, string> }
+) {
+  const { splitNumbers = true } = options ?? {};
+  if (!value) return '';
+
+  return (
+    options?.overwrites?.[value] ?? nameOverrides[value] ?? splitUppercase(value, { splitNumbers })
+  );
 }
 
 export function getInitials(value: string) {
@@ -42,6 +84,7 @@ export function getInitials(value: string) {
 
 const tokenCharacters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const tokenCharactersLength = tokenCharacters.length;
+
 export function generateToken(length: number) {
   let result = '';
   for (let i = 0; i < length; i++)
@@ -101,7 +144,13 @@ export function removeTags(str: string) {
   return stringWithoutExtraSpaces.trim();
 }
 
-export function postgresSlugify(str: string) {
+export function stripLeadingWhitespace(str: string) {
+  return str.replace(/^[ \t]+/gm, '');
+}
+
+export function postgresSlugify(str?: string) {
+  if (!str) return '';
+
   return str
     .replace(' ', '_')
     .replace(/[^a-zA-Z0-9_]/g, '')
@@ -141,6 +190,115 @@ export function trimNonAlphanumeric(str: string | null | undefined) {
   return str?.replace(/^[^\w]+|[^\w]+$/g, '');
 }
 
-export function removeAccents(input: string): string {
-  return input.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+export function parseAIR(identifier: string) {
+  const { id, version, ...value } = Air.parse(identifier);
+  return { ...value, model: Number(id), version: Number(version) };
+}
+
+export function parseAIRSafe(identifier: string | undefined) {
+  if (identifier === undefined) return identifier;
+  const match = Air.parseSafe(identifier);
+  if (!match) return match;
+
+  const { id, version, ...value } = match;
+  return { ...value, model: Number(id), version: Number(version) };
+}
+
+export function isAir(identifier: string) {
+  return Air.isAir(identifier);
+}
+
+export function getAirModelLink(identifier: string) {
+  const parsed = parseAIRSafe(identifier);
+  if (!parsed) return '/';
+  return `/models/${parsed.model}?modelVersionId=${parsed.version}`;
+}
+
+const typeUrnMap: Partial<Record<ModelType, string>> = {
+  [ModelType.AestheticGradient]: 'ag',
+  [ModelType.Checkpoint]: 'checkpoint',
+  [ModelType.Hypernetwork]: 'hypernet',
+  [ModelType.TextualInversion]: 'embedding',
+  [ModelType.MotionModule]: 'motion',
+  [ModelType.Upscaler]: 'upscaler',
+  [ModelType.VAE]: 'vae',
+  [ModelType.LORA]: 'lora',
+  [ModelType.DoRA]: 'dora',
+  [ModelType.LoCon]: 'lycoris',
+  [ModelType.Controlnet]: 'controlnet',
+};
+
+export function stringifyAIR({
+  baseModel,
+  type,
+  modelId,
+  id,
+  source = 'civitai',
+}: {
+  baseModel: BaseModel | string;
+  type: ModelType;
+  modelId: number;
+  id?: number;
+  source?: string;
+}) {
+  const ecosystem =
+    Object.entries(baseModelSets).find(([, baseModelSet]) =>
+      (baseModelSet.baseModels as string[]).includes(baseModel)
+    )?.[0] ?? 'multi';
+
+  const urnType = typeUrnMap[type] ?? 'unknown';
+
+  return Air.stringify({
+    ecosystem: ecosystem.toLowerCase(),
+    type: urnType,
+    source,
+    id: String(modelId),
+    version: String(id),
+  })
+    ?.replace('pony', 'sdxl')
+    ?.replace('illustrious', 'sdxl')
+    ?.replace('sd3_5m', 'sd3');
+}
+
+export function getBaseModelEcosystemName(baseModel: BaseModel | undefined) {
+  if (!baseModel) return 'Stable Diffusion';
+
+  return (
+    Object.values(baseModelSets).find((baseModelSet) =>
+      (baseModelSet.baseModels as string[]).includes(baseModel)
+    )?.name ?? 'Stable Diffusion'
+  );
+}
+
+export function toBase64(str: string) {
+  return Buffer.from(str).toString('base64');
+}
+
+export function safeDecodeURIComponent(str: string) {
+  try {
+    return decodeURIComponent(str);
+  } catch {
+    return str;
+  }
+}
+
+export function getRandomId() {
+  return Math.random().toString(36).substring(2, 11);
+}
+
+export function toPascalCase(str: string) {
+  // Split the string by any sequence of non-alphanumeric characters
+  const words = str.split(/[^a-zA-Z0-9]+/);
+
+  // Capitalize the first letter of each word
+  const pascalCaseWords = words.map((word) => {
+    if (!isNaN(parseInt(word[0]))) {
+      // If the word starts with a digit, keep the entire word as is
+      return word.toUpperCase();
+    }
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  });
+
+  // Join the words back together with a space
+  return pascalCaseWords.join(' ');
 }

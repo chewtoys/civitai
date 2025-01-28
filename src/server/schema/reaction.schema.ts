@@ -1,4 +1,4 @@
-import { ReviewReactions } from '@prisma/client';
+import { ReviewReactions } from '~/shared/utils/prisma/enums';
 import { z } from 'zod';
 
 export const reactableEntities: readonly [string, ...string[]] = [
@@ -11,6 +11,7 @@ export const reactableEntities: readonly [string, ...string[]] = [
   'resourceReview',
   'article',
   'bountyEntry',
+  'clubPost',
 ];
 
 export type ReactionEntityType = ToggleReactionInput['entityType'];

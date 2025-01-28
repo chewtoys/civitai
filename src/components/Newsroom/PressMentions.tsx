@@ -1,7 +1,8 @@
 import { Card, createStyles, Text, Title } from '@mantine/core';
-import { NextLink } from '@mantine/next';
-import { PressMention } from '@prisma/client';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { PressMention } from '~/shared/utils/prisma/models';
 import { formatDate } from '~/utils/date-helpers';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 export function PressMentions({ pressMentions }: { pressMentions: PressMention[] }) {
   const { classes } = useStyles();
@@ -19,7 +20,7 @@ export function PressMentionItem({ pressMention }: { pressMention: PressMention 
   const { classes } = useStyles();
 
   return (
-    <Card component={NextLink} href={pressMention.url} className={classes.card} withBorder>
+    <Card component={Link} href={pressMention.url} className={classes.card} withBorder>
       <Text className={classes.source}>{pressMention.source}</Text>
       <Title order={3} className={classes.title}>
         {pressMention.title}
@@ -53,7 +54,7 @@ const useStyles = createStyles((theme, _, getRef) => ({
     flex: 1,
     marginTop: theme.spacing.sm,
     marginBottom: theme.spacing.md,
-    [theme.fn.largerThan('md')]: {
+    [containerQuery.largerThan('md')]: {
       fontSize: theme.fontSizes.xl,
     },
   },

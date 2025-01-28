@@ -1,174 +1,137 @@
-import {
-  Anchor,
-  Button,
-  ButtonProps,
-  Code,
-  createStyles,
-  Footer,
-  Group,
-  Stack,
-  Text,
-} from '@mantine/core';
-import { useDebouncedState, useWindowEvent } from '@mantine/hooks';
-import { NextLink } from '@mantine/next';
-import { useRouter } from 'next/router';
-import { useState } from 'react';
+import { Button, Text } from '@mantine/core';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { useRef, useState } from 'react';
+import { RoutedDialogLink } from '~/components/Dialog/RoutedDialogProvider';
 import { SocialLinks } from '~/components/SocialLinks/SocialLinks';
-import { env } from '~/env/client.mjs';
-import { useIsMobile } from '~/hooks/useIsMobile';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
-import { getScrollPosition } from '~/utils/window-helpers';
+import clsx from 'clsx';
+import { useScrollAreaRef } from '~/components/ScrollArea/ScrollAreaContext';
+import { IconArrowUp } from '@tabler/icons-react';
+import { AssistantButton } from '~/components/Assistant/AssistantButton';
+import { ChatPortal } from '~/components/Chat/ChatProvider';
+import { FeatureAccess } from '~/server/services/feature-flags.service';
 
-const buttonProps: ButtonProps = {
-  size: 'xs',
-  variant: 'subtle',
-  color: 'gray',
-  px: 'xs',
-};
-
-const hash = env.NEXT_PUBLIC_GIT_HASH;
+const footerLinks: (React.ComponentProps<typeof Button<typeof Link>> & {
+  features?: (features: FeatureAccess) => boolean;
+})[] = [
+  {
+    href: '/creators-program',
+    color: 'blue',
+    children: 'Creators',
+  },
+  {
+    href: '/content/tos',
+    children: 'Terms of Service',
+  },
+  {
+    href: '/content/privacy',
+    children: 'Privacy',
+  },
+  {
+    href: '/safety',
+    children: 'Safety',
+    features: (features) => features.safety,
+  },
+  {
+    href: '/newsroom',
+    children: 'Newsroom',
+    features: (features) => features.newsroom,
+  },
+  {
+    href: '/github/wiki/REST-API-Reference',
+    target: '_blank',
+    rel: 'nofollow noreferrer',
+    children: 'API',
+  },
+  {
+    href: 'https://status.civitai.com',
+    target: '_blank',
+    rel: 'nofollow noreferrer',
+    children: 'Status',
+  },
+  {
+    href: '/wiki',
+    target: '_blank',
+    rel: 'nofollow noreferrer',
+    children: 'Wiki',
+  },
+  {
+    href: '/education',
+    target: '_blank',
+    rel: 'nofollow noreferrer',
+    children: 'Education',
+  },
+];
 
 export function AppFooter() {
-  const router = useRouter();
-  const { classes, cx } = useStyles();
-  const [showHash, setShowHash] = useState(false);
-  const [showFooter, setShowFooter] = useDebouncedState(true, 200);
-  const mobile = useIsMobile();
   const features = useFeatureFlags();
+  const footerRef = useRef<HTMLElement | null>(null);
 
-  useWindowEvent('scroll', () => {
-    const scroll = getScrollPosition();
-    setShowFooter(scroll.y < 10);
+  const [showFooter, setShowFooter] = useState(true);
+  const scrollRef = useScrollAreaRef({
+    onScroll: (node) => {
+      setShowFooter(node.scrollTop <= 100);
+    },
   });
 
-  if (router.asPath === '/generate') return null;
-
   return (
-    <Footer className={cx(classes.root, { [classes.down]: !showFooter })} height="auto" p="sm">
-      <Group spacing={mobile ? 'sm' : 'lg'} sx={{ flexWrap: 'nowrap' }}>
-        <Text
-          weight={700}
-          sx={{ whiteSpace: 'nowrap', userSelect: 'none' }}
-          onDoubleClick={() => {
-            if (hash) setShowHash((x) => !x);
-          }}
-        >
+    <footer
+      ref={footerRef}
+      className="sticky inset-x-0 bottom-0 z-50 mt-3 transition-transform"
+      style={!showFooter ? { transform: 'translateY(var(--footer-height))' } : undefined}
+    >
+      <ChatPortal showFooter={showFooter} />
+      <div className="absolute bottom-[var(--footer-height)] right-2 group-[.no-scroll]:right-4">
+        <div className="relative mb-2  flex gap-2 group-[.no-scroll]:mb-3">
+          <Button
+            px="xs"
+            onClick={() => scrollRef?.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+            className={'transition-transform'}
+            style={showFooter ? { transform: 'translateY(140%)' } : undefined}
+          >
+            <IconArrowUp size={20} stroke={2.5} />
+          </Button>
+          <AssistantButton />
+        </div>
+      </div>
+      <div
+        className={clsx(
+          ' relative flex h-[var(--footer-height)] w-full items-center gap-2  overflow-x-auto bg-gray-0 p-1 px-2 @sm:gap-3 dark:bg-dark-7',
+          {
+            ['border-t border-gray-3 dark:border-dark-4']: !features.isGreen,
+            ['border-green-8 border-t-[3px]']: features.isGreen,
+          }
+        )}
+        style={{ scrollbarWidth: 'thin' }}
+      >
+        <Text className="select-none text-nowrap font-bold">
           &copy; Civitai {new Date().getFullYear()}
         </Text>
-        {showHash && hash && (
-          <Stack spacing={2}>
-            <Text weight={500} size="xs" sx={{ lineHeight: 1.1 }}>
-              Site Version
-            </Text>
-            <Anchor
-              target="_blank"
-              href={`/github/commit/${hash}`}
-              w="100%"
-              sx={{ '&:hover': { textDecoration: 'none' } }}
-            >
-              <Code sx={{ textAlign: 'center', lineHeight: 1.1, display: 'block' }}>
-                {hash.substring(0, 7)}
-              </Code>
-            </Anchor>
-          </Stack>
-        )}
-        <Group spacing={0} sx={{ flexWrap: 'nowrap' }}>
-          <Button
-            component={NextLink}
-            href="/pricing"
-            {...buttonProps}
-            variant="subtle"
-            color="pink"
-            px={mobile ? 5 : 'xs'}
-          >
-            Support Us ❤️
-          </Button>
-          <Button
-            component={NextLink}
-            prefetch={false}
-            href="/content/careers"
-            {...buttonProps}
-            variant="subtle"
-            color="green"
-            px={mobile ? 5 : 'xs'}
-          >
-            Join Us 💼
-          </Button>
-          <Button
-            component={NextLink}
-            prefetch={false}
-            href="/content/tos"
-            {...buttonProps}
-            px={mobile ? 5 : 'xs'}
-          >
-            Terms of Service
-          </Button>
-          <Button
-            component={NextLink}
-            prefetch={false}
-            href="/content/privacy"
-            {...buttonProps}
-            px={mobile ? 5 : 'xs'}
-          >
-            Privacy
-          </Button>
-          <Button
-            component="a"
-            href="/github/wiki/REST-API-Reference"
-            {...buttonProps}
-            target="_blank"
-          >
-            API
-          </Button>
-          <Button component="a" href="https://status.civitai.com" {...buttonProps} target="_blank">
-            Status
-          </Button>
-          {features.newsroom && (
-            <Button component={NextLink} href="/newsroom" {...buttonProps}>
-              Newsroom
-            </Button>
-          )}
+        <div className="flex items-center">
+          {footerLinks
+            .filter((item) => !item.features || item.features?.(features))
+            .map(({ features, ...props }, i) => (
+              <Button
+                key={i}
+                component={Link}
+                {...props}
+                className="px-2.5 @max-sm:px-1"
+                size="xs"
+                variant="subtle"
+                color="gray"
+              />
+            ))}
+
           <SocialLinks />
-        </Group>
-        <Group ml="auto" spacing={4} sx={{ flexWrap: 'nowrap' }}>
-          <Button component="a" href="/bugs" {...buttonProps} target="_blank" pl={4} pr="xs">
-            🪲 Bugs
-          </Button>
-          <Button
-            component="a"
-            href="/feedback"
-            variant="light"
-            color="yellow"
-            target="_blank"
-            pl={4}
-            pr="xs"
-          >
-            💡 Feature Requests
-          </Button>
-        </Group>
-      </Group>
-    </Footer>
+        </div>
+        <div className="ml-auto flex items-center gap-1">
+          <RoutedDialogLink name="support" state={{}} passHref>
+            <Button component="a" pl={4} pr="xs" color="yellow" variant="light" size="xs">
+              🛟 Support
+            </Button>
+          </RoutedDialogLink>
+        </div>
+      </div>
+    </footer>
   );
 }
-
-const useStyles = createStyles((theme) => ({
-  root: {
-    position: 'fixed',
-    bottom: 0,
-    right: 0,
-    left: 0,
-    borderTop: `1px solid ${
-      theme.colorScheme === 'dark' ? theme.colors.dark[4] : theme.colors.gray[3]
-    }`,
-    // boxShadow: '0 -1px 3px rgba(0, 0, 0, 0.05), 0 -1px 2px rgba(0, 0, 0, 0.1)',
-    transitionProperty: 'transform',
-    transitionDuration: '0.3s',
-    transitionTimingFunction: 'linear',
-    overflowX: 'auto',
-    // transform: 'translateY(0)',
-  },
-  down: {
-    transform: 'translateY(200%)',
-    // bottom: '-60',
-  },
-}));

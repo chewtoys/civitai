@@ -1,19 +1,13 @@
-import { Prisma, TagTarget } from '@prisma/client';
-import { SessionUser } from 'next-auth';
+import { Prisma } from '@prisma/client';
+import { ImageIngestionStatus } from '~/shared/utils/prisma/enums';
 
-import { getImageGenerationProcess } from '~/server/common/model-helpers';
-import { ImageUploadProps } from '~/server/schema/image.schema';
-import { isTag } from '~/server/schema/tag.schema';
-
-import { getReactionsSelectV2 } from './reaction.selector';
 import { simpleTagSelect } from './tag.selector';
-import { userWithCosmeticsSelect } from './user.selector';
 
 export const imageSelect = Prisma.validator<Prisma.ImageSelect>()({
   id: true,
   name: true,
   url: true,
-  nsfw: true,
+  nsfwLevel: true,
   width: true,
   height: true,
   hash: true,
@@ -22,82 +16,46 @@ export const imageSelect = Prisma.validator<Prisma.ImageSelect>()({
   generationProcess: true,
   needsReview: true,
   scannedAt: true,
+  ingestion: true,
   postId: true,
   type: true,
   metadata: true,
   createdAt: true,
+  hideMeta: true,
   tags: {
     select: {
       tag: { select: { ...simpleTagSelect, type: true } },
       automated: true,
       needsReview: true,
     },
-    where: { disabled: false },
+    where: { disabledAt: null },
   },
 });
+
+export const profileImageSelect = Prisma.validator<Prisma.ImageSelect>()({
+  id: true,
+  name: true,
+  url: true,
+  nsfwLevel: true,
+  hash: true,
+  userId: true,
+  ingestion: true,
+  type: true,
+  width: true,
+  height: true,
+  metadata: true,
+});
+const profileImage = Prisma.validator<Prisma.ImageDefaultArgs>()({
+  select: profileImageSelect,
+});
+export type ProfileImage = Prisma.ImageGetPayload<typeof profileImage>;
 
 const { name, ...imageSelectWithoutName } = imageSelect;
 export { imageSelectWithoutName };
 
-const image = Prisma.validator<Prisma.ImageArgs>()({ select: imageSelect });
+const image = Prisma.validator<Prisma.ImageDefaultArgs>()({ select: imageSelect });
 export type ImageModel = Prisma.ImageGetPayload<typeof image>;
-
-export const prepareCreateImage = (image: ImageUploadProps) => {
-  let name = image.name;
-  if (!name && image.mimeType === 'image/gif') name = image.url + '.gif';
-
-  const payload: Omit<Prisma.ImageCreateInput, 'user'> = {
-    ...image,
-    name,
-    // needsReview: getNeedsReview(image),
-    meta: (image.meta as Prisma.JsonObject) ?? Prisma.JsonNull,
-    generationProcess: image.meta
-      ? getImageGenerationProcess(image.meta as Prisma.JsonObject)
-      : null,
-    // tags: image.tags
-    //   ? {
-    //       create: image.tags.map((tag) => ({
-    //         tag: {
-    //           connectOrCreate: {
-    //             where: { id: tag.id },
-    //             create: { ...tag, target: [TagTarget.Image] },
-    //           },
-    //         },
-    //       })),
-    //     }
-    //   : undefined,
-    resources: undefined, // TODO.posts - this is a temp value to stop typescript from complaining
-  };
-
-  return payload;
-};
-
-export const prepareUpdateImage = (image: ImageUploadProps) => {
-  // const tags = image.tags?.map((tag) => ({ ...tag, name: tag.name.toLowerCase().trim() }));
-  const payload: Prisma.ImageUpdateInput = {
-    ...image,
-    meta: (image.meta as Prisma.JsonObject) ?? Prisma.JsonNull,
-    // tags: tags
-    //   ? {
-    //       deleteMany: {
-    //         NOT: tags.filter(isTag).map(({ id }) => ({ tagId: id })),
-    //       },
-    //       connectOrCreate: tags.filter(isTag).map((tag) => ({
-    //         where: { tagId_imageId: { tagId: tag.id, imageId: image.id as number } },
-    //         create: { tagId: tag.id },
-    //       })),
-    //       // user's can't create image tags right now
-    //       // create: tags.filter(isNotTag).map((tag) => ({
-    //       //   tag: {
-    //       //     create: { ...tag, target: [TagTarget.Image] },
-    //       //   },
-    //       // })),
-    //     }
-    //   : undefined,
-    resources: undefined, // TODO.posts - this is a temp value to stop typescript from complaining
-  };
-  return payload;
-};
+export type ImageModelWithIngestion = ImageModel & { ingestion: ImageIngestionStatus };
 
 export const imageResourceHelperSelect = Prisma.validator<Prisma.ImageResourceHelperSelect>()({
   id: true,
@@ -112,12 +70,13 @@ export const imageResourceHelperSelect = Prisma.validator<Prisma.ImageResourceHe
   modelVersionCreatedAt: true,
   modelId: true,
   modelName: true,
-  modelRating: true,
-  modelRatingCount: true,
   modelDownloadCount: true,
   modelCommentCount: true,
-  modelFavoriteCount: true,
+  modelThumbsUpCount: true,
+  modelThumbsDownCount: true,
   modelType: true,
+  modelVersionBaseModel: true,
+  detected: true,
 });
 
 const imageResourceHelper = Prisma.validator<Prisma.ImageResourceHelperDefaultArgs>()({

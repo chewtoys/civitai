@@ -1,8 +1,20 @@
-import { Container, Title, Text, useMantineTheme, Switch, Stack } from '@mantine/core';
+import {
+  Container,
+  Title,
+  Text,
+  useMantineTheme,
+  Switch,
+  Stack,
+  Badge,
+  Card,
+  Group,
+  Divider,
+} from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
 import { IconPhoto, IconUpload, IconX } from '@tabler/icons-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ImageMeta } from '~/components/ImageMeta/ImageMeta';
+import { isDev, isProd } from '~/env/other';
 import { IMAGE_MIME_TYPE } from '~/server/common/mime-types';
 import { ImageMetaProps } from '~/server/schema/image.schema';
 import { getMetadata, encodeMetadata } from '~/utils/metadata';
@@ -12,6 +24,8 @@ export default function MetadataTester() {
   const theme = useMantineTheme();
   const [meta, setMeta] = useState<ImageMetaProps | undefined>();
   const [nsfw, setNsfw] = useState<boolean>(false);
+  const nodeJson = useGlobalValue('nodeJson');
+  const exif = useGlobalValue('exif');
 
   const onDrop = async (files: File[]) => {
     console.log(files);
@@ -58,8 +72,78 @@ export default function MetadataTester() {
             </Text>
           </div>
         </Dropzone>
-        {meta && <ImageMeta meta={meta} />}
+        {meta && (
+          <>
+            {meta.resources && (
+              <Card withBorder p="sm">
+                {(meta.resources as any[]).map((resource) => (
+                  <Card.Section key={resource.id} inheritPadding py="xs" withBorder>
+                    <Group spacing={4}>
+                      <Text size="sm" weight={500}>
+                        {resource.name}
+                      </Text>
+                      <Badge color="blue" size="xs">
+                        {resource.type}
+                        {resource.weight && <> {resource.weight}</>}
+                      </Badge>
+                      <Text size="xs" color="dimmed" ml="auto">
+                        {resource.hash}
+                      </Text>
+                    </Group>
+                  </Card.Section>
+                ))}
+              </Card>
+            )}
+            {/* <ImageMeta meta={meta} /> */}
+          </>
+        )}
+        {nodeJson && (
+          <Card withBorder p="sm">
+            <Card.Section p="sm" py="xs" withBorder>
+              <Text weight={500}>Node JSON</Text>
+            </Card.Section>
+            <Card.Section p="sm">
+              <pre className="text-xs">{JSON.stringify(nodeJson, null, 2)}</pre>
+            </Card.Section>
+          </Card>
+        )}
+        {exif && (
+          <Card withBorder p="sm">
+            <Card.Section p="sm" py="xs" withBorder>
+              <Text weight={500}>EXIF</Text>
+            </Card.Section>
+            <Card.Section p="sm">
+              <pre className="text-xs">{JSON.stringify(exif, null, 2)}</pre>
+            </Card.Section>
+          </Card>
+        )}
       </Stack>
     </Container>
   );
 }
+
+// # region global listener
+
+function useGlobalValue(key: string) {
+  if (typeof window === 'undefined' || isProd) return null;
+  const windowKey = key as keyof Window;
+  const [value, setValue] = useState(window[windowKey]);
+
+  useEffect(() => {
+    const handler = () => {
+      setValue(window[windowKey]);
+    };
+
+    // Attach a listener for changes to the global variable
+    window.addEventListener('globalValueChange', handler);
+
+    // Cleanup listener on unmount
+    return () => {
+      window.removeEventListener('globalValueChange', handler);
+    };
+  }, [key]);
+
+  return value;
+}
+
+// # endregion

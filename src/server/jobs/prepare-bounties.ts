@@ -2,7 +2,7 @@ import { createJob, getJobDate } from './job';
 import { dbWrite } from '~/server/db/client';
 import { createLogger } from '~/utils/logging';
 import dayjs from 'dayjs';
-import { Currency } from '@prisma/client';
+import { Currency } from '~/shared/utils/prisma/enums';
 import { createBuzzTransaction } from '~/server/services/buzz.service';
 import { TransactionType } from '~/server/schema/buzz.schema';
 import { Tracker } from '../clickhouse/client';
@@ -13,6 +13,8 @@ import {
   bountyExpiredReminderEmail,
   bountyRefundedEmail,
 } from '~/server/email/templates';
+import { bountiesSearchIndex } from '~/server/search-index';
+import { SearchIndexUpdateQueueAction } from '~/server/common/enums';
 
 const log = createLogger('prepare-bounties', 'blue');
 
@@ -301,6 +303,8 @@ const prepareBounties = createJob('prepare-bounties', '0 23 * * *', async () => 
       }
     }
 
+    await bountiesSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Update }]);
+
     if (user) {
       bountyAutomaticallyAwardedEmail.send({
         bounty: {
@@ -316,7 +320,7 @@ const prepareBounties = createJob('prepare-bounties', '0 23 * * *', async () => 
       });
     }
     // Now
-    log(` Finished bounty ${id}`);
+    log(`Finished bounty ${id}`);
   }
 
   await setLastRun();

@@ -7,6 +7,7 @@ import {
   Container,
   Group,
   Loader,
+  SegmentedControl,
   Select,
   Stack,
   Text,
@@ -24,32 +25,36 @@ import {
   GetUserBuzzTransactionsSchema,
   TransactionType,
 } from '~/server/schema/buzz.schema';
-import { getFeatureFlags } from '~/server/services/feature-flags.service';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { formatDate } from '~/utils/date-helpers';
 import { trpc } from '~/utils/trpc';
 import { parseBuzzTransactionDetails } from '~/utils/buzz';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { RoutedDialogLink } from '~/components/Dialog/RoutedDialogProvider';
 
 const transactionTypes = [
   TransactionType[TransactionType.Tip],
   TransactionType[TransactionType.Reward],
-  TransactionType[TransactionType.Purchase],
+  TransactionType[TransactionType.Generation],
   TransactionType[TransactionType.Refund],
-  TransactionType[TransactionType.Bounty],
   TransactionType[TransactionType.Training],
+  TransactionType[TransactionType.Purchase],
+  TransactionType[TransactionType.Bounty],
+  TransactionType[TransactionType.Sell],
+  TransactionType[TransactionType.Compensation],
+  TransactionType[TransactionType.Donation],
 ];
 
 const defaultFilters = {
+  accountType: 'user' as const,
   start: dayjs().subtract(1, 'month').startOf('month').startOf('day').toDate(),
   end: dayjs().endOf('month').endOf('day').toDate(),
 };
 
 export const getServerSideProps = createServerSideProps({
   useSession: true,
-  resolver: async ({ session }) => {
-    const features = getFeatureFlags({ user: session?.user });
-    if (!features.buzz) {
+  resolver: async ({ features }) => {
+    if (!features?.buzz) {
       return { notFound: true };
     }
   },
@@ -78,6 +83,14 @@ export default function UserTransactions() {
     <Container size="sm">
       <Stack spacing="xl">
         <Title order={1}>Transaction History</Title>
+        <SegmentedControl
+          value={filters.accountType}
+          onChange={(v) => setFilters({ accountType: v as 'user' | 'generation' })}
+          data={[
+            { label: 'Yellow', value: 'user' },
+            { label: 'Blue', value: 'generation' },
+          ]}
+        />
         <Group spacing="sm">
           <DatePicker
             label="From"
@@ -124,20 +137,25 @@ export default function UserTransactions() {
           </Center>
         ) : transactions.length ? (
           <Stack spacing="md">
-            {transactions.map((transaction) => {
-              const { amount, date, fromUser, toUser, description, details } = transaction;
+            {transactions.map((transaction, index) => {
+              const { amount, date, fromUser, toUser, details, type } = transaction;
+              let { description } = transaction;
               const isDebit = amount < 0;
+              const isImage = details?.entityType === 'Image';
               const { url, label }: { url?: string; label?: string } = details
                 ? parseBuzzTransactionDetails(details as BuzzTransactionDetails)
                 : {};
+              if (label) {
+                description = description?.replace('Content', `A ${label.toLowerCase()}`);
+              }
 
               return (
-                <Card key={date.toISOString()} withBorder>
+                <Card key={`${index}-${date.toISOString()}`} withBorder>
                   <Stack spacing={4}>
                     <Group position="apart">
                       <Group spacing={8}>
                         <Text weight="500">{formatDate(date)}</Text>
-                        <Badge>{TransactionType[transaction.type]}</Badge>
+                        <Badge>{TransactionType[type]}</Badge>
                       </Group>
                       <Text color={isDebit ? 'red' : 'green'}>
                         <Group spacing={4}>
@@ -169,15 +187,20 @@ export default function UserTransactions() {
                       </Text>
                     )}
                     {description && <Text color="dimmed">{description}</Text>}
-                    {url && (
-                      <Link href={url} passHref>
-                        <Anchor size="xs">
-                          <Group spacing={4}>
-                            <Text inherit>View {label}</Text>
-                          </Group>
-                        </Anchor>
+                    {isImage && details?.entityId ? (
+                      <RoutedDialogLink
+                        name="imageDetail"
+                        variant="link"
+                        state={{ imageId: details.entityId }}
+                        style={{ fontSize: 12 }}
+                      >
+                        View {label}
+                      </RoutedDialogLink>
+                    ) : url ? (
+                      <Link legacyBehavior href={url} passHref>
+                        <Anchor size="xs">View {label}</Anchor>
                       </Link>
-                    )}
+                    ) : null}
                   </Stack>
                 </Card>
               );

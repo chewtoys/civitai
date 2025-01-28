@@ -1,33 +1,34 @@
 import {
+  ActionIcon,
   Button,
+  Center,
+  CloseButton,
   Group,
+  Loader,
+  Modal,
   Radio,
   Stack,
   Text,
-  CloseButton,
-  ActionIcon,
-  Loader,
-  Center,
 } from '@mantine/core';
 
-import { showNotification, hideNotification } from '@mantine/notifications';
-import { NsfwLevel, ReportReason } from '@prisma/client';
+import { hideNotification, showNotification } from '@mantine/notifications';
+import { ReportReason } from '~/shared/utils/prisma/enums';
 import { IconArrowLeft } from '@tabler/icons-react';
-import { useMemo, useState } from 'react';
+import produce from 'immer';
+import { useRouter } from 'next/router';
+import { useEffect, useMemo, useState } from 'react';
+import { useDialogContext } from '~/components/Dialog/DialogProvider';
 import { AdminAttentionForm } from '~/components/Report/AdminAttentionForm';
 import { ClaimForm } from '~/components/Report/ClaimForm';
 import { ArticleNsfwForm, ImageNsfwForm, ModelNsfwForm } from '~/components/Report/NsfwForm';
 import { OwnershipForm } from '~/components/Report/OwnershipForm';
 import { TosViolationForm } from '~/components/Report/TosViolationForm';
-import { ReportEntity } from '~/server/schema/report.schema';
-import { showSuccessNotification, showErrorNotification } from '~/utils/notifications';
-import { createContextModal } from '~/components/Modals/utils/createContextModal';
-import { trpc } from '~/utils/trpc';
-import produce from 'immer';
-import { useRouter } from 'next/router';
-import { getLoginLink } from '~/utils/login-helpers';
+import { useVoteForTags } from '~/components/VotableTags/votableTag.utils';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useEffect } from 'react';
+import { ReportEntity } from '~/server/schema/report.schema';
+import { getLoginLink } from '~/utils/login-helpers';
+import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
+import { trpc } from '~/utils/trpc';
 
 const reports = [
   {
@@ -88,6 +89,7 @@ const reports = [
       ReportEntity.Collection,
       ReportEntity.Bounty,
       ReportEntity.BountyEntry,
+      ReportEntity.Chat,
     ],
   },
   {
@@ -107,152 +109,153 @@ const reports = [
 const invalidateReasons = [ReportReason.NSFW, ReportReason.Ownership];
 const SEND_REPORT_ID = 'sending-report';
 
-const { openModal, Modal } = createContextModal<{ entityType: ReportEntity; entityId: number }>({
-  name: 'report',
-  withCloseButton: false,
-  Element: ({ context, props: { entityType, entityId } }) => {
-    // #region [temp for gallery image reports]
-    const router = useRouter();
-    const modelId = router.query.modelId ? Number(router.query.modelId) : undefined;
-    const reviewId = router.query.reviewId ? Number(router.query.reviewId) : undefined;
-    // #endregion
+export type ReportModalProps = {
+  entityType: ReportEntity;
+  entityId: number;
+};
 
-    //TODO - redirect if no user is authenticated
-    const [reason, setReason] = useState<ReportReason>();
-    const [uploading, setUploading] = useState(false);
-    const ReportForm = useMemo(
-      () =>
-        reports.find((x) => x.reason === reason && x.availableFor.includes(entityType))?.Element ??
-        null,
-      [reason]
-    );
-    const title = useMemo(
-      () =>
-        reports.find((x) => x.reason === reason && x.availableFor.includes(entityType))?.label ??
-        `Report ${entityType}`,
-      [reason, entityType]
-    );
+export default function ReportModal({
+  entityType,
+  entityId,
+}: {
+  entityType: ReportEntity;
+  entityId: number;
+}) {
+  const dialog = useDialogContext();
 
-    const queryUtils = trpc.useContext();
-    const { data, isInitialLoading } = trpc.model.getModelReportDetails.useQuery(
-      { id: entityId },
-      { enabled: entityType === ReportEntity.Model }
-    );
-    const { mutate, isLoading: isLoading } = trpc.report.create.useMutation({
-      onMutate() {
-        showNotification({
-          id: SEND_REPORT_ID,
-          loading: true,
-          disallowClose: true,
-          autoClose: false,
-          message: 'Sending report...',
-        });
-      },
-      async onSuccess(_, variables) {
-        showSuccessNotification({
-          title: 'Resource reported',
-          message: 'Your request has been received',
-        });
-        context.close();
-        if (invalidateReasons.some((reason) => reason === variables.reason)) {
-          switch (entityType) {
-            case ReportEntity.Model:
-              queryUtils.model.getById.setData(
-                { id: variables.id },
-                produce((old) => {
-                  if (old) {
-                    if (variables.reason === ReportReason.NSFW) {
-                      old.nsfw = true;
-                    } else if (variables.reason === ReportReason.Ownership) {
-                      old.reportStats = { ...old.reportStats, ownershipProcessing: 1 };
-                    }
+  // #region [temp for gallery image reports]
+  const router = useRouter();
+  const modelId = router.query.modelId ? Number(router.query.modelId) : undefined;
+  // #endregion
+
+  //TODO - redirect if no user is authenticated
+  const [reason, setReason] = useState<ReportReason>();
+  const [uploading, setUploading] = useState(false);
+  const ReportForm = useMemo(
+    () =>
+      reports.find((x) => x.reason === reason && x.availableFor.includes(entityType))?.Element ??
+      null,
+    [reason]
+  );
+  const title = useMemo(
+    () =>
+      reports.find((x) => x.reason === reason && x.availableFor.includes(entityType))?.label ??
+      `Report ${entityType}`,
+    [reason, entityType]
+  );
+  const handleVote = useVoteForTags({ entityType: entityType as 'image' | 'model', entityId });
+
+  const queryUtils = trpc.useContext();
+  const { data, isInitialLoading } = trpc.model.getModelReportDetails.useQuery(
+    { id: entityId },
+    { enabled: entityType === ReportEntity.Model }
+  );
+  const { mutate, isLoading: isLoading } = trpc.report.create.useMutation({
+    onMutate() {
+      showNotification({
+        id: SEND_REPORT_ID,
+        loading: true,
+        disallowClose: true,
+        autoClose: false,
+        message: 'Sending report...',
+      });
+    },
+    async onSuccess(_, variables) {
+      showSuccessNotification({
+        title: 'Resource reported',
+        message: 'Your request has been received',
+      });
+      dialog.onClose();
+      if (invalidateReasons.some((reason) => reason === variables.reason)) {
+        switch (entityType) {
+          case ReportEntity.Model:
+            queryUtils.model.getById.setData(
+              { id: variables.id },
+              produce((old) => {
+                if (old) {
+                  if (variables.reason === ReportReason.NSFW) {
+                    // old.nsfw = true; // don't think this is used anywhere
+                  } else if (variables.reason === ReportReason.Ownership) {
+                    old.reportStats = { ...old.reportStats, ownershipProcessing: 1 };
                   }
-                })
-              );
-              await queryUtils.model.getAll.invalidate();
-              break;
-            case ReportEntity.Comment:
-              // Nothing changes here so nothing to invalidate...
-              // await queryUtils.comment.getById.invalidate({ id: variables.id });
-              // await queryUtils.comment.getAll.invalidate();
-              // await queryUtils.comment.getCommentsById.invalidate();
-              break;
-            case ReportEntity.CommentV2:
-              break;
-            case ReportEntity.Image:
-              if (variables.reason === ReportReason.NSFW) {
-                // await queryUtils.image.getGalleryImagesInfinite.invalidate();
-                // await queryUtils.image.getGalleryImages.invalidate();
-                await queryUtils.tag.getVotableTags.invalidate({ id: variables.id, type: 'image' });
-              }
-              // model invalidate
-              if (modelId) {
-                await queryUtils.model.getAll.invalidate();
-              }
-              break;
-            case ReportEntity.Article:
+                }
+              })
+            );
+            await queryUtils.model.getAll.invalidate();
+            break;
+
+          case ReportEntity.Image:
+            if (variables.reason === ReportReason.NSFW) {
+              const { tags } = variables.details;
+              if (tags) handleVote({ tags, vote: 1 });
+            }
+            // // model invalidate
+            // if (modelId) {
+            //   await queryUtils.model.getAll.invalidate();
+            // }
+            break;
+          case ReportEntity.Article:
+            if (variables.reason === ReportReason.NSFW) {
               queryUtils.article.getById.setData(
                 { id: variables.id },
                 produce((old) => {
-                  if (old) {
-                    if (variables.reason === ReportReason.NSFW) {
-                      old.nsfw = true;
-                    }
-                  }
+                  // if (old) old.nsfw = true; // don't think this is used anywhere
                 })
               );
-              await queryUtils.article.getInfinite.invalidate();
-              await queryUtils.article.getByCategory.invalidate();
-              break;
-            case ReportEntity.Bounty:
+            }
+            await queryUtils.article.getInfinite.invalidate();
+            break;
+          case ReportEntity.Bounty:
+            if (variables.reason === ReportReason.NSFW) {
               queryUtils.bounty.getById.setData(
                 { id: variables.id },
                 produce((old) => {
-                  if (old) {
-                    if (variables.reason === ReportReason.NSFW) {
-                      old.nsfw = true;
-                    }
-                  }
+                  // if (old) old.nsfw = true; // don't think this is used anywhere
                 })
               );
-              await queryUtils.bounty.getInfinite.invalidate();
-              break;
-            default:
-              break;
-          }
+            }
+            await queryUtils.bounty.getInfinite.invalidate();
+            break;
+          // Nothing changes here so nothing to invalidate...
+          case ReportEntity.Comment:
+          case ReportEntity.CommentV2:
+          default:
+            break;
         }
-      },
-      onError(error) {
-        showErrorNotification({
-          error: new Error(error.message),
-          title: 'Unable to send report',
-          reason: error.message ?? 'An unexpected error occurred, please try again',
-        });
-      },
-      onSettled() {
-        hideNotification(SEND_REPORT_ID);
-      },
-    });
-
-    const handleSubmit = (data: Record<string, unknown>) => {
-      const details: any = Object.fromEntries(Object.entries(data).filter(([_, v]) => v != null));
-      if (!reason) return;
-      mutate({
-        type: entityType,
-        reason,
-        id: entityId,
-        details,
+      }
+    },
+    onError(error) {
+      showErrorNotification({
+        error: new Error(error.message),
+        title: 'Unable to send report',
+        reason: error.message ?? 'An unexpected error occurred, please try again',
       });
-    };
+    },
+    onSettled() {
+      hideNotification(SEND_REPORT_ID);
+    },
+  });
 
-    const currentUser = useCurrentUser();
-    useEffect(() => {
-      if (currentUser) return;
-      router.push(getLoginLink({ returnUrl: router.asPath, reason: 'report-content' }));
-      context.close();
-    }, [currentUser]);
+  const handleSubmit = (data: Record<string, unknown>) => {
+    const details: any = Object.fromEntries(Object.entries(data).filter(([_, v]) => v != null));
+    if (!reason) return;
+    mutate({
+      type: entityType,
+      reason,
+      id: entityId,
+      details,
+    });
+  };
 
-    return (
+  const currentUser = useCurrentUser();
+  useEffect(() => {
+    if (currentUser) return;
+    router.push(getLoginLink({ returnUrl: router.asPath, reason: 'report-content' }));
+    dialog.onClose();
+  }, [currentUser]);
+
+  return (
+    <Modal {...dialog} withCloseButton={false}>
       <Stack>
         <Group position="apart" noWrap>
           <Group spacing={4}>
@@ -263,7 +266,7 @@ const { openModal, Modal } = createContextModal<{ entityType: ReportEntity; enti
             )}
             <Text>{title}</Text>
           </Group>
-          <CloseButton onClick={context.close} />
+          <CloseButton onClick={dialog.onClose} />
         </Group>
         {isInitialLoading ? (
           <Center p="xl">
@@ -298,7 +301,7 @@ const { openModal, Modal } = createContextModal<{ entityType: ReportEntity; enti
         {ReportForm && (
           <ReportForm onSubmit={handleSubmit} setUploading={setUploading}>
             <Group grow>
-              <Button variant="default" onClick={context.close}>
+              <Button variant="default" onClick={dialog.onClose}>
                 Cancel
               </Button>
               <Button type="submit" loading={isLoading} disabled={uploading}>
@@ -308,9 +311,6 @@ const { openModal, Modal } = createContextModal<{ entityType: ReportEntity; enti
           </ReportForm>
         )}
       </Stack>
-    );
-  },
-});
-
-export const openReportModal = openModal;
-export default Modal;
+    </Modal>
+  );
+}

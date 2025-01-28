@@ -1,4 +1,5 @@
-import { Currency } from '@prisma/client';
+import { constants } from '~/server/common/constants';
+import { Currency } from '~/shared/utils/prisma/enums';
 
 /**
  * @see https://gist.github.com/zentala/1e6f72438796d74531803cc3833c039c
@@ -22,6 +23,20 @@ export function formatBytes(bytes: number, decimals = 2) {
 
 export function formatToLeastDecimals(value: number, decimals = 2) {
   return parseFloat(value.toFixed(decimals));
+}
+
+export function asOrdinal(n: number) {
+  const suffixes = ['th', 'st', 'nd', 'rd'];
+  const value = n % 100;
+
+  // Handle special cases like 11th, 12th, 13th
+  if (value >= 11 && value <= 13) {
+    return n + 'th';
+  }
+
+  // Use the last digit to determine the suffix
+  const lastDigit = n % 10;
+  return n + (suffixes[lastDigit] || 'th');
 }
 
 export function formatSeconds(seconds: number) {
@@ -50,9 +65,13 @@ export function formatSeconds(seconds: number) {
   return output.trim();
 }
 
-export function abbreviateNumber(value: number): string {
+export function abbreviateNumber(
+  value: number,
+  opts?: { decimals?: number; floor?: boolean }
+): string {
   if (!value) return '0';
 
+  const { decimals, floor } = opts ?? { decimals: 1 };
   const suffixes = ['', 'k', 'm', 'b', 't'];
   let index = 0;
 
@@ -61,7 +80,12 @@ export function abbreviateNumber(value: number): string {
     index++;
   }
 
-  const formattedValue = value.toFixed(value < 10 && index > 0 ? 1 : 0);
+  if (floor) {
+    value = Math.floor(value);
+  }
+
+  const formattedValue =
+    Math.round(value * Math.pow(10, decimals ?? 0)) / Math.pow(10, decimals ?? 0);
 
   return `${formattedValue}${suffixes[index]}`;
 }
@@ -73,12 +97,16 @@ export function getRandomInt(min: number, max: number) {
 }
 
 export function numberWithCommas(value: number | string | undefined) {
-  return value && !Number.isNaN(typeof value === 'string' ? parseFloat(value) : value)
+  return value != null && !Number.isNaN(typeof value === 'string' ? parseFloat(value) : value)
     ? `${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
     : '';
 }
 
-export function formatPriceForDisplay(value: number | undefined, currency?: Currency) {
+export function formatPriceForDisplay(
+  value: number | undefined,
+  currency?: Currency,
+  opts?: { decimals: boolean }
+) {
   if (currency === Currency.BUZZ) {
     return numberWithCommas(value);
   }
@@ -88,6 +116,10 @@ export function formatPriceForDisplay(value: number | undefined, currency?: Curr
   }
 
   const [intPart, decimalPart] = (value / 100).toFixed(2).split('.');
+
+  if (opts && !opts?.decimals && decimalPart === '00') {
+    return `${numberWithCommas(intPart)}`;
+  }
 
   return `${numberWithCommas(intPart)}.${decimalPart}`;
 }
@@ -102,7 +134,11 @@ export const findClosest = (array: number[], target: number) => {
   });
 };
 
-export const formatCurrencyForDisplay = (value: number, currency?: Currency) => {
+export const formatCurrencyForDisplay = (
+  value: number,
+  currency?: Currency,
+  opts?: { decimals?: boolean }
+) => {
   if (!currency) {
     numberWithCommas(value);
   }
@@ -112,5 +148,58 @@ export const formatCurrencyForDisplay = (value: number, currency?: Currency) => 
   }
 
   const [intPart, decimalPart] = (value / 100).toFixed(2).split('.');
+
+  if (opts && !opts?.decimals && decimalPart === '00') {
+    return `${numberWithCommas(intPart)}`;
+  }
+
   return `${numberWithCommas(intPart)}.${decimalPart}`;
 };
+
+export const getBuzzWithdrawalDetails = (buzzAmount: number, platformFeeRate?: number) => {
+  if (!platformFeeRate) {
+    platformFeeRate = constants.buzz.platformFeeRate;
+  }
+  const dollarAmount = Math.round((buzzAmount / constants.buzz.buzzDollarRatio) * 100);
+  const platformFee = Math.round(dollarAmount * (platformFeeRate / 10000));
+  const payoutAmount = dollarAmount - platformFee;
+
+  return {
+    dollarAmount,
+    platformFee,
+    payoutAmount,
+  };
+};
+
+const ONE_MINUTE = 60;
+const ONE_HOUR = 60 * ONE_MINUTE;
+export const formatDuration = (seconds: number) => {
+  if (seconds === 0) return '0:00';
+
+  const hours = Math.floor(seconds / ONE_HOUR);
+  const minutes = Math.floor((seconds % ONE_HOUR) / ONE_MINUTE);
+  const remainingSeconds = Math.round(seconds % ONE_MINUTE);
+
+  const hourString = hours > 0 ? String(hours).padStart(2, '0') : '';
+  const minuteString =
+    hourString || minutes === 0 ? String(minutes).padStart(2, '0') : String(minutes);
+  const secondString = String(remainingSeconds).padStart(2, '0');
+
+  return [hourString, minuteString, secondString].filter(Boolean).join(':');
+};
+
+// Help from ChatGPT :^) -Manuel
+export function roundDownToPowerOfTwo(value: number) {
+  if (value < 1) return 0; // Powers of 2 start from 1 in practical use cases
+
+  // Check if the value is already a power of 2
+  if ((value & (value - 1)) === 0) return value;
+
+  // Round down to the nearest power of 2 using bit shifting
+  let result = 1;
+  while (result <= value) {
+    result <<= 1; // Double the result (equivalent to result *= 2)
+  }
+
+  return result >> 1; // Divide by 2 to get the largest power of 2 less than or equal to the value
+}

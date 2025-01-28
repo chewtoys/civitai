@@ -4,10 +4,8 @@ import {
   Group,
   Stack,
   Text,
-  ThemeIcon,
   Title,
   Tooltip,
-  TooltipProps,
   SimpleGrid,
   Paper,
   ActionIcon,
@@ -16,24 +14,28 @@ import {
   Input,
   Radio,
   createStyles,
-  Grid,
   Anchor,
   List,
 } from '@mantine/core';
-import { BountyEntryMode, BountyMode, BountyType, Currency, TagTarget } from '@prisma/client';
+import {
+  BountyEntryMode,
+  BountyMode,
+  BountyType,
+  Currency,
+  TagTarget,
+} from '~/shared/utils/prisma/enums';
 import {
   IconCalendar,
   IconCalendarDue,
   IconExclamationMark,
   IconInfoCircle,
-  IconQuestionMark,
   IconTrash,
 } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
 import { BackButton, NavigateBack } from '~/components/BackButton/BackButton';
-import { matureLabel } from '~/components/Post/Edit/EditPostControls';
 import { useFormStorage } from '~/hooks/useFormStorage';
 import {
   Form,
@@ -49,6 +51,7 @@ import {
   InputTags,
   InputText,
   useForm,
+  InputMultiSelect,
 } from '~/libs/form';
 import { upsertBountyInputSchema } from '~/server/schema/bounty.schema';
 import { useCFImageUpload } from '~/hooks/useCFImageUpload';
@@ -59,7 +62,7 @@ import { ImageMetaPopover } from '~/components/ImageMeta/ImageMeta';
 import { MediaHash } from '~/components/ImageHash/ImageHash';
 import dayjs from 'dayjs';
 import { getDisplayName } from '~/utils/string-helpers';
-import { constants } from '~/server/common/constants';
+import { constants, activeBaseModels } from '~/server/common/constants';
 import { z } from 'zod';
 import { getMinMaxDates, useMutateBounty } from './bounty.utils';
 import { CurrencyIcon } from '../Currency/CurrencyIcon';
@@ -69,16 +72,15 @@ import { numberWithCommas } from '~/utils/number-helpers';
 import { CurrencyBadge } from '~/components/Currency/CurrencyBadge';
 import { useBuzzTransaction } from '../Buzz/buzz.utils';
 import { DaysFromNow } from '../Dates/DaysFromNow';
-import { stripTime } from '~/utils/date-helpers';
+import { dateWithoutTimezone, stripTime } from '~/utils/date-helpers';
 import { BountyGetById } from '~/types/router';
 import { BaseFileSchema } from '~/server/schema/file.schema';
-
-const tooltipProps: Partial<TooltipProps> = {
-  maw: 300,
-  multiline: true,
-  position: 'bottom',
-  withArrow: true,
-};
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { FeatureIntroductionHelpButton } from '~/components/FeatureIntroduction/FeatureIntroduction';
+import { ContentPolicyLink } from '../ContentPolicyLink/ContentPolicyLink';
+import { InfoPopover } from '../InfoPopover/InfoPopover';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { isDefined } from '~/utils/type-guards';
 
 const bountyModeDescription: Record<BountyMode, string> = {
   [BountyMode.Individual]:
@@ -95,8 +97,21 @@ const bountyEntryModeDescription: Record<BountyEntryMode, string> = {
 
 const formSchema = upsertBountyInputSchema
   .omit({ images: true })
+  .extend({
+    startsAt: z.coerce
+      .date()
+      .min(dayjs().startOf('day').toDate(), 'Start date must be in the future'),
+    expiresAt: z.coerce
+      .date()
+      .min(dayjs().add(1, 'day').startOf('day').toDate(), 'Expiration date must be in the future'),
+  })
+  .refine((data) => data.poi !== true, {
+    message: 'The creation of bounties intended to depict an actual person is prohibited',
+    path: ['poi'],
+  })
   .refine((data) => !(data.nsfw && data.poi), {
     message: 'Mature content depicting actual people is not permitted.',
+    path: ['nsfw'],
   })
   .refine((data) => data.startsAt < data.expiresAt, {
     message: 'Start date must be before expiration date',
@@ -111,7 +126,7 @@ const useStyles = createStyles((theme) => ({
   radioItemWrapper: {
     '& .mantine-Group-root': {
       alignItems: 'stretch',
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         flexDirection: 'column',
       },
     },
@@ -148,37 +163,41 @@ const useStyles = createStyles((theme) => ({
   },
 
   title: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       fontSize: '24px',
     },
   },
   sectionTitle: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       fontSize: '18px',
     },
   },
   fluid: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       maxWidth: '100% !important',
     },
   },
   stickySidebar: {
     position: 'sticky',
-    top: `calc(var(--mantine-header-height) + ${theme.spacing.md}px)`,
+    top: `calc(var(--header-height) + ${theme.spacing.md}px)`,
 
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       position: 'relative',
       top: 0,
     },
   },
 }));
 
+const lockableProperties = ['nsfw', 'poi'];
+
 export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
+  const currentUser = useCurrentUser();
   const router = useRouter();
   const { classes } = useStyles();
 
   const { files: imageFiles, uploadToCF, removeImage } = useCFImageUpload();
   const [bountyImages, setBountyImages] = useState<BountyGetById['images']>(bounty?.images ?? []);
+  const [imagesError, setImagesError] = useState('');
 
   const handleDropImages = async (droppedFiles: File[]) => {
     for (const file of droppedFiles) {
@@ -196,7 +215,6 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
       description: bounty?.description ?? '',
       tags: bounty?.tags ?? [],
       unitAmount: bounty?.benefactors[0].unitAmount ?? constants.bounties.minCreateAmount,
-      nsfw: bounty?.nsfw ?? false,
       currency: Currency.BUZZ,
       type: bounty?.type ?? BountyType.LoraCreation,
       mode: bounty?.mode ?? BountyMode.Individual,
@@ -206,14 +224,15 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
       entryLimit: bounty?.entryLimit ?? 1,
       files: (bounty?.files as BaseFileSchema[]) ?? [],
       expiresAt: bounty
-        ? dayjs(stripTime(bounty.expiresAt)).toDate()
-        : dayjs().add(7, 'day').endOf('day').toDate(),
-      startsAt: bounty ? dayjs(stripTime(bounty.startsAt)).toDate() : new Date(),
+        ? dateWithoutTimezone(bounty.expiresAt)
+        : dayjs().add(7, 'day').startOf('day').toDate(),
+      startsAt: bounty ? dateWithoutTimezone(bounty.startsAt) : dayjs().startOf('day').toDate(),
       details: bounty?.details ?? { baseModel: 'SD 1.5' },
       ownRights:
         !!bounty &&
         bounty.files.length > 0 &&
         bounty.files.every((f) => f.metadata?.ownRights === true),
+      nsfw: bounty?.nsfw ?? false,
     },
     shouldUnregister: false,
   });
@@ -226,10 +245,9 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
     form,
     timeout: 1000,
     key: `bounty_new`,
-    watch: ({ mode, name, type, nsfw, currency, description, entryMode, unitAmount }) => ({
+    watch: ({ mode, name, type, currency, description, entryMode, unitAmount }) => ({
       mode,
       name,
-      nsfw,
       currency,
       description,
       entryMode,
@@ -241,7 +259,8 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
   const mode = form.watch('mode');
   const currency = form.watch('currency');
   const unitAmount = form.watch('unitAmount');
-  const nsfwPoi = form.watch(['nsfw', 'poi']);
+  const [nsfw, poi] = form.watch(['nsfw', 'poi']);
+  const hasPoiInNsfw = nsfw && poi;
   const expiresAt = form.watch('expiresAt');
   const files = form.watch('files');
 
@@ -270,11 +289,12 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
 
   const { upsertBounty, upserting } = useMutateBounty({ bountyId: bounty?.id });
 
-  const hasPoiInNsfw = nsfwPoi.every((item) => !!item);
   const alreadyStarted = !!bounty && bounty.startsAt < new Date();
   const images = [...bountyImages, ...imageFiles];
 
   const handleSubmit = async (data: z.infer<typeof formSchema>) => {
+    setImagesError('');
+
     if (
       data.entryLimit &&
       bounty &&
@@ -290,17 +310,21 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
       return;
     }
 
-    const completedUploads = imageFiles
-      .filter((file) => file.status === 'success')
-      .map(({ id, url, ...file }) => ({ ...file, url: id }));
-
+    const completedUploads = imageFiles.filter((file) => file.status === 'success');
     const filteredImages = bounty ? [...bountyImages, ...completedUploads] : completedUploads;
+    const { startsAt, expiresAt, ...rest } = data;
+
+    if (filteredImages.length === 0) {
+      return setImagesError('At least one example image must be uploaded');
+    }
 
     const performTransaction = async () => {
       try {
         const result = await upsertBounty({
           ...bounty,
-          ...data,
+          ...rest,
+          startsAt: stripTime(startsAt),
+          expiresAt: stripTime(expiresAt),
           images: filteredImages,
         });
 
@@ -319,6 +343,31 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
     }
   };
 
+  useEffect(() => {
+    const subscription = form.watch((value, { name }) => {
+      if (
+        currentUser?.isModerator &&
+        name &&
+        lockableProperties.includes(name) &&
+        !value.lockedProperties?.includes(name)
+      ) {
+        const locked = (value.lockedProperties ?? []).filter(isDefined);
+        form.setValue('lockedProperties', [...locked, name]);
+      }
+    });
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []); // eslint-disable-line
+
+  function isLocked(key: string) {
+    return !currentUser?.isModerator ? bounty?.lockedProperties?.includes(key) : false;
+  }
+
+  function isLockedDescription(key: string, defaultDescription?: string) {
+    return bounty?.lockedProperties?.includes(key) ? 'Locked by moderator' : defaultDescription;
+  }
+
   return (
     <Form form={form} onSubmit={handleSubmit}>
       <Stack spacing={32}>
@@ -327,6 +376,10 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
           <Title className={classes.title}>
             {bounty ? `Editing ${bounty.name} bounty` : 'Create a new bounty'}
           </Title>
+          <FeatureIntroductionHelpButton
+            feature="bounty-create"
+            contentSlug={['feature-introduction', 'bounty-create']}
+          />
         </Group>
         {alreadyStarted && (
           <AlertWithIcon icon={<IconExclamationMark size={20} />} iconColor="blue" size="sm">
@@ -334,15 +387,15 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
             started or somebody submitted an entry to it.
           </AlertWithIcon>
         )}
-        <Grid gutter="xl">
-          <Grid.Col xs={12} md={8}>
+        <ContainerGrid gutter="xl">
+          <ContainerGrid.Col xs={12} md={8}>
             <Stack spacing={32}>
               <Stack spacing="xl">
                 {!alreadyStarted && (
                   <>
                     <InputText
                       name="name"
-                      label="Bounty Name"
+                      label="Name"
                       placeholder="e.g.:LoRA for XYZ"
                       withAsterisk
                     />
@@ -350,9 +403,27 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                       <InputSelect
                         className={classes.fluid}
                         name="type"
-                        label="Bounty Type"
+                        label={
+                          <Group spacing={4} noWrap>
+                            <Input.Label required>Type</Input.Label>
+                            <InfoPopover type="hover" size="xs" iconProps={{ size: 14 }}>
+                              <Text>
+                                Not sure which type to choose? Learn more about bounties and their
+                                types by reading our{' '}
+                                <Anchor
+                                  href="https://education.civitai.com/civitais-guide-to-bounties/"
+                                  target="_blank"
+                                  rel="nofollow noreferrer"
+                                  span
+                                >
+                                  Bounty Guide
+                                </Anchor>
+                                .
+                              </Text>
+                            </InfoPopover>
+                          </Group>
+                        }
                         placeholder="Please select a bounty type"
-                        withAsterisk
                         data={Object.values(BountyType).map((value) => ({
                           value,
                           label: getDisplayName(value),
@@ -383,7 +454,7 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                           label="Base model"
                           placeholder="Please select a base model"
                           withAsterisk
-                          data={[...constants.baseModels]}
+                          data={[...activeBaseModels]}
                         />
                       )}
                     </Group>
@@ -394,6 +465,7 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                   label="About your bounty"
                   editorSize="xl"
                   includeControls={['heading', 'formatting', 'list', 'link', 'media', 'colors']}
+                  placeholder="What kind of entries are you looking for? Why did you make this? What's it for? Examples of the best case and worst case outputs from bounty entries"
                   withAsterisk
                   stickyToolbar
                 />
@@ -401,6 +473,8 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                   label="Example Images"
                   description="Please add at least 1 reference image to your bounty. This will serve as a reference point for Hunters and will also be used as your cover image."
                   descriptionProps={{ mb: 5 }}
+                  error={imagesError}
+                  classNames={{ error: 'mt-1.5' }}
                   withAsterisk
                 >
                   <ImageDropzone
@@ -466,7 +540,7 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                       .reverse()
                       .map((file) => (
                         <Paper
-                          key={file.id}
+                          key={file.url}
                           radius="sm"
                           p={0}
                           sx={{ position: 'relative', overflow: 'hidden', height: 332 }}
@@ -476,7 +550,7 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                             <>
                               <EdgeMedia
                                 placeholder="empty"
-                                src={file.id}
+                                src={file.url}
                                 alt={file.name ?? undefined}
                                 style={{ objectFit: 'cover', height: '100%' }}
                               />
@@ -485,7 +559,7 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                                   variant="filled"
                                   size="lg"
                                   color="red"
-                                  onClick={() => removeImage(file.id)}
+                                  onClick={() => removeImage(file.url)}
                                 >
                                   <IconTrash size={26} strokeWidth={2.5} />
                                 </ActionIcon>
@@ -526,9 +600,10 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                         label="Start Date"
                         placeholder="Select a start date"
                         icon={<IconCalendar size={16} />}
-                        withAsterisk
                         minDate={minStartDate}
                         maxDate={maxStartDate}
+                        clearable={false}
+                        withAsterisk
                       />
                       <InputDatePicker
                         className={classes.fluid}
@@ -536,26 +611,44 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                         label="Deadline"
                         placeholder="Select an end date"
                         icon={<IconCalendarDue size={16} />}
-                        withAsterisk
                         minDate={minExpiresDate}
                         maxDate={maxExpiresDate}
+                        dateParser={(dateString) => new Date(Date.parse(dateString))}
+                        clearable={false}
+                        withAsterisk
                       />
                     </Group>
-                    <Text weight={590}>
-                      With the selected dates, your bounty will expire{' '}
-                      <Text weight="bold" color="red.5" span>
-                        <DaysFromNow date={stripTime(expiresAt)} inUtc />
+                    {expiresAt && (
+                      <Text weight={590}>
+                        With the selected dates, your bounty will expire{' '}
+                        <Text weight="bold" color="red.5" span>
+                          <DaysFromNow date={stripTime(expiresAt)} inUtc />
+                        </Text>
+                        . All times are in{' '}
+                        <Text weight="bold" color="red.5" span>
+                          UTC
+                        </Text>
+                        .
                       </Text>
-                      . All times are in{' '}
-                      <Text weight="bold" color="red.5" span>
-                        UTC
-                      </Text>
-                      .
-                    </Text>
+                    )}
                   </Stack>
                 )}
 
-                <Divider label="Bounty rewards" />
+                <Stack spacing={4}>
+                  <Divider label="Bounty rewards" />
+                  <Text size="xs" color="dimmed">
+                    Learn more about the rewards and Buzz system{' '}
+                    <Anchor
+                      href="https://education.civitai.com/civitais-guide-to-on-site-currency-buzz-%e2%9a%a1/"
+                      target="_blank"
+                      rel="nofollow noreferrer"
+                      span
+                    >
+                      here
+                    </Anchor>
+                    .
+                  </Text>
+                </Stack>
                 {!bounty ? (
                   <>
                     {bountyModeEnabled && (
@@ -671,9 +764,9 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                   }}
                   renderItem={(file, onRemove) => (
                     <>
-                      {file.id ? (
+                      {file.url ? (
                         <Anchor
-                          href={`/api/download/attachments/${file.id}`}
+                          href={`/api/download/attachments/${file.url}`}
                           size="sm"
                           weight={500}
                           lineClamp={1}
@@ -704,8 +797,8 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                 )}
               </Stack>
             </Stack>
-          </Grid.Col>
-          <Grid.Col xs={12} md={4}>
+          </ContainerGrid.Col>
+          <ContainerGrid.Col xs={12} md={4}>
             <Stack className={classes.stickySidebar}>
               <Divider label="Properties" />
               {type === 'ModelCreation' && (
@@ -741,9 +834,25 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                   </Input.Wrapper>
                 </Stack>
               )}
-              <InputTags name="tags" label="Tags" target={[TagTarget.Bounty]} />
+              <InputTags
+                name="tags"
+                label={
+                  <Group spacing={4} noWrap>
+                    <Input.Label>Tags</Input.Label>
+                    <InfoPopover type="hover" size="xs" iconProps={{ size: 14 }}>
+                      <Text>
+                        Tags are how users filter content on the site. It&apos;s important to
+                        correctly tag your content so it can be found by interested users
+                      </Text>
+                    </InfoPopover>
+                  </Group>
+                }
+                target={[TagTarget.Bounty]}
+              />
               <InputSwitch
                 name="poi"
+                disabled={isLocked('poi')}
+                description={isLockedDescription('poi')}
                 label={
                   <Stack spacing={4}>
                     <Group spacing={4}>
@@ -756,56 +865,55 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
                 }
               />
               <InputSwitch
+                disabled={isLocked('nsfw')}
+                description={isLockedDescription('nsfw')}
                 name="nsfw"
-                label={
-                  <Stack spacing={4}>
-                    <Group spacing={4}>
-                      <Text inline>Mature theme</Text>
-                      <Tooltip label={matureLabel} {...tooltipProps}>
-                        <ThemeIcon radius="xl" size="xs" color="gray">
-                          <IconQuestionMark />
-                        </ThemeIcon>
-                      </Tooltip>
-                    </Group>
-                    <Text size="xs" color="dimmed">
-                      This bounty is intended to produce mature content.
-                    </Text>
-                  </Stack>
-                }
+                label="Is intended to produce sexual themes"
               />
-              {hasPoiInNsfw && (
-                <>
-                  <AlertWithIcon color="red" pl={10} iconColor="red" icon={<IconExclamationMark />}>
-                    <Text>
-                      Mature content depicting actual people is not permitted. Please revise the
-                      content of this listing to ensure no actual person is depicted in an mature
-                      context out of respect for the individual.
-                    </Text>
-                  </AlertWithIcon>
-                </>
+
+              {currentUser?.isModerator && (
+                <Paper radius="md" p="xl" withBorder>
+                  <InputMultiSelect
+                    name="lockedProperties"
+                    label="Locked properties"
+                    data={lockableProperties}
+                  />
+                </Paper>
               )}
+              {poi && (
+                <AlertWithIcon color="red" pl={10} iconColor="red" icon={<IconExclamationMark />}>
+                  <Text>
+                    {hasPoiInNsfw
+                      ? 'Mature content depicting actual people is not permitted. Please revise the content of this listing to ensure no actual person is depicted in an mature context out of respect for the individual.'
+                      : 'The creation of bounties intended to depict an actual person is prohibited. Please revise the content of this listing to ensure no actual person is depicted out of respect for the individual.'}
+                  </Text>
+                </AlertWithIcon>
+              )}
+              <Text size="xs">
+                Bounty requests MUST adhere to the content rules defined in our{' '}
+                <Anchor href="/content/tos" target="_blank" rel="nofollow" span>
+                  Terms of service
+                </Anchor>
+                .
+              </Text>
               <List size="xs" spacing={8}>
                 <List.Item>
-                  Bounty requests MUST adhere to the content rules defined in our{' '}
-                  <Anchor href="/content/tos" target="_blank" rel="nofollow" span>
-                    TOS
-                  </Anchor>
-                  .
+                  <b>Real People Images</b>: Images of real people are not permitted.
                 </List.Item>
                 <List.Item>
-                  For Bounty Example images, they should either be:
-                  <List size="xs" spacing={4}>
-                    <List.Item>AI Generated, or</List.Item>
-                    <List.Item>Non-mature (SFW) if real people images.</List.Item>
-                  </List>
+                  <b>AI-Generated Images</b>: Only AI-generated images are allowed.
                 </List.Item>
                 <List.Item>
-                  Bounties cannot be used to farm reviews or image posts on your resources.
+                  <b>Review Farming</b>: Bounties cannot be used to solicit reviews or encourage
+                  image posts on your resources.
+                </List.Item>
+                <List.Item>
+                  <ContentPolicyLink />
                 </List.Item>
               </List>
             </Stack>
-          </Grid.Col>
-        </Grid>
+          </ContainerGrid.Col>
+        </ContainerGrid>
         <Group position="right">
           <NavigateBack url="/bounties">
             {({ onClick }) => (
@@ -818,13 +926,13 @@ export function BountyUpsertForm({ bounty }: { bounty?: BountyGetById }) {
             <BuzzTransactionButton
               loading={upserting}
               type="submit"
-              disabled={hasPoiInNsfw}
+              disabled={poi || hasPoiInNsfw}
               label="Save"
               buzzAmount={unitAmount}
               color="yellow.7"
             />
           ) : (
-            <Button loading={upserting} type="submit" disabled={hasPoiInNsfw}>
+            <Button loading={upserting} type="submit" disabled={poi || hasPoiInNsfw}>
               Save
             </Button>
           )}

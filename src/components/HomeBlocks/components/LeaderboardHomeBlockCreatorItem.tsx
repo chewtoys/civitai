@@ -1,12 +1,13 @@
-import { Box, createStyles, Grid, Group, Stack, Text } from '@mantine/core';
+import { Box, createStyles, Group, Stack, Text } from '@mantine/core';
 import { IconCrown, IconTrophy } from '@tabler/icons-react';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 
 import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { LeaderboardGetModel } from '~/types/router';
 import { abbreviateNumber } from '~/utils/number-helpers';
 import { RankBadge } from '~/components/Leaderboard/RankBadge';
 import { LeaderboardWithResults } from '~/server/services/leaderboard.service';
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
 
 const useStyles = createStyles(() => ({
   wrapper: {
@@ -37,14 +38,14 @@ export const LeaderHomeBlockCreatorItem = ({
 
   return (
     <div className={classes.wrapper}>
-      <Link href={link} passHref>
+      <Link legacyBehavior href={link} passHref>
         <Box sx={{ cursor: 'pointer' }}>
-          <Grid align="center">
-            <Grid.Col span={8}>
+          <ContainerGrid align="center">
+            <ContainerGrid.Col span={8}>
               <Group spacing="xs" noWrap>
                 <UserAvatar
                   avatarProps={{
-                    radius: 'md',
+                    radius: 'xl',
                   }}
                   user={user}
                   textSize="lg"
@@ -66,8 +67,8 @@ export const LeaderHomeBlockCreatorItem = ({
                   </Group>
                 </Stack>
               </Group>
-            </Grid.Col>
-            <Grid.Col span={3}>
+            </ContainerGrid.Col>
+            <ContainerGrid.Col span={3}>
               <Stack align="flex-end">
                 {cosmetic && cosmeticData ? (
                   <RankBadge
@@ -83,8 +84,8 @@ export const LeaderHomeBlockCreatorItem = ({
                   <IconCrown size={24} color={iconColor} style={{ fill: iconColor }} />
                 ) : null}
               </Stack>
-            </Grid.Col>
-          </Grid>
+            </ContainerGrid.Col>
+          </ContainerGrid>
         </Box>
       </Link>
     </div>

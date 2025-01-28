@@ -1,8 +1,7 @@
 import { Stack, Text, Box, Center, Loader, Title, ThemeIcon, Card, Group } from '@mantine/core';
-import { useInfiniteHits, useInstantSearch } from 'react-instantsearch';
+import { useInstantSearch } from 'react-instantsearch';
 
 import { SortBy } from '~/components/Search/CustomSearchComponents';
-import { useMemo } from 'react';
 import { SearchHeader } from '~/components/Search/SearchHeader';
 import { UserSearchIndexRecord } from '~/server/search-index/users.search-index';
 import { IconCloudOff } from '@tabler/icons-react';
@@ -11,22 +10,18 @@ import { SearchLayout, useSearchLayoutStyles } from '~/components/Search/SearchL
 import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { formatDate } from '~/utils/date-helpers';
 import { RankBadge } from '~/components/Leaderboard/RankBadge';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { applyUserPreferencesUsers } from '~/components/Search/search.utils';
 import { USERS_SEARCH_INDEX } from '~/server/common/constants';
 import { UsersSearchIndexSortBy } from '~/components/Search/parsers/user.parser';
 import { UserStatBadges } from '~/components/UserStatBadges/UserStatBadges';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { FollowUserButton } from '~/components/FollowUserButton/FollowUserButton';
 import { InViewLoader } from '~/components/InView/InViewLoader';
+import { useInfiniteHitsTransformed } from '~/components/Search/search.utils2';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
 
 export default function UserSearch() {
   return (
     <SearchLayout.Root>
-      <SearchLayout.Filters>
-        <RenderFilters />
-      </SearchLayout.Filters>
       <SearchLayout.Content>
         <SearchHeader />
         <UserHitList />
@@ -53,21 +48,14 @@ const RenderFilters = () => {
 };
 
 export function UserHitList() {
-  const { hits, showMore, isLastPage } = useInfiniteHits<UserSearchIndexRecord>();
+  const { hits, showMore, isLastPage } = useInfiniteHitsTransformed<'users'>();
   const { status } = useInstantSearch();
   const { classes, cx } = useSearchLayoutStyles();
-  const currentUser = useCurrentUser();
-  const { users: hiddenUsers, isLoading: loadingPreferences } = useHiddenPreferencesContext();
 
-  const users = useMemo(() => {
-    return applyUserPreferencesUsers<UserSearchIndexRecord>({
-      items: hits,
-      hiddenUsers,
-      currentUserId: currentUser?.id,
-    });
-  }, [hits, hiddenUsers, currentUser]);
-
-  const hiddenItems = hits.length - users.length;
+  const { loadingPreferences, items, hiddenCount } = useApplyHiddenPreferences({
+    type: 'users',
+    data: hits,
+  });
 
   if (loadingPreferences) {
     return (
@@ -84,8 +72,8 @@ export function UserHitList() {
       <Box>
         <Center>
           <Stack spacing="md" align="center" maw={800}>
-            {hiddenItems > 0 && (
-              <Text color="dimmed">{hiddenItems} users have been hidden due to your settings.</Text>
+            {hiddenCount > 0 && (
+              <Text color="dimmed">{hiddenCount} users have been hidden due to your settings.</Text>
             )}
             <ThemeIcon size={128} radius={100} sx={{ opacity: 0.5 }}>
               <IconCloudOff size={80} />
@@ -126,8 +114,8 @@ export function UserHitList() {
 
   return (
     <Stack>
-      {hiddenItems > 0 && (
-        <Text color="dimmed">{hiddenItems} users have been hidden due to your settings.</Text>
+      {hiddenCount > 0 && (
+        <Text color="dimmed">{hiddenCount} users have been hidden due to your settings.</Text>
       )}
       <Box
         className={cx(classes.grid)}
@@ -136,7 +124,7 @@ export function UserHitList() {
           gridTemplateColumns: `repeat(auto-fill, minmax(350px, 1fr))`,
         }}
       >
-        {users.map((hit) => {
+        {items.map((hit) => {
           return <UserCard key={hit.id} data={hit} />;
         })}
       </Box>
@@ -158,10 +146,10 @@ export function UserHitList() {
 export function UserCard({ data }: { data: UserSearchIndexRecord }) {
   if (!data) return null;
 
-  const { stats } = data;
+  const { metrics } = data;
 
   return (
-    <Link href={`/user/${data.username}`} passHref>
+    <Link legacyBehavior href={`/user/${data.username}`} passHref>
       <Card component="a" p="xs" withBorder>
         <Stack spacing="xs">
           <Group position="apart" spacing={8}>
@@ -173,18 +161,15 @@ export function UserCard({ data }: { data: UserSearchIndexRecord }) {
             />
             <FollowUserButton userId={data.id} size="md" compact />
           </Group>
-          {stats && (
-            <Group spacing={8}>
-              <RankBadge size="md" rank={data.rank} />
-              <UserStatBadges
-                rating={{ value: stats.ratingAllTime, count: stats.ratingCountAllTime }}
-                uploads={stats.uploadCountAllTime}
-                followers={stats.followerCountAllTime}
-                favorite={stats.favoriteCountAllTime}
-                downloads={stats.downloadCountAllTime}
-              />
-            </Group>
-          )}
+          <Group spacing={8}>
+            {data.rank && <RankBadge size="md" rank={data.rank} />}
+            <UserStatBadges
+              uploads={metrics?.uploadCount ?? 0}
+              followers={metrics?.followerCount ?? 0}
+              favorites={metrics?.thumbsUpCount ?? 0}
+              downloads={metrics?.downloadCount ?? 0}
+            />
+          </Group>
         </Stack>
       </Card>
     </Link>
@@ -192,5 +177,16 @@ export function UserCard({ data }: { data: UserSearchIndexRecord }) {
 }
 
 UserSearch.getLayout = function getLayout(page: React.ReactNode) {
-  return <SearchLayout indexName={USERS_SEARCH_INDEX}>{page}</SearchLayout>;
+  return (
+    <SearchLayout
+      indexName={USERS_SEARCH_INDEX}
+      leftSidebar={
+        <SearchLayout.Filters>
+          <RenderFilters />
+        </SearchLayout.Filters>
+      }
+    >
+      {page}
+    </SearchLayout>
+  );
 };

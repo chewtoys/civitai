@@ -9,16 +9,18 @@ import {
   Button,
   createStyles,
   Drawer,
+  ButtonProps,
 } from '@mantine/core';
 import { IconChevronDown, IconFilter } from '@tabler/icons-react';
-import { BountyType, MetricTimeframe } from '@prisma/client';
+import { BountyType, MetricTimeframe } from '~/shared/utils/prisma/enums';
 import { getDisplayName } from '~/utils/string-helpers';
 import { useFiltersContext } from '~/providers/FiltersProvider';
 import { useCallback, useState } from 'react';
 import { BountyStatus } from '~/server/common/enums';
-import { constants, BaseModel } from '~/server/common/constants';
+import { activeBaseModels, BaseModel } from '~/server/common/constants';
 import { useIsMobile } from '~/hooks/useIsMobile';
 import { PeriodFilter } from '~/components/Filters';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 const supportsBaseModel = [
   BountyType.ModelCreation,
@@ -32,7 +34,7 @@ const checkSupportsBaseModel = (types: BountyType[]) => {
   );
 };
 
-export function BountyFiltersDropdown() {
+export function BountyFiltersDropdown({ ...buttonProps }: Props) {
   const { classes, theme, cx } = useStyles();
   const mobile = useIsMobile();
 
@@ -79,6 +81,7 @@ export function BountyFiltersDropdown() {
       zIndex={10}
       showZero={false}
       dot={false}
+      classNames={{ root: classes.indicatorRoot, indicator: classes.indicatorIndicator }}
       inline
     >
       <Button
@@ -86,8 +89,10 @@ export function BountyFiltersDropdown() {
         color="gray"
         radius="xl"
         variant={theme.colorScheme === 'dark' ? 'filled' : 'light'}
+        {...buttonProps}
         rightIcon={<IconChevronDown className={cx({ [classes.opened]: opened })} size={16} />}
         onClick={() => setOpened((o) => !o)}
+        data-expanded={opened}
       >
         <Group spacing={4} noWrap>
           <IconFilter size={16} />
@@ -119,7 +124,7 @@ export function BountyFiltersDropdown() {
         >
           {Object.values(BountyType).map((type, index) => (
             <Chip key={index} value={type} {...chipProps}>
-              {getDisplayName(type)}
+              <span>{getDisplayName(type)}</span>
             </Chip>
           ))}
         </Chip.Group>
@@ -133,9 +138,9 @@ export function BountyFiltersDropdown() {
             onChange={(baseModels: BaseModel[]) => setFilters({ baseModels })}
             multiple
           >
-            {constants.baseModels.map((baseModel, index) => (
+            {activeBaseModels.map((baseModel, index) => (
               <Chip key={index} value={baseModel} {...chipProps}>
-                {baseModel}
+                <span>{baseModel}</span>
               </Chip>
             ))}
           </Chip.Group>
@@ -152,7 +157,7 @@ export function BountyFiltersDropdown() {
               checked={filters.mode === mode}
               onChange={(checked) => setFilters({ mode: checked ? mode : undefined })}
             >
-              {getDisplayName(mode)}
+              <span>{getDisplayName(mode)}</span>
             </Chip>
           ))}
         </Group>
@@ -167,7 +172,7 @@ export function BountyFiltersDropdown() {
               checked={filters.status === status}
               onChange={(checked) => setFilters({ status: checked ? status : undefined })}
             >
-              {getDisplayName(status)}
+              <span>{getDisplayName(status)}</span>
             </Chip>
           ))}
         </Group>
@@ -192,16 +197,17 @@ export function BountyFiltersDropdown() {
         <Drawer
           opened={opened}
           onClose={() => setOpened(false)}
-          withCloseButton={false}
           size="90%"
           position="bottom"
           styles={{
-            body: { padding: 16 },
             drawer: {
               height: 'auto',
-              maxHeight: 'calc(100dvh - var(--mantine-header-height))',
+              maxHeight: 'calc(100dvh - var(--header-height))',
               overflowY: 'auto',
             },
+            body: { padding: 16, paddingTop: 0, overflowY: 'auto' },
+            header: { padding: '4px 8px' },
+            closeButton: { height: 32, width: 32, '& > svg': { width: 24, height: 24 } },
           }}
         >
           {dropdown}
@@ -226,6 +232,8 @@ export function BountyFiltersDropdown() {
   );
 }
 
+type Props = Omit<ButtonProps, 'onClick' | 'children' | 'rightIcon'>;
+
 const useStyles = createStyles((theme) => ({
   label: {
     fontSize: 12,
@@ -248,8 +256,11 @@ const useStyles = createStyles((theme) => ({
   },
 
   actionButton: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       width: '100%',
     },
   },
+
+  indicatorRoot: { lineHeight: 1 },
+  indicatorIndicator: { lineHeight: 1.6 },
 }));

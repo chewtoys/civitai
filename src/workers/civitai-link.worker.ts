@@ -8,7 +8,7 @@ import {
   ResponseStatus,
   ActivitiesResponse,
 } from '~/components/CivitaiLink/shared-types';
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
 import { v4 as uuid } from 'uuid';
 import {
   CivitaiLinkInstance,
@@ -36,7 +36,7 @@ const _self: SharedWorkerGlobalScope = self as any;
 // Setup Socket
 // --------------------------------
 
-const socket: SocketClient = io(env.NEXT_PUBLIC_CIVITAI_LINK, {
+const socket: SocketClient = io(env.NEXT_PUBLIC_CIVITAI_LINK ?? 'http://localhost:3000', {
   path: '/api/socketio',
   autoConnect: false,
 });

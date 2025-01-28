@@ -1,7 +1,38 @@
 import { Alert, AlertProps, createStyles, Group, MantineColor, Stack, Text } from '@mantine/core';
-import { useLocalStorage } from '@mantine/hooks';
+import { StorageType, useStorage } from '~/hooks/useStorage';
+import { useIsClient } from '~/providers/IsClientProvider';
 
-export const DismissibleAlert = ({
+export const DismissibleAlert = (props: DismissibleAlertProps) => {
+  const isClient = useIsClient();
+  if (!isClient) return null;
+  if (!props.id) {
+    return <AlertContentInner {...props} />;
+  }
+  return <AlertDismissable {...props} />;
+};
+
+function AlertDismissable({
+  id,
+  getInitialValueInEffect = true,
+  storage = 'localStorage',
+  ...props
+}: DismissibleAlertProps) {
+  const [dismissed, setDismissed] = useStorage({
+    type: storage,
+    key: `alert-dismissed-${id}`,
+    defaultValue:
+      typeof window !== 'undefined'
+        ? window?.localStorage?.getItem(`alert-dismissed-${id}`) === 'true'
+        : false,
+    getInitialValueInEffect,
+  });
+
+  if (dismissed) return null;
+
+  return <AlertContentInner onDismiss={() => setDismissed(true)} {...props} />;
+}
+
+function AlertContentInner({
   id,
   title,
   content,
@@ -10,30 +41,22 @@ export const DismissibleAlert = ({
   emoji,
   icon,
   className,
-  getInitialValueInEffect = true,
+  children,
+  onDismiss,
   ...props
-}: DismissibleAlertProps) => {
+}: DismissibleAlertProps & { onDismiss?: () => void }) {
   const { classes, cx } = useStyles({ color });
-  const [dismissed, setDismissed] = useLocalStorage({
-    key: `alert-dismissed-${id}`,
-    defaultValue: false,
-    getInitialValueInEffect,
-  });
-
-  if (dismissed) return null;
-
   const contentSize = size === 'md' ? 'sm' : 'xs';
-
   return (
     <Alert
       py={8}
       {...props}
       className={cx(className, classes.announcement)}
-      onClose={() => setDismissed(true)}
+      onClose={onDismiss}
       closeButtonLabel="Close alert"
-      withCloseButton
+      withCloseButton={!!onDismiss}
     >
-      <Group spacing="xs" noWrap>
+      <Group spacing="xs" noWrap pr="xs">
         {emoji && (
           <Text size={36} p={0} sx={{ lineHeight: 1.2 }}>
             {emoji}
@@ -47,23 +70,25 @@ export const DismissibleAlert = ({
             </Text>
           )}
           <Text size={contentSize} className={classes.text}>
-            {content}
+            {children ?? content}
           </Text>
         </Stack>
       </Group>
     </Alert>
   );
-};
+}
 
 type DismissibleAlertProps = {
-  id: string;
-  content: React.ReactNode;
+  id?: string;
+  content?: React.ReactNode;
+  children?: React.ReactNode;
   title?: React.ReactNode;
   color?: MantineColor;
   emoji?: string | null;
   icon?: React.ReactNode;
   size?: 'sm' | 'md';
   getInitialValueInEffect?: boolean;
+  storage?: StorageType;
 } & Omit<AlertProps, 'color' | 'children'>;
 
 const useStyles = createStyles((theme, { color }: { color: MantineColor }) => ({

@@ -1,23 +1,27 @@
 import { Card, Divider, Group, Select, Stack, Switch, Title } from '@mantine/core';
 
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import { useBrowsingSettings } from '~/providers/BrowserSettingsProvider';
+// import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { constants } from '~/server/common/constants';
 import { showSuccessNotification } from '~/utils/notifications';
 import { titleCase } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
+import { FeatureAccess, toggleableFeatures } from '~/server/services/feature-flags.service';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import produce from 'immer';
+import { showErrorNotification } from '~/utils/notifications';
 
 const validModelFormats = constants.modelFileFormats.filter((format) => format !== 'Other');
 
 export function SettingsCard() {
   const user = useCurrentUser();
-  const utils = trpc.useContext();
-  const { toggles } = useFeatureFlags();
+  const queryUtils = trpc.useUtils();
 
   const { mutate, isLoading } = trpc.user.update.useMutation({
     async onSuccess() {
-      await utils.model.getAll.invalidate();
-      user?.refresh();
+      await queryUtils.model.getAll.invalidate();
+      await user?.refresh();
       showSuccessNotification({ message: 'User profile updated' });
     },
   });
@@ -30,13 +34,7 @@ export function SettingsCard() {
         <Title order={2}>Browsing Settings</Title>
         <Divider label="Image Preferences" mb={-12} />
         <Group noWrap grow>
-          <Switch
-            name="autoplayGifs"
-            label="Autoplay GIFs"
-            checked={user.autoplayGifs}
-            disabled={isLoading}
-            onChange={(e) => mutate({ id: user.id, autoplayGifs: e.target.checked })}
-          />
+          <AutoplayGifsToggle />
           <Select
             label="Preferred Format"
             name="imageFormat"
@@ -100,22 +98,73 @@ export function SettingsCard() {
             disabled={isLoading}
           />
         </Group>
-        {toggles.available.length > 0 && (
-          <>
-            <Divider label="Early Access Features" mb={-12} />
-            {toggles.available.map((feature) => (
-              <Switch
-                name={feature.key}
-                key={feature.key}
-                label={feature.displayName}
-                checked={toggles.values[feature.key]}
-                onChange={(e) => toggles.set(feature.key, e.target.checked)}
-                description={feature.description}
-              />
-            ))}
-          </>
-        )}
+        {toggleableFeatures.length > 0 && <ToggleableFeatures />}
       </Stack>
     </Card>
+  );
+}
+
+function AutoplayGifsToggle() {
+  const autoplayGifs = useBrowsingSettings((x) => x.autoplayGifs);
+  const setState = useBrowsingSettings((x) => x.setState);
+
+  return (
+    <Switch
+      name="autoplayGifs"
+      label="Autoplay GIFs"
+      checked={autoplayGifs}
+      onChange={(e) => setState({ autoplayGifs: e.target.checked })}
+    />
+  );
+}
+
+function ToggleableFeatures() {
+  const flags = useFeatureFlags();
+  const queryUtils = trpc.useUtils();
+  const toggleFeatureFlagMutation = trpc.user.toggleFeature.useMutation({
+    async onMutate(payload) {
+      await queryUtils.user.getFeatureFlags.cancel();
+      const prevData = queryUtils.user.getFeatureFlags.getData();
+
+      queryUtils.user.getFeatureFlags.setData(
+        undefined,
+        produce((old) => {
+          if (!old) return;
+          old[payload.feature] = payload.value ?? !old[payload.feature];
+        })
+      );
+
+      return { prevData };
+    },
+    async onSuccess() {
+      await queryUtils.user.getFeatureFlags.invalidate();
+    },
+    onError(_error, _payload, context) {
+      showErrorNotification({
+        title: 'Failed to toggle feature',
+        error: new Error('Something went wrong, please try again later.'),
+      });
+      queryUtils.user.getFeatureFlags.setData(undefined, context?.prevData);
+    },
+  });
+
+  function toggleFlag(key: keyof FeatureAccess, value: boolean) {
+    toggleFeatureFlagMutation.mutate({ feature: key, value });
+  }
+
+  return (
+    <>
+      {toggleableFeatures.map((feature) => (
+        <Switch
+          name={feature.key}
+          key={feature.key}
+          label={feature.displayName}
+          checked={flags[feature.key]}
+          onChange={(e) => toggleFlag(feature.key, e.target.checked)}
+          description={feature.description}
+          styles={{ track: { flex: '0 0 1em' } }}
+        />
+      ))}
+    </>
   );
 }

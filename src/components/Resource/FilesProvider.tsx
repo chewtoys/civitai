@@ -1,21 +1,21 @@
-import { constants, ModelFileType } from '~/server/common/constants';
-import { ModelUpsertInput } from '~/server/schema/model.schema';
-import { ModelVersionById } from '~/types/router';
-import { useState, createContext, useContext } from 'react';
-import { useS3UploadStore } from '~/store/s3-upload.store';
-import { isDefined } from '~/utils/type-guards';
-import { bytesToKB } from '~/utils/number-helpers';
+import { Anchor, Stack, Text } from '@mantine/core';
 import { randomId } from '@mantine/hooks';
 import { hideNotification, showNotification } from '@mantine/notifications';
-import { Stack, Text, Anchor } from '@mantine/core';
-import Link from 'next/link';
-import { showErrorNotification } from '~/utils/notifications';
-import { trpc } from '~/utils/trpc';
-import { ModelStatus, ModelType } from '@prisma/client';
-import { UploadType } from '~/server/common/enums';
-import { modelFileMetadataSchema } from '~/server/schema/model-file.schema';
+import { createContext, useContext, useState } from 'react';
 import { z } from 'zod';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { constants, ModelFileType } from '~/server/common/constants';
+import { UploadType } from '~/server/common/enums';
+import type { ModelVersionById } from '~/server/controllers/model-version.controller';
+import { modelFileMetadataSchema } from '~/server/schema/model-file.schema';
+import { ModelUpsertInput } from '~/server/schema/model.schema';
+import { ModelStatus, ModelType } from '~/shared/utils/prisma/enums';
+import { useS3UploadStore } from '~/store/s3-upload.store';
 import { getModelFileFormat } from '~/utils/file-helpers';
+import { showErrorNotification } from '~/utils/notifications';
+import { bytesToKB } from '~/utils/number-helpers';
+import { trpc } from '~/utils/trpc';
+import { isDefined } from '~/utils/type-guards';
 
 type ZodErrorSchema = { _errors: string[] };
 type SchemaError = {
@@ -32,7 +32,7 @@ export type FileFromContextProps = {
   type?: ModelFileType | null;
   sizeKB?: number;
   size?: 'full' | 'pruned' | null;
-  fp?: 'fp16' | 'fp32' | 'bf16' | null;
+  fp?: ModelFileFp | null;
   format?: ModelFileFormat | null;
   versionId?: number;
   file?: File;
@@ -162,7 +162,11 @@ export function FilesProvider({ model, version, children }: FilesProviderProps) 
           <Text size="sm" color="dimmed">
             Your version has been published and is now available to the public.
           </Text>
-          <Link href={`/models/${modelId}?modelVersionId=${modelVersionId}`} passHref>
+          <Link
+            legacyBehavior
+            href={`/models/${modelId}?modelVersionId=${modelVersionId}`}
+            passHref
+          >
             <Anchor size="sm" onClick={() => hideNotification(pubNotificationId)}>
               Go to model
             </Anchor>
@@ -175,6 +179,7 @@ export function FilesProvider({ model, version, children }: FilesProviderProps) 
     if (modelVersionId)
       await queryUtils.modelVersion.getById.invalidate({
         id: modelVersionId,
+        withFiles: true,
       });
   };
 
@@ -228,6 +233,7 @@ export function FilesProvider({ model, version, children }: FilesProviderProps) 
                 <Link
                   href={`/models/${model?.id}?modelVersionId=${result.modelVersion.id}`}
                   passHref
+                  legacyBehavior
                 >
                   <Anchor size="sm" onClick={() => hideNotification(notificationId)}>
                     Go to model
@@ -271,6 +277,7 @@ export function FilesProvider({ model, version, children }: FilesProviderProps) 
                 <Link
                   href={`/models/${model?.id}/model-versions/${result.modelVersion.id}/wizard?step=3`}
                   passHref
+                  legacyBehavior
                 >
                   <Anchor size="sm" onClick={() => hideNotification(notificationId)}>
                     Finish setup
@@ -282,7 +289,10 @@ export function FilesProvider({ model, version, children }: FilesProviderProps) 
         ) : undefined,
       });
 
-      await queryUtils.modelVersion.getById.invalidate({ id: result.modelVersion.id });
+      await queryUtils.modelVersion.getById.invalidate({
+        id: result.modelVersion.id,
+        withFiles: true,
+      });
       if (model) await queryUtils.model.getById.invalidate({ id: model.id });
     },
     onError(error) {
@@ -459,52 +469,103 @@ type DropzoneOptions = {
 
 const dropzoneOptionsByModelType: Record<ModelType, DropzoneOptions> = {
   Checkpoint: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin', '.zip', '.yaml', '.yml', '.onnx'],
+    acceptedFileTypes: [
+      '.ckpt',
+      '.pt',
+      '.safetensors',
+      '.gguf',
+      '.sft',
+      '.bin',
+      '.zip',
+      '.yaml',
+      '.yml',
+      '.onnx',
+    ],
     acceptedModelFiles: ['Model', 'Config', 'Training Data'],
     maxFiles: 11,
   },
   MotionModule: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin', '.onnx'],
+    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.sft', '.bin', '.onnx'],
     acceptedModelFiles: ['Model'],
     maxFiles: 2,
   },
   LORA: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin', '.zip', '.yaml', '.yml'],
+    acceptedFileTypes: [
+      '.ckpt',
+      '.pt',
+      '.safetensors',
+      '.sft',
+      '.gguf',
+      '.bin',
+      '.zip',
+      '.yaml',
+      '.yml',
+    ],
+    acceptedModelFiles: ['Model', 'Text Encoder', 'Training Data'],
+    maxFiles: 4,
+  },
+  DoRA: {
+    acceptedFileTypes: [
+      '.ckpt',
+      '.pt',
+      '.safetensors',
+      '.sft',
+      '.gguf',
+      '.bin',
+      '.zip',
+      '.yaml',
+      '.yml',
+    ],
     acceptedModelFiles: ['Model', 'Text Encoder', 'Training Data'],
     maxFiles: 4,
   },
   LoCon: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin', '.zip', '.yaml', '.yml'],
+    acceptedFileTypes: [
+      '.ckpt',
+      '.pt',
+      '.safetensors',
+      '.sft',
+      '.gguf',
+      '.bin',
+      '.zip',
+      '.yaml',
+      '.yml',
+    ],
     acceptedModelFiles: ['Model', 'Text Encoder', 'Training Data'],
     maxFiles: 4,
   },
+  Detection: {
+    acceptedFileTypes: ['.pt'],
+    acceptedModelFiles: ['Model'],
+    maxFiles: 4,
+  },
   TextualInversion: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin', '.zip'],
+    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.sft', '.bin', '.zip'],
     acceptedModelFiles: ['Model', 'Negative', 'Training Data'],
     maxFiles: 3,
   },
   Hypernetwork: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin', '.zip'],
+    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.sft', '.bin', '.zip'],
     acceptedModelFiles: ['Model', 'Training Data'],
     maxFiles: 2,
   },
   AestheticGradient: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin', '.zip'],
+    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.sft', '.bin', '.zip'],
     acceptedModelFiles: ['Model', 'Training Data'],
     maxFiles: 2,
   },
   Controlnet: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin', '.yaml', '.yml'],
+    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.gguf', '.sft', '.bin', '.yaml', '.yml'],
     acceptedModelFiles: ['Model', 'Config'],
     maxFiles: 3,
   },
   Upscaler: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin'],
+    acceptedFileTypes: ['.ckpt', '.pt', '.gguf', '.safetensors', '.sft', '.bin'],
     acceptedModelFiles: ['Model'],
     maxFiles: 1,
   },
   VAE: {
-    acceptedFileTypes: ['.ckpt', '.pt', '.safetensors', '.bin'],
+    acceptedFileTypes: ['.ckpt', '.pt', '.gguf', '.safetensors', '.sft', '.bin'],
     acceptedModelFiles: ['Model'],
     maxFiles: 1,
   },

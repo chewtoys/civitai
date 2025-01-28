@@ -1,4 +1,4 @@
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
 
 export type CivitaiLinkInstance = {
   id: number;
@@ -10,6 +10,8 @@ export type CivitaiLinkInstance = {
 };
 
 const clFetch = async (url: string, options: RequestInit = {}) => {
+  if (!env.NEXT_PUBLIC_CIVITAI_LINK) throw new Error('Civitai Link URL not set');
+
   if (!url.startsWith('/')) url = '/' + url;
   const response = await fetch(env.NEXT_PUBLIC_CIVITAI_LINK + url, {
     ...options,
@@ -32,7 +34,7 @@ export const createLinkInstance = async (id?: number) => {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: id ? JSON.stringify({ id }) : undefined,
+    body: id ? JSON.stringify({ id }) : JSON.stringify({}),
   })) as { id: number; key: string; instanceCount: number; instanceLimit: number; name: string };
 };
 

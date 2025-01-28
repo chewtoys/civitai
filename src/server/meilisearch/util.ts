@@ -1,11 +1,22 @@
-import { IndexOptions, MeiliSearchErrorInfo, MeiliSearchTimeOutError, Task } from 'meilisearch';
-import { client } from '~/server/meilisearch/client';
-import { PrismaClient, SearchIndexUpdateQueueAction } from '@prisma/client';
+import {
+  IndexOptions,
+  MeiliSearchErrorInfo,
+  MeiliSearchTimeOutError,
+  Task,
+  MeiliSearch,
+} from 'meilisearch';
+import { searchClient } from '~/server/meilisearch/client';
+import { SearchIndexUpdateQueueAction } from '~/server/common/enums';
 import { withRetries } from '~/server/utils/errorHandling';
+import { SearchIndexUpdate } from '~/server/search-index/SearchIndexUpdate';
 
 const WAIT_FOR_TASKS_MAX_RETRIES = 5;
 
-const getOrCreateIndex = async (indexName: string, options?: IndexOptions) => {
+const getOrCreateIndex = async (
+  indexName: string,
+  options?: IndexOptions,
+  client: MeiliSearch | null = searchClient
+) => {
   return withRetries(
     async () => {
       if (!client) {
@@ -13,7 +24,9 @@ const getOrCreateIndex = async (indexName: string, options?: IndexOptions) => {
       }
 
       try {
+        console.log('getOrCreateIndex :: Getting index :: ', indexName);
         // Will swap if index is created.
+        // console.log(client);
         const index = await client.getIndex(indexName);
 
         if (options) {
@@ -22,6 +35,7 @@ const getOrCreateIndex = async (indexName: string, options?: IndexOptions) => {
 
         return index;
       } catch (e) {
+        console.error('getOrCreateIndex :: Error :: ', e);
         const meiliSearchError = e as MeiliSearchErrorInfo;
 
         if (meiliSearchError.code === 'index_not_found') {
@@ -35,7 +49,7 @@ const getOrCreateIndex = async (indexName: string, options?: IndexOptions) => {
       }
     },
     3,
-    1500
+    60000 // 60 seconds - This can take a while to create an index
   );
 };
 
@@ -49,9 +63,11 @@ const getOrCreateIndex = async (indexName: string, options?: IndexOptions) => {
 const swapIndex = async ({
   indexName,
   swapIndexName,
+  client = searchClient,
 }: {
   indexName: string;
   swapIndexName: string;
+  client?: MeiliSearch | null;
 }) => {
   if (!client) {
     return;
@@ -68,13 +84,13 @@ const swapIndex = async ({
 };
 
 const onSearchIndexDocumentsCleanup = async ({
-  db,
   indexName,
   ids,
+  client = searchClient,
 }: {
-  db: PrismaClient;
   indexName: string;
   ids?: number[];
+  client?: MeiliSearch | null;
 }) => {
   if (!client) {
     return;
@@ -83,7 +99,7 @@ const onSearchIndexDocumentsCleanup = async ({
   if (ids) {
     console.log(`onSearchIndexDocumentsCleanup :: About to delete: ${ids.length} items...`);
 
-    const index = await getOrCreateIndex(indexName);
+    const index = await getOrCreateIndex(indexName, undefined, client);
 
     if (!index) {
       // If for some reason we don't get an index, abort the entire process
@@ -96,14 +112,11 @@ const onSearchIndexDocumentsCleanup = async ({
     return;
   }
 
-  const queuedItemsToDelete = await db.searchIndexUpdateQueue.findMany({
-    select: {
-      id: true,
-    },
-    where: { type: indexName, action: SearchIndexUpdateQueueAction.Delete },
-  });
-
-  const itemIds = queuedItemsToDelete.map((queuedItem) => queuedItem.id);
+  const queuedItemsToDelete = await SearchIndexUpdate.getQueue(
+    indexName,
+    SearchIndexUpdateQueueAction.Delete
+  );
+  const itemIds = queuedItemsToDelete.content;
 
   if (itemIds.length === 0) {
     return;
@@ -113,7 +126,7 @@ const onSearchIndexDocumentsCleanup = async ({
 
   // Only care for main index ID here. Technically, if this was working as a reset and using a SWAP,
   // we wouldn't encounter delete items.
-  const index = await getOrCreateIndex(indexName);
+  const index = await getOrCreateIndex(indexName, undefined, client);
 
   if (!index) {
     // If for some reason we don't get an index, abort the entire process
@@ -121,12 +134,14 @@ const onSearchIndexDocumentsCleanup = async ({
   }
 
   await index.deleteDocuments(itemIds);
+  await queuedItemsToDelete.commit();
   console.log('onSearchIndexDocumentsCleanup :: tasks for deletion has been added');
 };
 
 const waitForTasksWithRetries = async (
   taskUids: number[],
-  remainingRetries: number = WAIT_FOR_TASKS_MAX_RETRIES
+  remainingRetries: number = WAIT_FOR_TASKS_MAX_RETRIES,
+  client: MeiliSearch | null = searchClient
 ): Promise<Task[]> => {
   if (!client) {
     return [];

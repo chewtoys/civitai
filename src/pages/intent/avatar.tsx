@@ -19,9 +19,9 @@ import { useCFImageUpload } from '~/hooks/useCFImageUpload';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { constants } from '~/server/common/constants';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
-import { loadImage } from '~/utils/blurhash';
 import { formatDate } from '~/utils/date-helpers';
 import { getLoginLink } from '~/utils/login-helpers';
+import { loadImage } from '~/utils/media-preprocessors';
 import { showSuccessNotification } from '~/utils/notifications';
 import { formatBytes } from '~/utils/number-helpers';
 import { trpc } from '~/utils/trpc';
@@ -60,7 +60,7 @@ export default function IntentAvatar() {
 
   const { mutate } = trpc.user.update.useMutation({
     async onSuccess() {
-      currentUser?.refresh();
+      await currentUser?.refresh();
       router.push('/user/account').then(() => {
         showSuccessNotification({ message: 'Your avatar has been updated.' });
         setWaiting(false);
@@ -187,5 +187,3 @@ export default function IntentAvatar() {
     </Container>
   );
 }
-
-// IntentAvatar.getLayout = (page: React.ReactElement) => <>{page}</>;

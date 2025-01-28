@@ -1,6 +1,13 @@
-import { Button, Group, Stack, ThemeIcon } from '@mantine/core';
-import { showNotification } from '@mantine/notifications';
-import { IconBolt, IconCheck, IconX } from '@tabler/icons-react';
+import { Button, Group, Stack, Text, ThemeIcon } from '@mantine/core';
+import { NotificationProps, showNotification } from '@mantine/notifications';
+import {
+  IconAlertTriangle,
+  IconBolt,
+  IconCheck,
+  IconExclamationMark,
+  IconInfoCircle,
+  IconX,
+} from '@tabler/icons-react';
 
 export function showErrorNotification({
   error,
@@ -8,7 +15,7 @@ export function showErrorNotification({
   title,
   autoClose = 3000,
 }: {
-  error: Error | { message: string }[];
+  error: Error | { message: string } | { message: string }[];
   reason?: string;
   title?: string;
   autoClose?: number | false;
@@ -37,7 +44,7 @@ export function showSuccessNotification({
   title,
   autoClose = 3000,
 }: {
-  message: string;
+  message: string | React.ReactNode;
   title?: string;
   autoClose?: number | false;
 }) {
@@ -49,25 +56,68 @@ export function showSuccessNotification({
     autoClose,
   });
 }
+
+export function showWarningNotification({
+  message,
+  title,
+  autoClose = 3000,
+}: {
+  message: string | React.ReactNode;
+  title?: string;
+  autoClose?: number | false;
+}) {
+  showNotification({
+    icon: <IconExclamationMark size={18} />,
+    color: 'orange',
+    message,
+    title,
+    autoClose,
+  });
+}
+
+export function showInfoNotification({
+  message,
+  title,
+  autoClose = 3000,
+}: {
+  message: string | React.ReactNode;
+  title?: string;
+  autoClose?: number | false;
+}) {
+  showNotification({
+    icon: <IconInfoCircle size={18} />,
+    color: 'blue',
+    message,
+    title,
+    autoClose,
+  });
+}
+
 export function showBuzzNotification({
   message,
   title,
-}: {
+  ...notificationProps
+}: NotificationProps & {
   message: React.ReactNode;
-  title?: string;
 }) {
   showNotification({
     color: 'yellow.4',
     message: (
-      <Group spacing={4}>
+      <Group spacing={4} noWrap>
         {/* @ts-ignore: ignoring ts error cause `transparent` works on variant */}
-        <ThemeIcon color="yellow.4" variant="transparent">
+        <ThemeIcon color={notificationProps.color ?? 'yellow.4'} variant="transparent">
           <IconBolt size={18} fill="currentColor" />
         </ThemeIcon>
         {message}
       </Group>
     ),
-    title,
+    // Hide title on mobile for smaller notifications
+    title: (
+      <Text className="hide-mobile" inherit>
+        {title}
+      </Text>
+    ),
+    ...notificationProps,
   });
 }
 
@@ -111,5 +161,25 @@ export function showConfirmNotification({
     title,
     autoClose,
     disallowClose: true,
+  });
+}
+
+export function showExpiredCaptchaTokenNotification({
+  onRetryClick,
+}: {
+  onRetryClick: VoidFunction;
+}) {
+  showNotification({
+    icon: <IconAlertTriangle size={18} />,
+    color: 'yellow',
+    title: 'Captcha token expired',
+    message: (
+      <div>
+        <Text inherit>Your token expired, click the button below to reset your token</Text>
+        <Button size="sm" variant="subtle" onClick={onRetryClick}>
+          Reset
+        </Button>
+      </div>
+    ),
   });
 }

@@ -1,9 +1,9 @@
 import { Prisma } from '@prisma/client';
 import { TRPCError } from '@trpc/server';
 import { TRPC_ERROR_CODE_KEY } from '@trpc/server/rpc';
-import { log } from 'next-axiom';
 import { isProd } from '~/env/other';
 import { logToAxiom } from '../logging/client';
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 
 const prismaErrorToTrpcCode: Record<string, TRPC_ERROR_CODE_KEY> = {
   P1008: 'TIMEOUT',
@@ -58,9 +58,18 @@ export function throwDbError(error: unknown) {
       cause: error,
     });
 
+  const e = error as Error;
   throw new TRPCError({
     code: 'INTERNAL_SERVER_ERROR',
-    message: 'An unexpected error ocurred, please try again later',
+    message: e.message ?? 'An unexpected error ocurred, please try again later',
+    cause: error,
+  });
+}
+
+export function throwInternalServerError(error: unknown) {
+  throw new TRPCError({
+    code: 'INTERNAL_SERVER_ERROR',
+    message: (error as any).message ?? 'An unexpected error ocurred, please try again later',
     cause: error,
   });
 }
@@ -83,11 +92,11 @@ export const handleTRPCError = (error: Error): TRPCError => {
     else
       throw new TRPCError({
         code: 'INTERNAL_SERVER_ERROR',
-        message: 'An unexpected error ocurred, please try again later',
+        message: error.message ?? 'An unexpected error ocurred, please try again later',
         cause: error,
       });
   } else {
-    return error;
+    throw error;
   }
 };
 
@@ -99,11 +108,15 @@ export function throwAuthorizationError(message: string | null = null) {
   });
 }
 
-export function throwBadRequestError(message: string | null = null, error?: unknown) {
-  message ??= 'Your request is invalid';
+export function throwBadRequestError(
+  message: string | null = null,
+  error?: unknown,
+  overwriteMessage = true
+) {
+  message = overwriteMessage ? message ?? 'Your request is invalid' : message;
   throw new TRPCError({
     code: 'BAD_REQUEST',
-    message,
+    message: message ?? undefined,
     cause: error,
   });
 }
@@ -114,6 +127,16 @@ export function throwNotFoundError(message: string | null = null) {
     code: 'NOT_FOUND',
     message,
   });
+}
+
+export function throwDbCustomError(message?: string) {
+  return (error: PrismaClientKnownRequestError) => {
+    throw new TRPCError({
+      code: prismaErrorToTrpcCode[error.code] ?? 'INTERNAL_SERVER_ERROR',
+      message: message ?? error.message,
+      cause: error,
+    });
+  };
 }
 
 export function throwRateLimitError(message: string | null = null, error?: unknown) {
@@ -147,7 +170,12 @@ export function handleLogError(e: Error) {
   const error = new Error(e.message ?? 'Unexpected error occurred', { cause: e });
   if (isProd)
     logToAxiom(
-      { name: error.name, message: error.message, stack: error.stack, cause: error.cause },
+      {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        cause: error.cause,
+      },
       'civitai-prod'
     ).catch();
   else console.error(error);

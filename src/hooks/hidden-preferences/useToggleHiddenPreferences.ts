@@ -1,10 +1,17 @@
 import produce from 'immer';
 import { ToggleHiddenSchemaOutput } from '~/server/schema/user-preferences.schema';
-import { invalidateModeratedContentDebounced } from '~/utils/query-invalidation-utils';
 import { trpc } from '~/utils/trpc';
 
+const kindMap = {
+  image: 'hiddenImages',
+  model: 'hiddenModels',
+  tag: 'hiddenTags',
+  user: 'hiddenUsers',
+  blockedUser: 'blockedUsers',
+} as const;
+
 export const useToggleHiddenPreferences = () => {
-  const queryUtils = trpc.useContext();
+  const queryUtils = trpc.useUtils();
   const updateHiddenPreferences = useUpdateHiddenPreferences();
 
   return trpc.hiddenPreferences.toggleHidden.useMutation({
@@ -18,22 +25,31 @@ export const useToggleHiddenPreferences = () => {
       return { previous };
     },
     onSuccess: ({ added, removed }, { kind }) => {
+      const key = kindMap[kind];
       queryUtils.hiddenPreferences.getHidden.setData(
         undefined,
-        (old = { image: [], model: [], user: [], tag: [] }) =>
+        (
+          old = {
+            hiddenImages: [],
+            hiddenModels: [],
+            hiddenUsers: [],
+            hiddenTags: [],
+            blockedUsers: [],
+            blockedByUsers: [],
+          }
+        ) =>
           produce(old, (draft) => {
             for (const { kind, id, ...props } of added) {
-              const index = draft[kind].findIndex((x) => x.id === id && x.type === props.type);
-              if (index === -1) draft[kind].push({ id, ...props } as any);
-              else draft[kind][index] = { id, ...props };
+              const index = draft[key].findIndex((x) => x.id === id && x.hidden);
+              if (index === -1) draft[key].push({ id, ...props } as any);
+              else draft[key][index] = { id, ...props };
             }
             for (const { kind, id, ...props } of removed) {
-              const index = draft[kind].findIndex((x) => x.id === id && x.type === props.type);
-              if (index > -1) draft[kind].splice(index, 1);
+              const index = draft[key].findIndex((x) => x.id === id && x.hidden);
+              if (index > -1) draft[key].splice(index, 1);
             }
           })
       );
-      invalidateModeratedContentDebounced(queryUtils, kind === 'tag' ? ['tag'] : undefined); // TODO - remove this once frontend filtering is finished
     },
     onError: (_error, _variables, context) => {
       queryUtils.hiddenPreferences.getHidden.setData(undefined, context?.previous);
@@ -43,20 +59,29 @@ export const useToggleHiddenPreferences = () => {
 };
 
 export const useUpdateHiddenPreferences = () => {
-  const queryUtils = trpc.useContext();
+  const queryUtils = trpc.useUtils();
   const updateHiddenPreferences = ({ kind, data, hidden }: ToggleHiddenSchemaOutput) => {
-    const type = kind === 'tag' ? 'hidden' : 'always';
+    const key = kindMap[kind];
     queryUtils.hiddenPreferences.getHidden.setData(
       undefined,
-      (old = { image: [], model: [], user: [], tag: [] }) =>
+      (
+        old = {
+          hiddenImages: [],
+          hiddenModels: [],
+          hiddenUsers: [],
+          hiddenTags: [],
+          blockedUsers: [],
+          blockedByUsers: [],
+        }
+      ) =>
         produce(old, (draft) => {
           for (const item of data) {
-            const index = draft[kind].findIndex((x) => x.id === item.id && x.type === type);
-            if (hidden === true && index === -1) draft[kind].push({ ...item, type } as any);
-            else if (hidden === false && index > -1) draft[kind].splice(index, 1);
+            const index = draft[key].findIndex((x) => x.id === item.id && x.hidden);
+            if (hidden === true && index === -1) draft[key].push({ ...item, hidden: true } as any);
+            else if (hidden === false && index > -1) draft[key].splice(index, 1);
             else if (hidden === undefined) {
-              if (index > -1) draft[kind].splice(index, 1);
-              else draft[kind].push({ ...item, type } as any);
+              if (index > -1) draft[key].splice(index, 1);
+              else draft[key].push({ ...item, hidden: true } as any);
             }
           }
         })

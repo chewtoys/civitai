@@ -1,128 +1,92 @@
-import {
-  BaseModel,
-  BaseModelSetType,
-  baseModelSets,
-  samplerOffsets,
-} from '~/server/common/constants';
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import { isDefined } from '~/utils/type-guards';
-import { calculateGenerationBill } from '~/server/common/generation';
-import { RunType } from '~/store/generation.store';
-import { uniqBy } from 'lodash';
-import { GenerateFormModel } from '~/server/schema/generation.schema';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo } from 'react';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { generationStatusSchema } from '~/server/schema/generation.schema';
+import { ImageMetaProps } from '~/server/schema/image.schema';
+import { generationFormWorkflowConfigurations } from '~/shared/constants/generation.constants';
+import { showErrorNotification } from '~/utils/notifications';
+import { trpc } from '~/utils/trpc';
 
-export const useGenerationFormStore = create<Partial<GenerateFormModel>>()(
-  persist(() => ({}), { name: 'generation-form-2', version: 0 })
-);
+// export const useGenerationFormStore = create<Partial<GenerateFormModel>>()(
+//   persist(() => ({}), { name: 'generation-form-2', version: 0 })
+// );
 
-export const useTempGenerateStore = create<{
-  baseModel?: BaseModelSetType;
-  hasResources?: boolean;
-  isLCM?: boolean;
-}>(() => ({}));
-
-export const useDerivedGenerationState = () => {
-  const totalCost = useGenerationFormStore(({ baseModel, aspectRatio, steps, quantity }) =>
-    calculateGenerationBill({ baseModel, aspectRatio, steps, quantity })
-  );
-
-  const baseModel = useGenerationFormStore(({ model }) =>
-    model?.baseModel ? getBaseModelSetKey(model.baseModel) : undefined
-  );
-
-  const hasResources = useGenerationFormStore(
-    ({ resources = [], vae }) => [...resources, vae].filter(isDefined).length > 0
-  );
-
-  const additionalResourcesCount = useGenerationFormStore(({ resources = [] }) => resources.length);
-
-  const resources = useGenerationFormStore((state) => state.resources);
-  const isLCM = useGenerationFormStore(
-    (state) =>
-      (state.model?.baseModel.includes('LCM') ||
-        state.resources?.some((x) => x.baseModel.includes('LCM'))) ??
-      false
-  );
-  const trainedWords = useMemo(
-    () => resources?.flatMap((x) => x.trainedWords).filter(isDefined) ?? [],
-    [resources]
-  );
-
-  const samplerCfgOffset = useGenerationFormStore(({ sampler, cfgScale }) => {
-    const castedSampler = sampler as keyof typeof samplerOffsets;
-    const samplerOffset = samplerOffsets[castedSampler] ?? 0;
-    const cfgOffset = Math.max((cfgScale ?? 0) - 4, 0) * 2;
-
-    return samplerOffset + cfgOffset;
+const defaultServiceStatus = generationStatusSchema.parse({});
+export const useGenerationStatus = () => {
+  const currentUser = useCurrentUser();
+  const { data, isLoading } = trpc.generation.getStatus.useQuery(undefined, {
+    cacheTime: 60,
+    trpc: { context: { skipBatch: true } },
   });
 
+  return useMemo(() => {
+    const status = data ?? defaultServiceStatus;
+    if (currentUser?.isModerator) status.available = true; // Always have generation available for mods
+    const tier = currentUser?.tier ?? 'free';
+    const limits = status.limits[tier];
+
+    return { ...status, tier, limits, isLoading };
+  }, [data, currentUser, isLoading]);
+};
+
+export const useUnstableResources = () => {
+  const { data: unstableResources = [] } = trpc.generation.getUnstableResources.useQuery(
+    undefined,
+    {
+      cacheTime: Infinity,
+      staleTime: Infinity,
+      trpc: { context: { skipBatch: true } },
+    }
+  );
+
   return {
-    totalCost,
-    baseModel,
-    hasResources,
-    trainedWords,
-    additionalResourcesCount,
-    samplerCfgOffset,
-    isSDXL: baseModel === 'SDXL',
-    isLCM,
+    unstableResources,
   };
 };
 
-export const getFormData = (type: RunType, data: Partial<GenerateFormModel>) => {
-  const formData = useGenerationFormStore.getState();
-  switch (type) {
-    case 'remix':
-    case 'params':
-    case 'random':
-      return { ...formData, ...data };
-    case 'run': {
-      const baseModel = data.baseModel as BaseModelSetType | undefined;
-      const resources = (formData.resources ?? []).concat(data.resources ?? []);
-      const uniqueResources = !!resources.length ? uniqBy(resources, 'id') : undefined;
-      const filteredResources = baseModel
-        ? uniqueResources?.filter((x) =>
-            baseModelSets[baseModel].includes(x.baseModel as BaseModel)
-          )
-        : uniqueResources;
-      const parsedModel = data.model ?? formData.model;
-      const [model] = parsedModel
-        ? baseModel
-          ? [parsedModel].filter((x) => baseModelSets[baseModel].includes(x.baseModel as BaseModel))
-          : [parsedModel]
-        : [];
+export const useUnsupportedResources = () => {
+  const queryUtils = trpc.useUtils();
 
-      const parsedVae = data.vae ?? formData.vae;
-      const [vae] = parsedVae
-        ? baseModel
-          ? [parsedVae].filter((x) => baseModelSets[baseModel].includes(x.baseModel as BaseModel))
-          : [parsedVae]
-        : [];
-
-      return {
-        ...formData,
-        ...data,
-        model,
-        resources: filteredResources,
-        vae,
-      };
+  const { data: unavailableResources = [] } = trpc.generation.getUnavailableResources.useQuery(
+    undefined,
+    {
+      cacheTime: Infinity,
+      staleTime: Infinity,
+      trpc: { context: { skipBatch: true } },
     }
-    default:
-      throw new Error(`unhandled RunType: ${type}`);
-  }
+  );
+
+  const toggleUnavailableResourceMutation = trpc.generation.toggleUnavailableResource.useMutation({
+    onSuccess: async () => {
+      await queryUtils.generation.getUnavailableResources.invalidate();
+    },
+    onError: (error) => {
+      showErrorNotification({
+        title: 'Error updating resource availability',
+        error: new Error(error.message),
+      });
+    },
+  });
+  const handleToggleUnavailableResource = useCallback(
+    (id: number) => {
+      return toggleUnavailableResourceMutation.mutateAsync({ id });
+    },
+    [toggleUnavailableResourceMutation]
+  );
+
+  return {
+    unavailableResources,
+    toggleUnavailableResource: handleToggleUnavailableResource,
+    toggling: toggleUnavailableResourceMutation.isLoading,
+  };
 };
 
 // TODO - move these somewhere that makes more sense
-export const getBaseModelSetKey = (baseModel: string) =>
-  Object.entries(baseModelSets).find(([, baseModels]) =>
-    baseModels.includes(baseModel as any)
-  )?.[0] as BaseModelSetType | undefined;
-
-export const getBaseModelset = (baseModel: string) =>
-  Object.entries(baseModelSets).find(
-    ([key, set]) => key === baseModel || set.includes(baseModel as any)
-  )?.[1];
+// export const getBaseModelSet = (baseModel?: string) => {
+//   if (!baseModel) return undefined;
+//   return Object.entries(baseModelSets).find(
+//     ([key, set]) => key === baseModel || set.includes(baseModel as BaseModel)
+//   )?.[1];
+// };
 
 /**
  * Taken from stable-diffusion-webui github repo and modified to fit our needs
@@ -247,43 +211,46 @@ export function keyupEditAttention(event: React.KeyboardEvent<HTMLTextAreaElemen
   target.value = text;
   target.selectionStart = selectionStart;
   target.selectionEnd = selectionEnd;
+
+  return text;
 }
 
-export const usePreserveVerticalScrollPosition = <T extends { createdAt: any }>(options: {
-  data?: T[];
-  node: Element | null;
-}) => {
-  const ref = useRef<{
-    now: number;
-    scrollHeight?: number;
-    count?: number;
-  }>({
-    now: Date.now(),
-  });
+// const workflowDefinitionKey = 'workflow-definition';
+// export function useSelectedWorkflowDefinition(value?: string) {
+//   const [selected, setSelected] = useState(value ?? getLocalValue());
 
-  const { data, node } = options;
+//   useEffect(() => {
+//     if (value) return;
+//     const newValue = getLocalValue();
+//     if (value !== newValue) setSelected(newValue);
+//   }, [value]);
 
-  const count = useMemo(() => {
-    const { now, count: prevCount } = ref.current;
+//   function getLocalValue() {
+//     if (typeof window === 'undefined') return 'txt2img';
+//     const item = localStorage.getItem(workflowDefinitionKey);
+//     return item ?? 'txt2img';
+//   }
 
-    // get count of data entities not created during this session
-    const count = data
-      ? data.filter((x) => new Date(x.createdAt).getTime() <= now).length
-      : undefined;
+//   function handleSetSelected(val: string | ((args: string) => string)) {
+//     setSelected((selected) => {
+//       const value = typeof val === 'string' ? val : val(selected);
+//       if (value.startsWith('txt2img')) localStorage.setItem(workflowDefinitionKey, value);
+//       return value;
+//     });
+//   }
 
-    if (prevCount && count !== prevCount) {
-      ref.current.scrollHeight = node?.scrollHeight;
-    }
+//   console.log({ selected });
 
-    ref.current.count = count;
-    return count;
-  }, [data]);
+//   return [selected, handleSetSelected] as const;
+// }
 
-  useEffect(() => {
-    const { scrollHeight: prevScrollHeight } = ref.current;
-    if (!node || !prevScrollHeight) return;
-    // allows me to remove data items without updating scroll position
-    if (prevScrollHeight > node.scrollHeight) return;
-    node.scrollTop = node.scrollHeight - prevScrollHeight;
-  }, [count]);
+export const isMadeOnSite = (meta: ImageMetaProps | null) => {
+  if (!meta) return false;
+  return (
+    'civitaiResources' in meta ||
+    (!!meta.workflow &&
+      generationFormWorkflowConfigurations
+        .map((x) => x.key)
+        .some((v) => v === (meta.workflow as string)))
+  );
 };

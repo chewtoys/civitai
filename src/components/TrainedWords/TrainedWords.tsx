@@ -1,5 +1,5 @@
 import { CopyButton, Tooltip, Badge, Group, BadgeProps } from '@mantine/core';
-import { ModelType } from '@prisma/client';
+import { ModelType } from '~/shared/utils/prisma/enums';
 import { IconCheck, IconCopy } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
 import { ModelFileType } from '~/server/common/constants';
@@ -67,7 +67,11 @@ export function TrainingWordBadge({ word, ...badgeProps }: BadgeProps & { word: 
           >
             <Group spacing={5} align="center" noWrap sx={{ whiteSpace: 'normal' }}>
               {word}
-              {copied ? <IconCheck stroke={2} size={14} /> : <IconCopy stroke={2} size={14} />}
+              {copied ? (
+                <IconCheck className="shrink-0 grow-0" stroke={2} size={14} />
+              ) : (
+                <IconCopy className="shrink-0 grow-0" stroke={2} size={14} />
+              )}
             </Group>
           </Badge>
         </Tooltip>

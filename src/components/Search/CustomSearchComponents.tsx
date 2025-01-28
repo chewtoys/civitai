@@ -1,4 +1,6 @@
 import {
+  Configure,
+  ConfigureProps,
   RangeInputProps,
   RefinementListProps,
   SearchBoxProps,
@@ -29,10 +31,14 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } f
 import { getHotkeyHandler, useDebouncedValue, useHotkeys } from '@mantine/hooks';
 import { IconSearch, IconTrash } from '@tabler/icons-react';
 import { getDisplayName } from '~/utils/string-helpers';
-import { RenderSearchComponentProps } from '~/components/AppLayout/AppHeader';
+import { RenderSearchComponentProps } from '~/components/AppLayout/AppHeader/AppHeader';
 import { uniqBy } from 'lodash-es';
 import { DatePicker } from '@mantine/dates';
 import dayjs from 'dayjs';
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { TimeoutLoader } from './TimeoutLoader';
+import { useBrowsingLevelDebounced } from '../BrowsingLevel/BrowsingLevelProvider';
+import { Flags } from '~/shared/utils';
 
 const useStyles = createStyles((theme) => ({
   divider: {
@@ -43,19 +49,19 @@ const useStyles = createStyles((theme) => ({
   },
 }));
 
-const useSearchInputStyles = createStyles((theme) => ({
+const useSearchInputStyles = createStyles(() => ({
   root: {
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       height: '100%',
     },
   },
   wrapper: {
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       height: '100%',
     },
   },
   input: {
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       height: '100%',
     },
   },
@@ -63,7 +69,7 @@ const useSearchInputStyles = createStyles((theme) => ({
 
 export function SortBy({ title, ...props }: SortByProps & { title: string }) {
   const { classes } = useStyles();
-  const { options, refine, currentRefinement, ...args } = useSortBy(props);
+  const { options, refine, currentRefinement } = useSortBy(props);
 
   if (options.length === 0) {
     return null;
@@ -146,6 +152,9 @@ export function SearchableMultiSelectRefinementList({
     if (refinedItems.length === 0 && itemsAreRefined.length > 0) {
       // On initial render refine items
       setRefinedItems(itemsAreRefined);
+    } else if (itemsAreRefined.length === 0 && refinedItems.length > 0) {
+      // On clear all filters
+      setRefinedItems([]);
     }
   }, [items, refinedItems]);
 
@@ -174,7 +183,7 @@ export function SearchableMultiSelectRefinementList({
             searchValue={searchValue}
             onSearchChange={setSearchValue}
             placeholder={`Search ${title}`}
-            nothingFound="Nothing found"
+            nothingFound={<TimeoutLoader renderTimeout={() => <span>Nothing found</span>} />}
           />
         </Accordion.Panel>
       </Accordion.Item>
@@ -206,11 +215,12 @@ export function ChipRefinementList({ title, ...props }: RefinementListProps & { 
             {items.map((item) => (
               <Chip
                 size="sm"
+                tt="capitalize"
                 key={item.value}
                 checked={item.isRefined}
                 onClick={() => refine(item.value)}
               >
-                {getDisplayName(item.label)}
+                <span>{getDisplayName(item.label, { splitNumbers: false })}</span>
               </Chip>
             ))}
           </Group>
@@ -240,6 +250,22 @@ export const ClearRefinements = ({ ...props }: ButtonProps) => {
       Reset all filters
     </Button>
   );
+};
+
+export const BrowsingLevelFilter = ({
+  attributeName,
+  ...props
+}: { attributeName: string } & ConfigureProps) => {
+  const browsingLevel = useBrowsingLevelDebounced();
+  const browsingLevelArray = Flags.instanceToArray(browsingLevel);
+  const { refine } = useConfigure({
+    ...props,
+    filters: attributeName
+      ? browsingLevelArray.map((value) => `${attributeName}=${value}`).join(' OR ')
+      : undefined,
+  });
+
+  return null;
 };
 
 export const CustomSearchBox = forwardRef<

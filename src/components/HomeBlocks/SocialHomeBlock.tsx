@@ -2,15 +2,16 @@ import { ActionIcon, Box, createStyles, Group, Popover, Stack, Text, Title } fro
 import { useDebouncedState } from '@mantine/hooks';
 import { IconChevronLeft, IconChevronRight, IconInfoCircle } from '@tabler/icons-react';
 import { useCallback, useMemo, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { CustomMarkdown } from '~/components/Markdown/CustomMarkdown';
 import { SocialBlock, SocialBlockProps } from '~/components/HomeBlocks/components/SocialBlock';
 import { useHomeBlockStyles } from '~/components/HomeBlocks/HomeBlock.Styles';
 import { HomeBlockWrapper } from '~/components/HomeBlocks/HomeBlockWrapper';
-import { useMasonryContainerContext } from '~/components/MasonryColumns/MasonryContainer';
+import { useMasonryContext } from '~/components/MasonryColumns/MasonryProvider';
 import { SocialLinks } from '~/components/SocialLinks/SocialLinks';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useIsLive } from '~/hooks/useIsLive';
 import { HomeBlockMetaSchema } from '~/server/schema/home-block.schema';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 const useStyles = createStyles<string, { columnWidth?: number; columnGap?: number }>(
   (theme, { columnGap, columnWidth }, getRef) => ({
@@ -20,7 +21,7 @@ const useStyles = createStyles<string, { columnWidth?: number; columnGap?: numbe
     },
 
     carousel: {
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         marginRight: -theme.spacing.md,
         marginLeft: -theme.spacing.md,
       },
@@ -36,7 +37,7 @@ const useStyles = createStyles<string, { columnWidth?: number; columnGap?: numbe
         opacity: 1,
       },
 
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         display: 'none',
       },
     },
@@ -54,8 +55,9 @@ const useStyles = createStyles<string, { columnWidth?: number; columnGap?: numbe
       gridAutoRows: 0,
       overflowX: 'visible',
       paddingBottom: 4,
+      alignItems: 'center',
 
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         marginRight: -theme.spacing.md,
         marginLeft: -theme.spacing.md,
         paddingLeft: theme.spacing.md,
@@ -93,7 +95,7 @@ const useStyles = createStyles<string, { columnWidth?: number; columnGap?: numbe
   })
 );
 
-export const SocialHomeBlock = ({ ...props }: Props) => {
+export const SocialHomeBlock = ({ showAds, ...props }: Props) => {
   if (!props.metadata.socials?.length) return null;
 
   return (
@@ -107,10 +109,10 @@ const SocialHomeBlockContent = ({ metadata }: Props) => {
   const currentUser = useCurrentUser();
   const { classes: homeBlockClasses } = useHomeBlockStyles();
 
-  const socialData = metadata.socials ?? [];
-  const itemCount = socialData.length;
+  const socialData = metadata.socials;
+  const itemCount = socialData?.length ?? 0;
   const isLive = useIsLive();
-  const { columnWidth, columnGap, columnCount } = useMasonryContainerContext();
+  const { columnWidth, columnGap, columnCount } = useMasonryContext();
   const { classes, cx } = useStyles({ columnWidth, columnGap });
 
   // ---------------------
@@ -173,13 +175,9 @@ const SocialHomeBlockContent = ({ metadata }: Props) => {
                 </Text>
                 {metadata.description && (
                   <Text size="sm" mb="xs">
-                    <ReactMarkdown
-                      allowedElements={['a']}
-                      unwrapDisallowed
-                      className="markdown-content"
-                    >
+                    <CustomMarkdown allowedElements={['a']} unwrapDisallowed>
                       {metadata.description}
-                    </ReactMarkdown>
+                    </CustomMarkdown>
                   </Text>
                 )}
                 <Group spacing={4}>
@@ -195,16 +193,16 @@ const SocialHomeBlockContent = ({ metadata }: Props) => {
       </Group>
       {metadata.description && (metadata.descriptionAlwaysVisible || !currentUser) && (
         <Text>
-          <ReactMarkdown allowedElements={['a']} unwrapDisallowed className="markdown-content">
+          <CustomMarkdown allowedElements={['a']} unwrapDisallowed>
             {metadata.description}
-          </ReactMarkdown>
+          </CustomMarkdown>
         </Text>
       )}
     </Stack>
   );
 
   const blocks = useMemo(() => {
-    const blocks: SocialBlockProps[] = [...socialData];
+    const blocks: SocialBlockProps[] = socialData ?? [];
     if (typeof window === 'undefined') return blocks;
     if (isLive) {
       blocks.unshift({
@@ -228,31 +226,35 @@ const SocialHomeBlockContent = ({ metadata }: Props) => {
             })}
           </div>
         </div>
-        <ActionIcon
-          className={cx(classes.nextButton, { [classes.hidden]: atStart })}
-          radius="xl"
-          size="md"
-          color="gray"
-          p={4}
-          sx={{ position: 'absolute', top: '50%', left: 10 }}
-          onClick={() => scroll('left')}
-        >
-          <IconChevronLeft />
-        </ActionIcon>
-        <ActionIcon
-          className={cx(classes.nextButton, { [classes.hidden]: atEnd })}
-          radius="xl"
-          size="md"
-          color="gray"
-          p={4}
-          sx={{ position: 'absolute', top: '50%', right: 10 }}
-          onClick={() => scroll('right')}
-        >
-          <IconChevronRight />
-        </ActionIcon>
+        {blocks.length > 2 && (
+          <>
+            <ActionIcon
+              className={cx(classes.nextButton, { [classes.hidden]: atStart })}
+              radius="xl"
+              size="md"
+              color="gray"
+              p={4}
+              sx={{ position: 'absolute', top: '50%', left: 10 }}
+              onClick={() => scroll('left')}
+            >
+              <IconChevronLeft />
+            </ActionIcon>
+            <ActionIcon
+              className={cx(classes.nextButton, { [classes.hidden]: atEnd })}
+              radius="xl"
+              size="md"
+              color="gray"
+              p={4}
+              sx={{ position: 'absolute', top: '50%', right: 10 }}
+              onClick={() => scroll('right')}
+            >
+              <IconChevronRight />
+            </ActionIcon>
+          </>
+        )}
       </div>
     </>
   );
 };
 
-type Props = { metadata: HomeBlockMetaSchema };
+type Props = { metadata: HomeBlockMetaSchema; showAds?: boolean };

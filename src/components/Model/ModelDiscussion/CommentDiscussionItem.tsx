@@ -1,5 +1,5 @@
 import { Badge, Button, Card, Group, Text, ThemeIcon, Tooltip } from '@mantine/core';
-import { ReviewReactions } from '@prisma/client';
+import { ReviewReactions } from '~/shared/utils/prisma/enums';
 import { IconExclamationCircle, IconLock, IconMessageCircle2 } from '@tabler/icons-react';
 
 import { ContentClamp } from '~/components/ContentClamp/ContentClamp';
@@ -47,6 +47,7 @@ export function CommentDiscussionItem({ data: comment }: Props) {
             deletedAt: null,
             username: currentUser.username ?? '',
             image: currentUser.image ?? '',
+            profilePicture: null,
           },
         };
         const reacted = previousReactions.find(
@@ -79,6 +80,7 @@ export function CommentDiscussionItem({ data: comment }: Props) {
           user={comment.user}
           subText={<DaysFromNow date={comment.createdAt} />}
           subTextForce
+          avatarSize="md"
           badge={
             comment.user.id === model?.user.id ? (
               <Badge size="xs" color="violet">
@@ -89,7 +91,7 @@ export function CommentDiscussionItem({ data: comment }: Props) {
           withUsername
           linkToProfile
         />
-        <CommentDiscussionMenu comment={comment} user={currentUser} hideLockOption />
+        <CommentDiscussionMenu comment={comment} hideLockOption />
       </Group>
 
       <ContentClamp maxHeight={100}>

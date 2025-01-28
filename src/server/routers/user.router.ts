@@ -1,58 +1,84 @@
 import {
   checkUserNotificationsHandler,
-  getLeaderboardHandler,
-  getNotificationSettingsHandler,
-  getUserTagsHandler,
-  getUserCreatorHandler,
-  getUserFollowingListHandler,
-  getUserListsHandler,
-  toggleFollowUserHandler,
-  getUserEngagedModelsHandler,
-  getUserEngagedModelVersionsHandler,
-  toggleBanHandler,
-  toggleMuteHandler,
-  getUserCosmeticsHandler,
-  getUsernameAvailableHandler,
-  acceptTOSHandler,
-  completeOnboardingHandler,
-  toggleArticleEngagementHandler,
-  toggleBountyEngagementHandler,
-  reportProhibitedRequestHandler,
-  userByReferralCodeHandler,
-  userRewardDetailsHandler,
   claimCosmeticHandler,
-} from '~/server/controllers/user.controller';
-import {
+  completeOnboardingHandler,
   deleteUserHandler,
+  deleteUserPaymentMethodHandler,
+  dismissAlertHandler,
   getAllUsersHandler,
   getCreatorsHandler,
+  getLeaderboardHandler,
+  getNotificationSettingsHandler,
+  getUserBookmarkCollectionsHandler,
   getUserByIdHandler,
-  toggleFavoriteModelHandler,
+  getUserCosmeticsHandler,
+  getUserCreatorHandler,
+  getUserEngagedModelsHandler,
+  getUserEngagedModelVersionsHandler,
+  getUserFeatureFlagsHandler,
+  getUserFollowingListHandler,
+  getUserListsHandler,
+  getUsernameAvailableHandler,
+  getUserPaymentMethodsHandler,
+  getUserPurchasedRewardsHandler,
+  getUserSettingsHandler,
+  getUserTagsHandler,
+  reportProhibitedRequestHandler,
+  setLeaderboardEligibilityHandler,
+  setUserSettingHandler,
+  toggleArticleEngagementHandler,
+  toggleBanHandler,
+  toggleBountyEngagementHandler,
+  toggleFavoriteHandler,
+  toggleFollowUserHandler,
+  toggleMuteHandler,
+  toggleNotifyModelHandler,
+  toggleUserFeatureFlagHandler,
   updateUserHandler,
+  userByReferralCodeHandler,
+  userRewardDetailsHandler,
 } from '~/server/controllers/user.controller';
+import { createToken } from '~/server/integrations/integration-token';
 import { getAllQuerySchema, getByIdSchema } from '~/server/schema/base.schema';
+import { paymentMethodDeleteInput } from '~/server/schema/stripe.schema';
 import {
-  getAllUsersInput,
-  getUserByUsernameSchema,
-  getByUsernameSchema,
-  toggleModelEngagementInput,
-  toggleFollowUserSchema,
-  userUpdateSchema,
+  computeDeviceFingerprintSchema,
   deleteUserSchema,
-  getUserTagsSchema,
+  dismissAlertSchema,
+  getAllUsersInput,
+  getByUsernameSchema,
+  getUserByUsernameSchema,
   getUserCosmeticsSchema,
+  getUserTagsSchema,
+  reportProhibitedRequestSchema,
+  setLeaderboardEligbilitySchema,
+  setUserSettingsInput,
+  toggleBanUserSchema,
+  toggleFavoriteInput,
+  toggleFeatureInputSchema,
+  toggleFollowUserSchema,
+  toggleModelEngagementInput,
   toggleUserArticleEngagementSchema,
   toggleUserBountyEngagementSchema,
-  reportProhibitedRequestSchema,
+  updateBrowsingModeSchema,
+  updateContentSettingsSchema,
   userByReferralCodeSchema,
-  completeOnboardStepSchema,
+  userOnboardingSchema,
+  userUpdateSchema,
 } from '~/server/schema/user.schema';
 import {
+  computeFingerprint,
+  cosmeticStatus,
   equipCosmetic,
   getUserArticleEngagements,
+  getUserBookmarkedArticles,
+  getUserBookmarkedModels,
   getUserBountyEngagements,
-  cosmeticStatus,
   removeAllContent,
+  requestAdToken,
+  toggleBookmarkedArticle,
+  updateContentSettings,
+  updateUserById,
 } from '~/server/services/user.service';
 import {
   guardedProcedure,
@@ -60,7 +86,9 @@ import {
   protectedProcedure,
   publicProcedure,
   router,
+  verifiedProcedure,
 } from '~/server/trpc';
+import { invalidateSession } from '~/server/utils/session-helpers';
 
 export const userRouter = router({
   getCreator: publicProcedure.input(getUserByUsernameSchema).query(getUserCreatorHandler),
@@ -70,7 +98,9 @@ export const userRouter = router({
     .query(getUsernameAvailableHandler),
   getById: publicProcedure.input(getByIdSchema).query(getUserByIdHandler),
   getEngagedModels: protectedProcedure.query(getUserEngagedModelsHandler),
-  getEngagedModelVersions: protectedProcedure.query(getUserEngagedModelVersionsHandler),
+  getEngagedModelVersions: protectedProcedure
+    .input(getByIdSchema)
+    .query(getUserEngagedModelVersionsHandler),
   getFollowingUsers: protectedProcedure.query(getUserFollowingListHandler),
   // getHiddenUsers: protectedProcedure.query(getUserHiddenListHandler),
   getTags: protectedProcedure.input(getUserTagsSchema.optional()).query(getUserTagsHandler),
@@ -83,27 +113,24 @@ export const userRouter = router({
     .query(getUserCosmeticsHandler),
   checkNotifications: protectedProcedure.query(checkUserNotificationsHandler),
   update: guardedProcedure.input(userUpdateSchema).mutation(updateUserHandler),
+  updateBrowsingMode: guardedProcedure
+    .input(updateBrowsingModeSchema)
+    .mutation(async ({ input, ctx }) => {
+      await updateUserById({ id: ctx.user.id, data: input });
+      await invalidateSession(ctx.user.id);
+    }),
   delete: protectedProcedure.input(deleteUserSchema).mutation(deleteUserHandler),
-  toggleFavoriteModel: protectedProcedure
+  toggleFavorite: protectedProcedure.input(toggleFavoriteInput).mutation(toggleFavoriteHandler),
+  toggleNotifyModel: protectedProcedure
     .input(toggleModelEngagementInput)
-    .mutation(toggleFavoriteModelHandler),
-  // toggleHideModel: protectedProcedure
-  //   .input(toggleModelEngagementInput)
-  //   .mutation(toggleHideModelHandler),
-  acceptTOS: protectedProcedure.mutation(acceptTOSHandler),
+    .mutation(toggleNotifyModelHandler),
   completeOnboardingStep: protectedProcedure
-    .input(completeOnboardStepSchema)
+    .input(userOnboardingSchema)
     .mutation(completeOnboardingHandler),
-  completeOnboarding: protectedProcedure // HACK: this is a hack to deal with people having clients behind...
-    .mutation(({ ctx }) => completeOnboardingHandler({ ctx, input: { step: undefined } })),
-  toggleFollow: protectedProcedure.input(toggleFollowUserSchema).mutation(toggleFollowUserHandler),
-  // toggleHide: protectedProcedure.input(toggleFollowUserSchema).mutation(toggleHideUserHandler),
-  // toggleBlockedTag: protectedProcedure
-  //   .input(toggleBlockedTagSchema)
-  //   .mutation(toggleBlockedTagHandler),
-  // batchBlockTags: protectedProcedure.input(batchBlockTagsSchema).mutation(batchBlockTagsHandler),
+  toggleFollow: verifiedProcedure.input(toggleFollowUserSchema).mutation(toggleFollowUserHandler),
   toggleMute: moderatorProcedure.input(getByIdSchema).mutation(toggleMuteHandler),
-  toggleBan: moderatorProcedure.input(getByIdSchema).mutation(toggleBanHandler),
+  toggleBan: moderatorProcedure.input(toggleBanUserSchema).mutation(toggleBanHandler),
+  getToken: protectedProcedure.query(({ ctx }) => ({ token: createToken(ctx.user.id) })),
   removeAllContent: moderatorProcedure.input(getByIdSchema).mutation(async ({ input, ctx }) => {
     await removeAllContent(input);
     ctx.track.userActivity({
@@ -114,13 +141,24 @@ export const userRouter = router({
   getArticleEngagement: protectedProcedure.query(({ ctx }) =>
     getUserArticleEngagements({ userId: ctx.user.id })
   ),
+  getBookmarkedArticles: protectedProcedure.query(({ ctx }) =>
+    getUserBookmarkedArticles({ userId: ctx.user.id })
+  ),
+  getBookmarkedModels: protectedProcedure.query(({ ctx }) =>
+    getUserBookmarkedModels({ userId: ctx.user.id })
+  ),
   getBountyEngagement: protectedProcedure.query(({ ctx }) =>
     getUserBountyEngagements({ userId: ctx.user.id })
   ),
-  toggleArticleEngagement: protectedProcedure
+  toggleArticleEngagement: verifiedProcedure
     .input(toggleUserArticleEngagementSchema)
     .mutation(toggleArticleEngagementHandler),
-  toggleBountyEngagement: protectedProcedure
+  toggleBookmarkedArticle: verifiedProcedure
+    .input(getByIdSchema)
+    .mutation(({ ctx, input }) =>
+      toggleBookmarkedArticle({ articleId: input.id, userId: ctx.user.id })
+    ),
+  toggleBountyEngagement: verifiedProcedure
     .input(toggleUserBountyEngagementSchema)
     .mutation(toggleBountyEngagementHandler),
   reportProhibitedRequest: protectedProcedure
@@ -136,5 +174,30 @@ export const userRouter = router({
   claimCosmetic: protectedProcedure.input(getByIdSchema).mutation(claimCosmeticHandler),
   equipCosmetic: protectedProcedure
     .input(getByIdSchema)
-    .mutation(({ ctx, input }) => equipCosmetic({ userId: ctx.user.id, id: input.id })),
+    .mutation(({ ctx, input }) => equipCosmetic({ userId: ctx.user.id, cosmeticId: input.id })),
+  getPaymentMethods: protectedProcedure.query(getUserPaymentMethodsHandler),
+  deletePaymentMethod: protectedProcedure
+    .input(paymentMethodDeleteInput)
+    .mutation(deleteUserPaymentMethodHandler),
+  getFeatureFlags: protectedProcedure.query(getUserFeatureFlagsHandler),
+  toggleFeature: protectedProcedure
+    .input(toggleFeatureInputSchema)
+    .mutation(toggleUserFeatureFlagHandler),
+  getSettings: protectedProcedure.query(getUserSettingsHandler),
+  setSettings: protectedProcedure.input(setUserSettingsInput).mutation(setUserSettingHandler),
+  dismissAlert: protectedProcedure.input(dismissAlertSchema).mutation(dismissAlertHandler),
+  getBookmarkCollections: protectedProcedure.query(getUserBookmarkCollectionsHandler),
+  getUserPurchasedRewards: protectedProcedure.query(getUserPurchasedRewardsHandler),
+  setLeaderboardEligibility: moderatorProcedure
+    .input(setLeaderboardEligbilitySchema)
+    .mutation(setLeaderboardEligibilityHandler),
+  ingestFingerprint: publicProcedure
+    .input(computeDeviceFingerprintSchema)
+    .mutation(({ input, ctx }) =>
+      computeFingerprint({ fingerprint: input.fingerprint, userId: ctx.user?.id })
+    ),
+  requestAdToken: verifiedProcedure.mutation(({ ctx }) => requestAdToken({ userId: ctx.user.id })),
+  updateContentSettings: protectedProcedure
+    .input(updateContentSettingsSchema)
+    .mutation(({ input, ctx }) => updateContentSettings({ userId: ctx.user.id, ...input })),
 });

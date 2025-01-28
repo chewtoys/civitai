@@ -1,37 +1,42 @@
-import { applyUserPreferences, applyBrowsingMode, cacheIt } from './../middleware.trpc';
-import { getByIdSchema } from './../schema/base.schema';
-import { guardedProcedure, publicProcedure } from './../trpc';
-import {
-  createPostHandler,
-  updatePostHandler,
-  getPostHandler,
-  addPostImageHandler,
-  reorderPostImagesHandler,
-  deletePostHandler,
-  addPostTagHandler,
-  removePostTagHandler,
-  getPostEditHandler,
-  updatePostImageHandler,
-  getPostTagsHandler,
-  getPostsInfiniteHandler,
-  getPostResourcesHandler,
-} from './../controllers/post.controller';
-import {
-  postCreateSchema,
-  postUpdateSchema,
-  addPostImageSchema,
-  reorderPostImagesSchema,
-  addPostTagSchema,
-  removePostTagSchema,
-  updatePostImageSchema,
-  getPostTagsSchema,
-  postsQuerySchema,
-  getPostsByCategorySchema,
-} from './../schema/post.schema';
+import { z } from 'zod';
 import { dbWrite } from '~/server/db/client';
-import { router, protectedProcedure, middleware } from '~/server/trpc';
+import { imageSchema } from '~/server/schema/image.schema';
+import { middleware, protectedProcedure, router } from '~/server/trpc';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
-import { getPostsByCategory } from '~/server/services/post.service';
+import {
+  addPostTagHandler,
+  addResourceToPostImageHandler,
+  createPostHandler,
+  deletePostHandler,
+  getPostContestCollectionDetailsHandler,
+  getPostHandler,
+  getPostResourcesHandler,
+  getPostsInfiniteHandler,
+  getPostTagsHandler,
+  removePostTagHandler,
+  removeResourceFromPostImageHandler,
+  reorderPostImagesHandler,
+  updatePostCollectionTagIdHandler,
+  updatePostHandler,
+  updatePostImageHandler,
+} from './../controllers/post.controller';
+import { applyUserPreferences } from './../middleware.trpc';
+import { getByIdSchema } from './../schema/base.schema';
+import {
+  addPostTagSchema,
+  addResourceToPostImageInput,
+  getPostTagsSchema,
+  postCreateSchema,
+  postsQuerySchema,
+  postUpdateSchema,
+  removePostTagSchema,
+  removeResourceFromPostImageInput,
+  reorderPostImagesSchema,
+  updatePostCollectionTagIdInput,
+  updatePostImageSchema,
+} from './../schema/post.schema';
+import { addPostImage, getPostEditDetail } from './../services/post.service';
+import { guardedProcedure, publicProcedure, verifiedProcedure } from './../trpc';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -58,14 +63,18 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
 const isImageOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
 
-  const { id } = input as { id: number };
-
   const userId = ctx.user.id;
   const isModerator = ctx?.user?.isModerator;
-  if (!isModerator && !!id) {
-    const ownerId = (await dbWrite.image.findUnique({ where: { id }, select: { userId: true } }))
-      ?.userId;
-    if (ownerId !== userId) throw throwAuthorizationError();
+
+  const { id: inputId } = input as { id: number | number[] | null };
+
+  if (!isModerator && !!inputId) {
+    const ids = !Array.isArray(inputId) ? [inputId] : inputId;
+    const images = await dbWrite.image.findMany({
+      where: { id: { in: ids } },
+      select: { userId: true },
+    });
+    if (images.some((i) => i.userId !== userId)) throw throwAuthorizationError();
   }
 
   return next({
@@ -79,13 +88,14 @@ const isImageOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => 
 export const postRouter = router({
   getInfinite: publicProcedure
     .input(postsQuerySchema)
-    .use(applyUserPreferences())
-    .use(applyBrowsingMode())
+    .use(applyUserPreferences)
     .query(getPostsInfiniteHandler),
   get: publicProcedure.input(getByIdSchema).query(getPostHandler),
-  getEdit: protectedProcedure.input(getByIdSchema).query(getPostEditHandler),
+  getEdit: protectedProcedure
+    .input(getByIdSchema)
+    .query(({ ctx, input }) => getPostEditDetail({ ...input, user: ctx.user })),
   create: guardedProcedure.input(postCreateSchema).mutation(createPostHandler),
-  update: guardedProcedure
+  update: verifiedProcedure
     .input(postUpdateSchema)
     .use(isOwnerOrModerator)
     .mutation(updatePostHandler),
@@ -94,20 +104,28 @@ export const postRouter = router({
     .use(isOwnerOrModerator)
     .mutation(deletePostHandler),
   addImage: guardedProcedure
-    .input(addPostImageSchema)
+    .input(imageSchema.extend({ postId: z.number() }))
     .use(isOwnerOrModerator)
-    .mutation(addPostImageHandler),
-  updateImage: guardedProcedure
+    .mutation(({ ctx, input }) => addPostImage({ ...input, user: ctx.user })),
+  updateImage: verifiedProcedure
     .input(updatePostImageSchema)
     .use(isImageOwnerOrModerator)
     .mutation(updatePostImageHandler),
-  reorderImages: guardedProcedure
+  addResourceToImage: verifiedProcedure
+    .input(addResourceToPostImageInput)
+    .use(isImageOwnerOrModerator)
+    .mutation(addResourceToPostImageHandler),
+  removeResourceFromImage: verifiedProcedure
+    .input(removeResourceFromPostImageInput)
+    .use(isImageOwnerOrModerator)
+    .mutation(removeResourceFromPostImageHandler),
+  reorderImages: verifiedProcedure
     .input(reorderPostImagesSchema)
     .use(isOwnerOrModerator)
     .mutation(reorderPostImagesHandler),
   getTags: publicProcedure
     .input(getPostTagsSchema)
-    .use(applyUserPreferences())
+    .use(applyUserPreferences)
     .query(getPostTagsHandler),
   addTag: protectedProcedure
     .input(addPostTagSchema)
@@ -118,9 +136,11 @@ export const postRouter = router({
     .use(isOwnerOrModerator)
     .mutation(removePostTagHandler),
   getResources: publicProcedure.input(getByIdSchema).query(getPostResourcesHandler),
-  getPostsByCategory: publicProcedure
-    .input(getPostsByCategorySchema)
-    .use(applyUserPreferences())
-    // .use(cacheIt())
-    .query(({ input }) => getPostsByCategory(input)),
+  getContestCollectionDetails: publicProcedure
+    .input(getByIdSchema)
+    .query(getPostContestCollectionDetailsHandler),
+  updateCollectionTagId: protectedProcedure
+    .input(updatePostCollectionTagIdInput)
+    .use(isOwnerOrModerator)
+    .mutation(updatePostCollectionTagIdHandler),
 });

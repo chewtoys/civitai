@@ -1,22 +1,24 @@
 import { Badge, Box, Card, Group, Stack, Text, createStyles } from '@mantine/core';
 import { IconBookmark, IconEye, IconMessageCircle2, IconMoodSmile } from '@tabler/icons-react';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useRouter } from 'next/router';
 
 import { CivitaiTooltip } from '~/components/CivitaiWrapped/CivitaiTooltip';
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
 import { IconBadge } from '~/components/IconBadge/IconBadge';
 import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
-import { ArticleGetAll } from '~/types/router';
 import { abbreviateNumber } from '~/utils/number-helpers';
 import { slugit } from '~/utils/string-helpers';
 import { ArticleContextMenu } from '../ArticleContextMenu';
+import { MediaHash } from '~/components/ImageHash/ImageHash';
+import { AssociatedResourceArticleCardData } from '~/server/controllers/model.controller';
+import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
 
-export function ArticleAltCard({ data }: Props) {
+export function ArticleAltCard({ data, height, ...props }: Props) {
   const { classes } = useStyles();
   const router = useRouter();
 
-  const { id, title, cover, tags, stats } = data;
+  const { id, title, coverImage, tags, stats } = data;
   const category = tags?.find((tag) => tag.isCategory);
   const { commentCount, viewCount, favoriteCount, ...reactionStats } = stats || {
     commentCount: 0,
@@ -27,13 +29,14 @@ export function ArticleAltCard({ data }: Props) {
   const reactionCount = Object.values(reactionStats).reduce((a, b) => a + b, 0);
 
   return (
-    <Link href={`/articles/${id}/${slugit(title)}`} passHref>
+    <Link legacyBehavior href={`/articles/${id}/${slugit(title)}`} passHref>
       <Card
         component="a"
         p={0}
         shadow="sm"
         withBorder
         sx={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+        {...props}
       >
         <ArticleContextMenu
           article={data}
@@ -45,35 +48,43 @@ export function ArticleAltCard({ data }: Props) {
             zIndex: 8,
           }}
         />
-        <div style={{ position: 'relative', flex: 1, overflow: 'hidden', height: '100%' }}>
-          <Group
-            spacing={4}
-            sx={(theme) => ({
-              position: 'absolute',
-              top: theme.spacing.xs,
-              left: theme.spacing.xs,
-              zIndex: 1,
-            })}
-          >
-            <Badge
-              size="sm"
-              sx={{
-                background: 'rgb(30 133 230 / 40%)',
-                color: 'white',
-                backdropFilter: 'blur(7px)',
-                boxShadow: '1px 2px 3px -1px rgba(37,38,43,0.2)',
-              }}
-            >
-              Article
-            </Badge>
-            {category && (
-              <Badge size="sm" variant="gradient" gradient={{ from: 'cyan', to: 'blue' }}>
-                {category.name}
-              </Badge>
+        {coverImage && (
+          <ImageGuard2 image={coverImage}>
+            {(safe) => (
+              <div className="relative h-full flex-1 overflow-hidden">
+                <Group spacing={4} className="absolute left-2 top-2 z-10">
+                  <ImageGuard2.BlurToggle />
+                  <Badge
+                    size="sm"
+                    sx={{
+                      background: 'rgb(30 133 230 / 40%)',
+                      color: 'white',
+                      // backdropFilter: 'blur(7px)',
+                      boxShadow: '1px 2px 3px -1px rgba(37,38,43,0.2)',
+                    }}
+                  >
+                    Article
+                  </Badge>
+                  {category && (
+                    <Badge size="sm" variant="gradient" gradient={{ from: 'cyan', to: 'blue' }}>
+                      {category.name}
+                    </Badge>
+                  )}
+                </Group>
+                {!safe ? (
+                  <MediaHash {...coverImage} />
+                ) : (
+                  <EdgeMedia
+                    className={classes.image}
+                    src={coverImage.url}
+                    width={450}
+                    loading="lazy"
+                  />
+                )}
+              </div>
             )}
-          </Group>
-          <EdgeMedia className={classes.image} src={cover} width={450} />
-        </div>
+          </ImageGuard2>
+        )}
         <Stack className={classes.info} spacing={8}>
           {data.user.image && (
             <CivitaiTooltip
@@ -132,9 +143,9 @@ export function ArticleAltCard({ data }: Props) {
 }
 
 type Props = {
-  data: ArticleGetAll['items'][number];
+  data: AssociatedResourceArticleCardData;
   height?: number;
-};
+} & ElementDataAttributes;
 
 const useStyles = createStyles((theme) => ({
   image: {
@@ -160,7 +171,7 @@ const useStyles = createStyles((theme) => ({
       to: 'rgba(37,38,43,0)',
       deg: 0,
     }),
-    backdropFilter: 'blur(13px) saturate(160%)',
+    // backdropFilter: 'blur(13px) saturate(160%)',
     boxShadow: '0 -2px 6px 1px rgba(0,0,0,0.16)',
   },
 

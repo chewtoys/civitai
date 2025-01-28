@@ -1,11 +1,12 @@
 import { Center, Loader, LoadingOverlay, Stack, Text, ThemeIcon } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
-import { MetricTimeframe } from '@prisma/client';
+import { MetricTimeframe } from '~/shared/utils/prisma/enums';
 import { IconCloudOff } from '@tabler/icons-react';
 import { isEqual } from 'lodash-es';
-import { useEffect } from 'react';
+import React, { useEffect } from 'react';
 
 import { EndOfFeed } from '~/components/EndOfFeed/EndOfFeed';
+import { FeedWrapper } from '~/components/Feed/FeedWrapper';
 import { InViewLoader } from '~/components/InView/InViewLoader';
 import { MasonryColumns } from '~/components/MasonryColumns/MasonryColumns';
 import { PostsCard } from '~/components/Post/Infinite/PostsCard';
@@ -13,7 +14,7 @@ import { usePostFilters, useQueryPosts } from '~/components/Post/post.utils';
 import { PostSort } from '~/server/common/enums';
 import { removeEmpty } from '~/utils/object-helpers';
 
-type PostsInfiniteState = {
+export type PostsInfiniteState = {
   modelId?: number; // not hooked up to service/schema yet
   modelVersionId?: number; // not hooked up to service/schema yet
   tags?: number[];
@@ -23,19 +24,34 @@ type PostsInfiniteState = {
   collectionId?: number;
   draftOnly?: boolean;
   followed?: boolean;
+  pending?: boolean;
 };
 
 type PostsInfiniteProps = {
   filters?: PostsInfiniteState;
   showEof?: boolean;
+  showAds?: boolean;
+  disableStoreFilters?: boolean;
 };
 
-export default function PostsInfinite({
+export default function PostsInfinite(props: PostsInfiniteProps) {
+  return (
+    <FeedWrapper>
+      <PostsInfiniteContent {...props} />
+    </FeedWrapper>
+  );
+}
+
+function PostsInfiniteContent({
   filters: filterOverrides = {},
   showEof = false,
+  showAds,
+  disableStoreFilters,
 }: PostsInfiniteProps) {
   const postFilters = usePostFilters();
-  const filters = removeEmpty({ ...postFilters, ...filterOverrides });
+  const filters = disableStoreFilters
+    ? filterOverrides
+    : removeEmpty({ ...postFilters, ...filterOverrides });
   showEof = showEof && filters.period !== MetricTimeframe.AllTime;
   const [debouncedFilters, cancel] = useDebouncedValue(filters, 500);
 
@@ -62,13 +78,15 @@ export default function PostsInfinite({
           <MasonryColumns
             data={posts}
             imageDimensions={(data) => {
-              const width = data?.image.width ?? 450;
-              const height = data?.image.height ?? 450;
+              const image = data.images[0];
+              const width = image.width ?? 450;
+              const height = image.height ?? 450;
               return { width, height };
             }}
             maxItemHeight={600}
             render={PostsCard}
             itemId={(data) => data.id}
+            withAds={showAds}
           />
           {hasNextPage && (
             <InViewLoader

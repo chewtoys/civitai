@@ -1,125 +1,44 @@
-import { ActionIcon, Group, Stack, UnstyledButton } from '@mantine/core';
-import { IconBrush, IconInfoCircle } from '@tabler/icons-react';
-import { useRouter } from 'next/router';
+import { ActionIcon } from '@mantine/core';
+import { IconInfoCircle } from '@tabler/icons-react';
 import { useCardStyles } from '~/components/Cards/Cards.styles';
-import { FeedCard } from '~/components/Cards/FeedCard';
-import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
-import { ImageGuard } from '~/components/ImageGuard/ImageGuard';
-import { MediaHash } from '~/components/ImageHash/ImageHash';
-import { ImageMetaPopover } from '~/components/ImageMeta/ImageMeta';
 import { Reactions } from '~/components/Reaction/Reactions';
-import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
-import { DEFAULT_EDGE_IMAGE_WIDTH } from '~/server/common/constants';
-import { ImageGetInfinite } from '~/types/router';
-import { ImageSearchIndexRecord } from '~/server/search-index/images.search-index';
-import HoverActionButton from './components/HoverActionButton';
-import { generationPanel } from '~/store/generation.store';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
-import { RoutedDialogLink } from '~/components/Dialog/RoutedDialogProvider';
 import { useImagesContext } from '~/components/Image/Providers/ImagesProvider';
-import { OnsiteIndicator } from '~/components/Image/Indicators/OnsiteIndicator';
+import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
+import { ImagesInfiniteModel } from '~/server/services/image.service';
+import { ImageMetaPopover2 } from '~/components/Image/Meta/ImageMetaPopover';
+import { DurationBadge } from '~/components/DurationBadge/DurationBadge';
+import { AspectRatioImageCard } from '~/components/CardTemplates/AspectRatioImageCard';
+import { RemixButton } from '~/components/Cards/components/RemixButton';
+import { UserAvatarSimple } from '~/components/UserAvatar/UserAvatarSimple';
 
-export function UnroutedImageCard({ data }: Props) {
-  const { classes: sharedClasses, cx } = useCardStyles({
+export function ImageCard({ data }: Props) {
+  const { classes: sharedClasses } = useCardStyles({
     aspectRatio: data.width && data.height ? data.width / data.height : 1,
   });
-  const router = useRouter();
-  const features = useFeatureFlags();
+  const context = useImagesContext();
 
   return (
-    <FeedCard>
-      <div className={sharedClasses.root}>
-        <ImageGuard
-          images={[data]}
-          render={(image) => (
-            <ImageGuard.Content>
-              {({ safe }) => {
-                // Small hack to prevent blurry landscape images
-                const originalAspectRatio =
-                  image.width && image.height ? image.width / image.height : 1;
-                const onSite = image.meta && 'civitaiResources' in image.meta;
-
-                return (
-                  <>
-                    {onSite && <OnsiteIndicator />}
-                    <Group
-                      position="apart"
-                      align="start"
-                      spacing={4}
-                      className={cx(sharedClasses.contentOverlay, sharedClasses.top)}
-                    >
-                      <ImageGuard.ToggleImage className={sharedClasses.chip} position="static" />
-                      <Stack spacing="xs" ml="auto">
-                        <ImageGuard.Report context="image" position="static" withinPortal />
-                        {features.imageGeneration && image.meta && (
-                          <HoverActionButton
-                            label="Create"
-                            size={30}
-                            color="white"
-                            variant="filled"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              generationPanel.open({
-                                type: 'image',
-                                id: image.id,
-                              });
-                            }}
-                          >
-                            <IconBrush stroke={2.5} size={16} />
-                          </HoverActionButton>
-                        )}
-                      </Stack>
-                    </Group>
-                    {safe ? (
-                      <EdgeMedia
-                        src={image.url}
-                        name={image.name ?? image.id.toString()}
-                        alt={image.name ?? undefined}
-                        type={image.type}
-                        width={
-                          originalAspectRatio > 1
-                            ? DEFAULT_EDGE_IMAGE_WIDTH * originalAspectRatio
-                            : DEFAULT_EDGE_IMAGE_WIDTH
-                        }
-                        className={sharedClasses.image}
-                        wrapperProps={{ style: { height: '100%' } }}
-                        loading="lazy"
-                        contain
-                      />
-                    ) : (
-                      <MediaHash {...image} />
-                    )}
-                  </>
-                );
-              }}
-            </ImageGuard.Content>
+    <AspectRatioImageCard
+      image={data}
+      cosmetic={data.cosmetic?.data}
+      routedDialog={{ name: 'imageDetail', state: { imageId: data.id, ...context } }}
+      header={
+        <div className="flex w-full items-start justify-between">
+          {data.type === 'video' && data.metadata && 'duration' in data.metadata && (
+            <DurationBadge duration={data.metadata.duration ?? 0} className={sharedClasses.chip} />
           )}
-        />
-        <Stack
-          className={cx(
-            sharedClasses.contentOverlay,
-            sharedClasses.bottom,
-            sharedClasses.gradientOverlay
-          )}
-          spacing="sm"
-        >
-          {data.user.id !== -1 && (
-            <UnstyledButton
-              sx={{ color: 'white', alignSelf: 'flex-start' }}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-
-                router.push(`/user/${data.user.username}`);
-              }}
-            >
-              <UserAvatar user={data.user} avatarProps={{ radius: 'md', size: 32 }} withUsername />
-            </UnstyledButton>
-          )}
-          <Group spacing={4} position="apart">
+          <div className="ml-auto flex flex-col gap-2">
+            <ImageContextMenu image={data} />
+            <RemixButton type={data.type} id={data.id} canGenerate={data.hasMeta} />
+          </div>
+        </div>
+      }
+      footer={
+        <div className="flex w-full flex-col gap-2">
+          <UserAvatarSimple {...data.user} />
+          <div className="flex flex-wrap justify-between gap-1">
             <Reactions
-              className={sharedClasses.infoChip}
+              className={sharedClasses.reactions}
               entityId={data.id}
               entityType="image"
               reactions={data.reactions}
@@ -133,31 +52,18 @@ export function UnroutedImageCard({ data }: Props) {
               }}
               targetUserId={data.user.id}
             />
-            {!data.hideMeta && data.meta && (
-              <ImageMetaPopover
-                meta={data.meta}
-                generationProcess={data.generationProcess ?? undefined}
-                imageId={data.id}
-              >
+            {data.hasMeta && (
+              <ImageMetaPopover2 imageId={data.id} type={data.type}>
                 <ActionIcon className={sharedClasses.infoChip} variant="light">
                   <IconInfoCircle color="white" strokeWidth={2.5} size={18} />
                 </ActionIcon>
-              </ImageMetaPopover>
+              </ImageMetaPopover2>
             )}
-          </Group>
-        </Stack>
-      </div>
-    </FeedCard>
-  );
-}
-export function ImageCard({ data }: Props) {
-  const context = useImagesContext();
-
-  return (
-    <RoutedDialogLink name="imageDetail" state={{ imageId: data.id, ...context }}>
-      <UnroutedImageCard data={data} />
-    </RoutedDialogLink>
+          </div>
+        </div>
+      }
+    />
   );
 }
 
-type Props = { data: ImageGetInfinite[number] | ImageSearchIndexRecord };
+type Props = { data: ImagesInfiniteModel };

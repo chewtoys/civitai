@@ -1,9 +1,5 @@
 import { z } from 'zod';
-
-export type GetLatestAnnouncementInput = z.infer<typeof getLastestSchema>;
-export const getLastestSchema = z.object({
-  dismissed: z.array(z.number()).optional(),
-});
+import { paginationSchema } from '~/server/schema/base.schema';
 
 export type AnnouncementMetaSchema = z.infer<typeof announcementMetaSchema>;
 
@@ -27,9 +23,17 @@ export const announcementMetaSchema = z
   })
   .partial();
 
-export type GetAnnouncementsInput = z.infer<typeof getAnnouncementsSchema>;
-export const getAnnouncementsSchema = z.object({
-  dismissed: z.array(z.number()).optional(),
-  ids: z.array(z.number()).optional(),
-  limit: z.number().optional(),
+export type UpsertAnnouncementSchema = z.infer<typeof upsertAnnouncementSchema>;
+export const upsertAnnouncementSchema = z.object({
+  id: z.number().optional(),
+  title: z.string(),
+  content: z.string(),
+  color: z.string(),
+  startsAt: z.date().nullish(),
+  endsAt: z.date().nullish(),
+  disabled: z.boolean().optional(),
+  metadata: announcementMetaSchema,
 });
+
+export type GetAnnouncementsPagedSchema = z.infer<typeof getAnnouncementsPagedSchema>;
+export const getAnnouncementsPagedSchema = paginationSchema.extend({});

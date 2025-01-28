@@ -1,6 +1,5 @@
-import { CollectionContributorPermission } from '@prisma/client';
+import { CollectionContributorPermission } from '~/shared/utils/prisma/enums';
 import { Collection } from '~/components/Collections/Collection';
-import { useCollectionQueryParams } from '~/components/Collections/collection.utils';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { CollectionsLayout } from '~/components/Collections/CollectionsLayout';
 
@@ -13,6 +12,7 @@ export const getServerSideProps = createServerSideProps({
         await ssg.collection.getAllUser.prefetch({
           permission: CollectionContributorPermission.VIEW,
         });
+        await ssg.hiddenPreferences.getHidden.prefetch();
       }
       // TODO - prefetch top user collections and popular collections
     }

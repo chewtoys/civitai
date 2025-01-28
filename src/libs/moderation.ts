@@ -1,4 +1,3 @@
-import { NsfwLevel } from '@prisma/client';
 import { TagVotableEntityType } from '~/libs/tags';
 
 export type ModerationCategory = {
@@ -18,10 +17,7 @@ export const modelModerationCategories: ModerationCategory[] = [
   {
     label: 'Violence',
     value: 'violence',
-    children: [
-      { label: 'Intense Violence/Gore', value: 'graphic violence or gore' },
-      { label: 'Weapons Display', value: 'weapons' },
-    ],
+    children: [{ label: 'Intense Violence/Gore', value: 'graphic violence or gore' }],
   },
   {
     label: 'Visually Disturbing',
@@ -76,7 +72,6 @@ export const moderationCategories: ModerationCategory[] = [
       { label: 'Intense Violence/Gore', value: 'graphic violence or gore' },
       { label: 'Physical Violence', value: 'physical violence' },
       { label: 'Weapon-related Violence', value: 'weapon violence' },
-      { label: 'Weapons Display', value: 'weapons' },
       { label: 'Self-harm', value: 'self injury', hidden: true },
     ],
   },
@@ -120,17 +115,17 @@ export const entityModerationCategories: Record<TagVotableEntityType, Moderation
   model: modelModerationCategories,
 };
 
-export const nsfwLevelOrder = [
-  NsfwLevel.None,
-  NsfwLevel.Soft,
-  NsfwLevel.Mature,
-  NsfwLevel.X,
-  NsfwLevel.Blocked,
-];
-export const nsfwLevelUI = {
-  [NsfwLevel.None]: { label: '', color: 'gray', shade: 5 },
-  [NsfwLevel.Soft]: { label: '13', color: 'yellow', shade: 5 },
-  [NsfwLevel.Mature]: { label: '17', color: 'orange', shade: 7 },
-  [NsfwLevel.X]: { label: '18', color: 'red', shade: 9 },
-  [NsfwLevel.Blocked]: { label: '18', color: 'red', shade: 9 },
-};
+// export const nsfwLevelOrder = [
+//   NsfwLevel.None,
+//   NsfwLevel.Soft,
+//   NsfwLevel.Mature,
+//   NsfwLevel.X,
+//   NsfwLevel.Blocked,
+// ];
+// export const nsfwLevelUI = {
+//   [NsfwLevel.None]: { label: '', color: 'gray', shade: 5 },
+//   [NsfwLevel.Soft]: { label: '13', color: 'yellow', shade: 5 },
+//   [NsfwLevel.Mature]: { label: '17', color: 'orange', shade: 7 },
+//   [NsfwLevel.X]: { label: '18', color: 'red', shade: 9 },
+//   [NsfwLevel.Blocked]: { label: '18', color: 'red', shade: 9 },
+// };

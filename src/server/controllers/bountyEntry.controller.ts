@@ -21,6 +21,9 @@ import { UpsertBountyEntryInput } from '~/server/schema/bounty-entry.schema';
 import { ImageMetaProps } from '~/server/schema/image.schema';
 import { getReactionsSelectV2 } from '~/server/selectors/reaction.selector';
 import { getBountyById } from '../services/bounty.service';
+import { bountiesSearchIndex } from '~/server/search-index';
+import { SearchIndexUpdateQueueAction } from '~/server/common/enums';
+import { amIBlockedByUser } from '~/server/services/user.service';
 
 export const getBountyEntryHandler = async ({
   input,
@@ -55,6 +58,11 @@ export const getBountyEntryHandler = async ({
       },
     });
     if (!entry) throw throwNotFoundError(`No bounty entry with id ${input.id}`);
+
+    if (ctx.user && !ctx.user.isModerator) {
+      const blocked = await amIBlockedByUser({ userId: ctx.user.id, targetUserId: entry.user?.id });
+      if (blocked) throw throwNotFoundError();
+    }
 
     const images = await getImagesByEntity({
       id: entry.id,
@@ -158,6 +166,10 @@ export const awardBountyEntryHandler = async ({
           benefactorId: benefactor.userId,
         })
         .catch(handleLogError);
+
+    await bountiesSearchIndex.queueUpdate([
+      { id: benefactor.bountyId, action: SearchIndexUpdateQueueAction.Update },
+    ]);
 
     return benefactor;
   } catch (error) {

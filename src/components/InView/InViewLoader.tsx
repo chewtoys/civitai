@@ -1,5 +1,6 @@
 import React, { CSSProperties, useEffect, useState } from 'react';
-import { useInView } from 'react-intersection-observer';
+import { IntersectionOptions } from 'react-intersection-observer';
+import { useInView } from '~/hooks/useInView';
 
 export function InViewLoader({
   children,
@@ -8,19 +9,28 @@ export function InViewLoader({
   loadTimeout = 500,
   className,
   style,
+  inViewOptions,
 }: {
   children: React.ReactNode;
-  loadFn: () => any | Promise<any>;
+  loadFn: () => unknown | Promise<unknown>;
   loadCondition: boolean;
   loadTimeout?: number;
   className?: string;
   style?: CSSProperties;
+  inViewOptions?: IntersectionOptions;
 }) {
-  const { ref, inView } = useInView();
+  const { ref, inView } = useInView({ rootMargin: '1200px 0px', ...inViewOptions });
+  const [initialCanLoad, setInitialCanLoad] = useState(false);
   const [canLoad, setCanLoad] = useState(true);
 
   useEffect(() => {
-    if (inView && loadCondition && canLoad) {
+    setTimeout(() => {
+      setInitialCanLoad(true);
+    }, 1500);
+  }, []);
+
+  useEffect(() => {
+    if (inView && loadCondition && initialCanLoad && canLoad) {
       const handleLoad = async () => {
         await loadFn();
         setTimeout(() => setCanLoad(true), loadTimeout);
@@ -29,7 +39,7 @@ export function InViewLoader({
       setCanLoad(false);
       handleLoad();
     }
-  }, [inView, loadCondition]); // eslint-disable-line
+  }, [inView, loadCondition, initialCanLoad, canLoad]); // eslint-disable-line
 
   return (
     <div ref={ref} className={className} style={style}>

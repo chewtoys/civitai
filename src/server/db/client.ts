@@ -1,7 +1,7 @@
 // src/server/db/client.ts
-import { PrismaClient, Prisma } from '@prisma/client';
-import { env } from '~/env/server.mjs';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { isProd } from '~/env/other';
+import { env } from '~/env/server';
 import { logToAxiom } from '~/server/logging/client';
 
 declare global {
@@ -27,7 +27,7 @@ const logFor = (target: 'write' | 'read') =>
     }
 
     if (!isProd) console.log(query);
-    else await logToAxiom({ query, duration: e.duration, pod: env.PODNAME, target }, 'db-logs');
+    else logToAxiom({ query, duration: e.duration, target }, 'db-logs');
   };
 
 const singleClient = env.DATABASE_REPLICA_URL === env.DATABASE_URL;
@@ -48,6 +48,15 @@ const createPrismaClient = ({ readonly }: { readonly: boolean }) => {
   }
   const dbUrl = readonly ? env.DATABASE_REPLICA_URL : env.DATABASE_URL;
   const prisma = new PrismaClient({ log, datasources: { db: { url: dbUrl } } });
+
+  // use with prisma-slow,prisma-showparams
+  if (env.LOGGING.some((x) => x === 'prisma-showparams')) {
+    // @ts-ignore
+    prisma.$on('query', async (e) => {
+      // @ts-ignore
+      console.log({ query: e.query, params: e.params });
+    });
+  }
   return prisma;
 };
 

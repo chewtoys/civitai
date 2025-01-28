@@ -1,36 +1,32 @@
 import { Stack, Box, Center, Loader, Title, Text, ThemeIcon } from '@mantine/core';
-import { useInfiniteHits, useInstantSearch } from 'react-instantsearch';
+import { useInstantSearch } from 'react-instantsearch';
 
 import {
+  BrowsingLevelFilter,
   ChipRefinementList,
   ClearRefinements,
   DateRangeRefinement,
   SearchableMultiSelectRefinementList,
   SortBy,
 } from '~/components/Search/CustomSearchComponents';
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import { ModelCard } from '~/components/Cards/ModelCard';
 import { SearchHeader } from '~/components/Search/SearchHeader';
-import { ModelSearchIndexRecord } from '~/server/search-index/models.search-index';
 import { TimeoutLoader } from '~/components/Search/TimeoutLoader';
 import { IconCloudOff } from '@tabler/icons-react';
 import { SearchLayout, useSearchLayoutStyles } from '~/components/Search/SearchLayout';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import trieMemoize from 'trie-memoize';
-import OneKeyMap from '@essentials/one-key-map';
-import { applyUserPreferencesModels } from '~/components/Search/search.utils';
 import { MODELS_SEARCH_INDEX } from '~/server/common/constants';
 import { ModelSearchIndexSortBy } from '~/components/Search/parsers/model.parser';
 import { useRouter } from 'next/router';
 import { InViewLoader } from '~/components/InView/InViewLoader';
+import { useInfiniteHitsTransformed } from '~/components/Search/search.utils2';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { MasonryGrid } from '~/components/MasonryColumns/MasonryGrid';
+import { NoContent } from '~/components/NoContent/NoContent';
 
 export default function ModelsSearch() {
   return (
     <SearchLayout.Root>
-      <SearchLayout.Filters>
-        <RenderFilters />
-      </SearchLayout.Filters>
       <SearchLayout.Content>
         <SearchHeader />
         <ModelsHitList />
@@ -42,6 +38,7 @@ export default function ModelsSearch() {
 const RenderFilters = () => {
   return (
     <>
+      <BrowsingLevelFilter attributeName="nsfwLevel" />
       <SortBy
         title="Sort models by"
         items={[
@@ -59,13 +56,13 @@ const RenderFilters = () => {
         title="Filter by Base Model"
         attribute="version.baseModel"
         sortBy={['name']}
-        limit={20}
+        limit={100}
       />
       <ChipRefinementList
         title="Filter by Model Type"
         attribute="type"
         sortBy={['name']}
-        limit={20}
+        limit={100}
       />
       <ChipRefinementList
         title="Filter by Checkpoint Type"
@@ -93,33 +90,16 @@ const RenderFilters = () => {
 };
 
 export function ModelsHitList() {
-  const { hits, showMore, isLastPage } = useInfiniteHits<ModelSearchIndexRecord>();
+  const { hits, showMore, isLastPage } = useInfiniteHitsTransformed<'models'>();
   const { status } = useInstantSearch();
   const { classes } = useSearchLayoutStyles();
-  const currentUser = useCurrentUser();
   const router = useRouter();
   const modelId = router.query.model ? Number(router.query.model) : undefined;
 
-  const {
-    models: hiddenModels,
-    images: hiddenImages,
-    tags: hiddenTags,
-    users: hiddenUsers,
-    isLoading: loadingPreferences,
-  } = useHiddenPreferencesContext();
-
-  const models = useMemo(() => {
-    return applyUserPreferencesModels({
-      items: hits,
-      hiddenModels,
-      hiddenImages,
-      hiddenTags,
-      hiddenUsers,
-      currentUserId: currentUser?.id,
-    });
-  }, [hits, hiddenModels, hiddenImages, hiddenTags, hiddenUsers, currentUser]);
-
-  const hiddenItems = hits.length - models.length;
+  const { loadingPreferences, items, hiddenCount } = useApplyHiddenPreferences({
+    type: 'models',
+    data: hits,
+  });
 
   useEffect(() => {
     if (!modelId) {
@@ -134,27 +114,23 @@ export function ModelsHitList() {
 
   if (hits.length === 0) {
     const NotFound = (
-      <Box>
-        <Center>
-          <Stack spacing="md" align="center" maw={800}>
-            {hiddenItems > 0 && (
-              <Text color="dimmed">
-                {hiddenItems} models have been hidden due to your settings.
-              </Text>
-            )}
-            <ThemeIcon size={128} radius={100} sx={{ opacity: 0.5 }}>
-              <IconCloudOff size={80} />
-            </ThemeIcon>
-            <Title order={1} inline>
-              No models found
-            </Title>
-            <Text align="center">
-              We have a bunch of models, but it looks like we couldn&rsquo;t find any matching your
-              query.
-            </Text>
-          </Stack>
-        </Center>
-      </Box>
+      <div className="flex items-center justify-center">
+        <Stack spacing="md" align="center" maw={800}>
+          {hiddenCount > 0 && (
+            <Text color="dimmed">{hiddenCount} models have been hidden due to your settings.</Text>
+          )}
+          <ThemeIcon size={128} radius={100} sx={{ opacity: 0.5 }}>
+            <IconCloudOff size={80} />
+          </ThemeIcon>
+          <Title order={1} inline>
+            No models found
+          </Title>
+          <Text align="center">
+            We have a bunch of models, but it looks like we couldn&rsquo;t find any matching your
+            query.
+          </Text>
+        </Stack>
+      </div>
     );
 
     const loading = status === 'loading' || status === 'stalled';
@@ -191,18 +167,16 @@ export function ModelsHitList() {
 
   return (
     <Stack>
-      {hiddenItems > 0 && (
-        <Text color="dimmed">{hiddenItems} models have been hidden due to your settings.</Text>
+      {hiddenCount > 0 && (
+        <Text color="dimmed">{hiddenCount} models have been hidden due to your settings.</Text>
       )}
-      <Box className={classes.grid}>
-        {models.map((model, index) => {
-          return (
-            <div key={index} id={model.id.toString()}>
-              {createRenderElement(ModelCard, index, model)}
-            </div>
-          );
-        })}
-      </Box>
+      <MasonryGrid
+        data={items as any}
+        render={ModelCard}
+        itemId={(x) => x.id}
+        empty={<NoContent />}
+        withAds
+      />
       {hits.length > 0 && !isLastPage && (
         <InViewLoader
           loadFn={showMore}
@@ -219,10 +193,21 @@ export function ModelsHitList() {
 }
 
 ModelsSearch.getLayout = function getLayout(page: React.ReactNode) {
-  return <SearchLayout indexName={MODELS_SEARCH_INDEX}>{page}</SearchLayout>;
+  return (
+    <SearchLayout
+      indexName={MODELS_SEARCH_INDEX}
+      leftSidebar={
+        <SearchLayout.Filters>
+          <RenderFilters />
+        </SearchLayout.Filters>
+      }
+    >
+      {page}
+    </SearchLayout>
+  );
 };
 
-const createRenderElement = trieMemoize(
-  [OneKeyMap, {}, WeakMap],
-  (RenderComponent, index, model) => <RenderComponent index={index} data={model} />
-);
+// const createRenderElement = trieMemoize(
+//   [OneKeyMap, {}, WeakMap],
+//   (RenderComponent, index, model) => <RenderComponent index={index} data={model} />
+// );

@@ -4,10 +4,10 @@ import { IconList, IconPaperclip } from '@tabler/icons-react';
 
 import { AttachmentCard } from '~/components/Article/Detail/AttachmentCard';
 import { TableOfContent } from '~/components/Article/Detail/TableOfContent';
-import { CreatorCard } from '~/components/CreatorCard/CreatorCard';
+import { SmartCreatorCard } from '~/components/CreatorCard/CreatorCard';
 import { useHeadingsData } from '~/hooks/useHeadingsData';
 import { hideMobile } from '~/libs/sx-helpers';
-import { ArticleGetById } from '~/types/router';
+import type { ArticleGetById } from '~/server/services/article.service';
 
 const useStyles = createStyles((theme) => ({
   sidebar: {
@@ -78,7 +78,7 @@ export function Sidebar({ articleId, attachments, creator }: Props) {
             </Stack>
           </Accordion>
         )}
-        <CreatorCard user={creator} tipBuzzEntityId={articleId} tipBuzzEntityType="Article" />
+        <SmartCreatorCard user={creator} tipBuzzEntityId={articleId} tipBuzzEntityType="Article" />
       </Stack>
     </aside>
   );

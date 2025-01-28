@@ -1,29 +1,35 @@
 import { createStyles } from '@mantine/core';
+import { constants } from '~/server/common/constants';
+import { ContentDecorationCosmetic } from '~/server/selectors/cosmetic.selector';
 
 export const useCardStyles = createStyles<string, { aspectRatio: number }>(
   (theme, params, getRef) => {
     const imageRef = getRef('image');
     const headerRef = getRef('header');
     const topRef = getRef('top');
+    const bottomRef = getRef('bottom');
     const { aspectRatio } = params;
 
     return {
       root: {
-        position: 'relative',
-        overflow: 'hidden',
+        height: '100%',
         color: 'white',
         '&:hover': {
           [`& .${imageRef}`]: {
             transform: 'scale(1.05)',
+          },
+          '& :after': {
+            transform: 'scale(1.05)',
+            opacity: 0,
           },
         },
       },
 
       image: {
         ref: imageRef,
-        height: '100%',
+        height: '100% !important',
         objectFit: 'cover',
-        objectPosition: aspectRatio < 1 ? 'top-center' : 'center',
+        objectPosition: aspectRatio < 1 ? 'top center' : 'center',
         transition: 'transform 400ms ease',
         minWidth: '100%',
       },
@@ -35,19 +41,15 @@ export const useCardStyles = createStyles<string, { aspectRatio: number }>(
         width: '100%',
       },
 
-      withHeader: {
-        flexDirection: 'column',
-        justifyContent: 'flex-start',
-
-        [`& .${headerRef}`]: {
-          height: '60px',
-        },
-        [`& .${imageRef}`]: {
-          height: 'calc(100% - 60px)',
-        },
-        [`& .${topRef}`]: {
-          top: '60px',
-        },
+      content: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        zIndex: 2,
+        opacity: 0,
+        transition: theme.other.fadeIn,
       },
 
       noImage: {
@@ -84,13 +86,14 @@ export const useCardStyles = createStyles<string, { aspectRatio: number }>(
       },
 
       top: { top: 0, ref: topRef },
-      bottom: { bottom: 0 },
+      bottom: { bottom: 0, ref: bottomRef },
 
       iconBadge: { color: 'white', backgroundColor: theme.fn.rgba('#000', 0.31) },
 
       infoChip: {
         borderRadius: theme.radius.sm,
         backgroundColor: theme.fn.rgba('#000', 0.31),
+        color: theme.white,
         [`.mantine-Badge-inner`]: {
           display: 'flex',
           overflow: 'visible',
@@ -101,6 +104,34 @@ export const useCardStyles = createStyles<string, { aspectRatio: number }>(
           borderRightColor: theme.fn.rgba('#000', 0.2),
           borderRightWidth: 1,
           borderRightStyle: 'solid',
+        },
+      },
+
+      forMod: {
+        backgroundColor: theme.fn.rgba('#E0BBE4', 0.8), // Light violet color
+        color: theme.white,
+      },
+
+      reactions: {
+        borderRadius: theme.radius.sm,
+        backgroundColor: theme.fn.rgba('#000', 0.31),
+        boxShadow: '0 -2px 6px 1px rgba(0,0,0,0.16)',
+        height: 28,
+        paddingRight: 3,
+      },
+
+      statChip: {
+        borderRadius: theme.radius.sm,
+        backgroundColor: theme.fn.rgba('#000', 0.31),
+        alignSelf: 'flex-start',
+        [`.mantine-Badge-inner`]: {
+          display: 'flex',
+          overflow: 'visible',
+          gap: theme.spacing.xs,
+        },
+        color: theme.white,
+        [`&[data-reviewed=true]`]: {
+          backgroundColor: theme.fn.rgba(theme.colors.success[5], 0.2),
         },
       },
 
@@ -138,6 +169,64 @@ export const useCardStyles = createStyles<string, { aspectRatio: number }>(
           height: '50%',
         },
       },
+
+      link: {
+        [`&:has(~ .frame-decor) .${bottomRef}`]: {
+          paddingBottom: '36px !important',
+        },
+      },
+
+      dropShadow: {
+        filter: 'drop-shadow(1px 1px 1px rgba(0, 0, 0, 0.8))',
+      },
     };
   }
 );
+
+export const useFrameStyles = createStyles<
+  string,
+  { frame?: string; texture?: ContentDecorationCosmetic['data']['texture'] }
+>((theme, params) => {
+  const { frame, texture } = params;
+  const frameBackground = [texture?.url, frame].filter(Boolean).join(', ');
+  const framePadding = constants.cosmetics.frame.padding;
+
+  return {
+    root: {
+      padding: '0 !important',
+      color: 'white',
+      borderRadius: theme.radius.md,
+      cursor: 'pointer',
+      position: 'relative',
+      overflow: 'hidden',
+      backgroundColor: params.frame ? 'transparent' : undefined,
+      margin: params.frame ? -framePadding : undefined,
+    },
+
+    frame: {
+      position: 'relative',
+      backgroundImage: frameBackground,
+      backgroundSize: texture?.size
+        ? `${texture.size.width}px ${texture.size.height}px, cover`
+        : undefined,
+      borderRadius: theme.radius.md,
+      zIndex: 2,
+      padding: framePadding,
+      boxShadow: 'inset 0 0 1px 1px rgba(255,255,255, 0.3), 0 1px 2px rgba(0, 0, 0, 0.8)',
+    },
+
+    glow: {
+      position: 'relative',
+      '&:before': {
+        backgroundImage: params.frame,
+        content: '""',
+        width: '100%',
+        height: '100%',
+        filter: 'blur(5px)',
+        position: 'absolute',
+        top: 0,
+        left: 0,
+      },
+    },
+  };
+});

@@ -183,6 +183,7 @@ export const useS3UploadStore = create<StoreProps>()(
           body: JSON.stringify(body),
         });
 
+        // TODO handle a non-json response (like a 403)
         const data = (await res.json()) as ApiUploadResponse;
 
         if ('error' in data) {
@@ -272,7 +273,7 @@ export const useS3UploadStore = create<StoreProps>()(
           // Prepare part upload
           const partsCount = urls.length;
           const uploadPart = (url: string, i: number) =>
-            new Promise<UploadStatus>((resolve) => {
+            new Promise<UploadStatus>((resolve, reject) => {
               let eTag: string;
               const start = (i - 1) * FILE_CHUNK_SIZE;
               const end = i * FILE_CHUNK_SIZE;
@@ -292,8 +293,8 @@ export const useS3UploadStore = create<StoreProps>()(
               xhr.addEventListener('load', () => {
                 eTag = xhr.getResponseHeader('ETag') ?? '';
               });
-              xhr.addEventListener('error', () => resolve('error'));
-              xhr.addEventListener('abort', () => resolve('aborted'));
+              xhr.addEventListener('error', () => reject('error'));
+              xhr.addEventListener('abort', () => reject('aborted'));
               xhr.open('PUT', url);
               xhr.setRequestHeader('Content-Type', 'application/octet-stream');
               xhr.send(part);

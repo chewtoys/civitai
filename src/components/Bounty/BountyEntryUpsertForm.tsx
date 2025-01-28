@@ -2,6 +2,8 @@ import {
   ActionIcon,
   Anchor,
   Button,
+  Checkbox,
+  Divider,
   Group,
   HoverCard,
   Input,
@@ -15,7 +17,7 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
-import { BountyEntryMode, BountyType, Currency } from '@prisma/client';
+import { BountyEntryMode, BountyType, Currency } from '~/shared/utils/prisma/enums';
 import { IconInfoCircle, IconQuestionMark, IconTrash } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
 import React, { useState } from 'react';
@@ -42,24 +44,25 @@ import { showErrorNotification } from '~/utils/notifications';
 import { formatKBytes } from '~/utils/number-helpers';
 import { trpc } from '~/utils/trpc';
 import { PoiAlert } from '~/components/PoiAlert/PoiAlert';
-import { TRPCClientError } from '@trpc/client';
 import { getFilesHash } from '~/client-utils/file-hashing';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { FeatureIntroductionHelpButton } from '../FeatureIntroduction/FeatureIntroduction';
+import { ImageMetaPopover2 } from '~/components/Image/Meta/ImageMetaPopover';
 // import { AlertWithIcon } from '~/components/AlertWithIcon/AlertWithIcon';
 
 const dropzoneOptionsByModelType: Record<BountyType, string[] | Record<string, string[]>> = {
   ModelCreation: {
-    'application/octet-stream': ['.ckpt', '.pt', '.safetensors', '.bin', '.onnx'],
+    'application/octet-stream': ['.ckpt', '.pt', '.safetensors', '.gguf', '.sft', '.bin', '.onnx'],
     'application/zip': ['.zip'],
     'application/x-yaml': ['.yaml', '.yml'],
   },
   LoraCreation: {
-    'application/octet-stream': ['.ckpt', '.pt', '.safetensors', '.bin'],
+    'application/octet-stream': ['.ckpt', '.pt', '.safetensors', '.gguf', '.sft', '.bin'],
     'application/zip': ['.zip'],
     'application/x-yaml': ['.yaml', '.yml'],
   },
   EmbedCreation: {
-    'application/octet-stream': ['.ckpt', '.pt', '.safetensors', '.bin'],
+    'application/octet-stream': ['.ckpt', '.pt', '.safetensors', '.gguf', '.sft', '.bin'],
     'application/zip': ['.zip'],
   },
   DataSetCreation: ZIP_MIME_TYPE,
@@ -87,10 +90,11 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
   const currentUser = useCurrentUser();
   const router = useRouter();
   const { files: imageFiles, uploadToCF, removeImage } = useCFImageUpload();
-  const queryUtils = trpc.useContext();
+  const queryUtils = trpc.useUtils();
   const [bountyEntryImages, setBountyEntryImages] = useState<BountyEntryGetById['images']>(
     bountyEntry?.images ?? []
   );
+  const [ownershipAcknowledgement, setOwnershipAcknowledgement] = useState(false);
 
   const currency = getBountyCurrency(bounty);
   const maxAmount = getMainBountyAmount(bounty);
@@ -131,9 +135,7 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
     unlockAmount,
     ...data
   }: z.infer<typeof formSchema>) => {
-    const filteredImages = imageFiles
-      .filter((file) => file.status === 'success')
-      .map(({ id, url, ...file }) => ({ ...file, url: id }));
+    const filteredImages = imageFiles.filter((file) => file.status === 'success');
 
     const files = [
       ...sampleFiles,
@@ -148,7 +150,12 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
     ];
 
     bountyEntryUpsertMutation.mutate(
-      { ...data, bountyId: bounty.id, images: [...bountyEntryImages, ...filteredImages], files },
+      {
+        ...data,
+        bountyId: bounty.id,
+        images: [...bountyEntryImages.map((i, index) => ({ ...i, index })), ...filteredImages],
+        files,
+      },
       {
         async onSuccess() {
           await queryUtils.bounty.getEntries.invalidate({ id: bounty.id });
@@ -184,6 +191,10 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
         <Group spacing="md">
           <BackButton url={`/bounties/${bounty.id}`} />
           <Title inline>{bountyEntry ? 'Update' : 'Submit new'} entry</Title>
+          <FeatureIntroductionHelpButton
+            feature="bounty-submit-entry"
+            contentSlug={['feature-introduction', 'bounty-submit-entry']}
+          />
         </Group>
         {bounty.poi && <PoiAlert size="sm" />}
         <InputRTE
@@ -206,7 +217,6 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
             onDrop={handleDropImages}
             count={imageFiles.length}
             mt={5}
-            orientation="vertical"
             accept={[...IMAGE_MIME_TYPE, ...VIDEO_MIME_TYPE]}
           />
         </Input.Wrapper>
@@ -249,11 +259,11 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
                 </div>
                 {image.meta && (
                   <div style={{ position: 'absolute', bottom: 12, right: 12 }}>
-                    <ImageMetaPopover meta={image.meta}>
+                    <ImageMetaPopover2 imageId={image.id} type={image.type}>
                       <ActionIcon variant="light" color="dark" size="lg">
                         <IconInfoCircle color="white" strokeWidth={2.5} size={26} />
                       </ActionIcon>
-                    </ImageMetaPopover>
+                    </ImageMetaPopover2>
                   </div>
                 )}
               </Paper>
@@ -263,7 +273,7 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
               .reverse()
               .map((file) => (
                 <Paper
-                  key={file.id}
+                  key={file.url}
                   radius="sm"
                   p={0}
                   sx={{ position: 'relative', overflow: 'hidden', height: 332 }}
@@ -273,7 +283,7 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
                     <>
                       <EdgeMedia
                         placeholder="empty"
-                        src={file.id}
+                        src={file.url}
                         alt={file.name ?? undefined}
                         style={{ objectFit: 'cover', height: '100%' }}
                       />
@@ -282,7 +292,7 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
                           variant="filled"
                           size="lg"
                           color="red"
-                          onClick={() => removeImage(file.id)}
+                          onClick={() => removeImage(file.url)}
                         >
                           <IconTrash size={26} strokeWidth={2.5} />
                         </ActionIcon>
@@ -589,7 +599,16 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
             </Text>
           )}
         </AlertWithIcon> */}
-
+        {!bountyEntry && (
+          <>
+            <Divider />
+            <Checkbox
+              checked={ownershipAcknowledgement}
+              onChange={(event) => setOwnershipAcknowledgement(event.currentTarget.checked)}
+              label="By submitting an entry you consent that in the event that you win the bounty, the creator of the bounty has ownership over your entry, and can do with it what they will."
+            />
+          </>
+        )}
         <Group mt="xl" position="right">
           <NavigateBack url={`/bounties/${bounty.id}`}>
             {({ onClick }) => (
@@ -598,9 +617,12 @@ export function BountyEntryUpsertForm({ bountyEntry, bounty }: Props) {
               </Button>
             )}
           </NavigateBack>
+
           <Button
             loading={bountyEntryUpsertMutation.isLoading && !creating}
-            disabled={bountyEntryUpsertMutation.isLoading}
+            disabled={
+              bountyEntryUpsertMutation.isLoading || (!bountyEntry && !ownershipAcknowledgement)
+            }
             onClick={() => setCreating(false)}
             type="submit"
           >

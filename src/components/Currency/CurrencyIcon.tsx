@@ -1,24 +1,22 @@
 import { useMantineTheme } from '@mantine/core';
-import { Currency } from '@prisma/client';
-import { TablerIconsProps } from '@tabler/icons-react';
-import { CurrencyConfig } from '~/server/common/constants';
+import { IconProps } from '@tabler/icons-react';
 import React from 'react';
+import { CurrencyConfig } from '~/server/common/constants';
+import { Currency } from '~/shared/utils/prisma/enums';
 
-type Props = TablerIconsProps & {
+type Props = IconProps & {
   currency?: Currency;
+  type?: string;
 };
 
-export function CurrencyIcon({ currency = Currency.BUZZ, ...iconProps }: Props) {
+export function CurrencyIcon({ currency = Currency.BUZZ, type, ...iconProps }: Props) {
   const theme = useMantineTheme();
-  const Icon = CurrencyConfig[currency].icon;
+  const config = CurrencyConfig[currency].themes?.[type ?? ''] ?? CurrencyConfig[currency];
+  const Icon = config.icon;
 
   // TODO: Add tooltip: this action will cost <CURRENCY>
 
   return (
-    <Icon
-      color={CurrencyConfig[currency].color(theme)}
-      fill={CurrencyConfig[currency].color(theme)}
-      {...iconProps}
-    />
+    <Icon color={config.color(theme)} fill={config.fill?.(theme) ?? 'transparent'} {...iconProps} />
   );
 }

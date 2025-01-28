@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Anchor,
   Box,
   Button,
   Divider,
@@ -9,37 +10,43 @@ import {
   Stack,
   Text,
   useMantineTheme,
+  Badge,
+  UnstyledButton,
 } from '@mantine/core';
+import { CosmeticType } from '~/shared/utils/prisma/enums';
 import {
   IconAlertCircle,
-  IconDotsVertical,
   IconMapPin,
+  IconExternalLink,
   IconPencilMinus,
   IconRss,
   IconShare3,
+  IconInfoCircle,
 } from '@tabler/icons-react';
+import { useRouter } from 'next/router';
+import React, { useMemo, useState } from 'react';
+import { TipBuzzButton } from '~/components/Buzz/TipBuzzButton';
+import { ChatUserButton } from '~/components/Chat/ChatUserButton';
+import { useContainerSmallerThan } from '~/components/ContainerProvider/useContainerSmallerThan';
+import { ContentClamp } from '~/components/ContentClamp/ContentClamp';
+import { DomainIcon } from '~/components/DomainIcon/DomainIcon';
+import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
+import { FollowUserButton } from '~/components/FollowUserButton/FollowUserButton';
 
 import { RankBadge } from '~/components/Leaderboard/RankBadge';
-import { ContentClamp } from '~/components/ContentClamp/ContentClamp';
-import { sortDomainLinks } from '~/utils/domain-link';
-import { DomainIcon } from '~/components/DomainIcon/DomainIcon';
-import { FollowUserButton } from '~/components/FollowUserButton/FollowUserButton';
-import { UserStats } from '~/components/Profile/UserStats';
-import { TipBuzzButton } from '~/components/Buzz/TipBuzzButton';
-import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
-import { formatDate } from '~/utils/date-helpers';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { trpc } from '~/utils/trpc';
-import React, { useMemo, useState } from 'react';
-import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { openUserProfileEditModal } from '~/components/Modals/UserProfileEditModal';
-import { CollectionType, CosmeticType } from '@prisma/client';
-import { Username } from '~/components/User/Username';
-import { useIsMobile } from '~/hooks/useIsMobile';
 import { UserContextMenu } from '~/components/Profile/old/OldProfileLayout';
-import { AlertWithIcon } from '../AlertWithIcon/AlertWithIcon';
+import { UserStats } from '~/components/Profile/UserStats';
 import { ShareButton } from '~/components/ShareButton/ShareButton';
-import { useRouter } from 'next/router';
+import { Username } from '~/components/User/Username';
+import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { formatDate } from '~/utils/date-helpers';
+import { sortDomainLinks } from '~/utils/domain-link';
+import { trpc } from '~/utils/trpc';
+import { AlertWithIcon } from '../AlertWithIcon/AlertWithIcon';
+import { BadgeCosmetic } from '~/server/selectors/cosmetic.selector';
+import { RenderHtml } from '~/components/RenderHtml/RenderHtml';
 
 const mapSize: Record<
   'mobile' | 'desktop',
@@ -78,14 +85,14 @@ const mapSize: Record<
     rankBadge: 'xl',
     badges: 56,
     bio: 48,
-    badgeCount: 4,
+    badgeCount: 4 * 4,
   },
 };
 
 export function ProfileSidebar({ username, className }: { username: string; className?: string }) {
   const router = useRouter();
   const theme = useMantineTheme();
-  const isMobile = useIsMobile({ breakpoint: 'sm' });
+  const isMobile = useContainerSmallerThan('sm');
   const currentUser = useCurrentUser();
   const { data: user } = trpc.userProfile.get.useQuery({
     username,
@@ -93,6 +100,7 @@ export function ProfileSidebar({ username, className }: { username: string; clas
   const isCurrentUser = currentUser?.id === user?.id;
   const muted = !!user?.muted;
   const [showAllBadges, setShowAllBadges] = useState<boolean>(false);
+  const [enlargedBadge, setEnlargedBadge] = useState<number | null>(null);
   const sizeOpts = mapSize[isMobile ? 'mobile' : 'desktop'];
 
   const badges = useMemo(
@@ -101,7 +109,8 @@ export function ProfileSidebar({ username, className }: { username: string; clas
         ? []
         : user.cosmetics
             .map((c) => c.cosmetic)
-            .filter((c) => c.type === CosmeticType.Badge && !!c.data),
+            .filter((c) => c.type === CosmeticType.Badge && !!c.data)
+            .reverse(),
     [user]
   );
 
@@ -123,7 +132,7 @@ export function ProfileSidebar({ username, className }: { username: string; clas
       radius="xl"
       fullWidth
     >
-      Edit profile
+      Customize profile
     </Button>
   );
   const followUserBtn = !isCurrentUser && (
@@ -136,16 +145,27 @@ export function ProfileSidebar({ username, className }: { username: string; clas
     />
   );
 
-  const tipBuzzBtn = (
+  const TipBuzzBtn = ({ label }: { label?: string }) => (
     <TipBuzzButton
       toUserId={user.id}
       size={sizeOpts.button}
       variant={isMobile ? 'filled' : 'light'}
       color="yellow.7"
-      label="Tip"
+      label={label}
       sx={{ fontSize: '14px', fontWeight: 590 }}
     />
   );
+
+  const ChatBtn = ({ label }: { label?: string }) => (
+    <ChatUserButton
+      user={user}
+      label={label}
+      size={sizeOpts.button}
+      color="success.9"
+      sx={{ fontSize: '14px', fontWeight: 590, lineHeight: 1.5 }}
+    />
+  );
+
   const shareBtn = (
     <ShareButton url={router.asPath} title={`${user.username} Profile`}>
       <ActionIcon
@@ -162,19 +182,20 @@ export function ProfileSidebar({ username, className }: { username: string; clas
 
   const mutedAlert = isCurrentUser && muted && (
     <AlertWithIcon icon={<IconAlertCircle />} iconSize="sm">
-      You cannot edit your profile because your account has been muted
+      You cannot edit your profile because your account has been restricted
     </AlertWithIcon>
   );
 
   return (
-    <Stack className={className} spacing={sizeOpts.spacing}>
+    <Stack className={className} spacing={sizeOpts.spacing} p="md">
       <Group noWrap position="apart">
         <Group align="flex-start" position="apart" w={!isMobile ? '100%' : undefined}>
           <UserAvatar
             avatarSize={sizeOpts.avatar}
-            user={user}
+            user={{ ...user, cosmetics: equippedCosmetics }}
             size={sizeOpts.username}
-            radius="md"
+            // Oversized radius to make it always a circle
+            radius={1000}
           />
 
           {!isMobile && (
@@ -187,8 +208,13 @@ export function ProfileSidebar({ username, className }: { username: string; clas
         {isMobile && (
           <Group noWrap spacing={4}>
             {muted ? mutedAlert : editProfileBtn}
-            {followUserBtn}
-            {tipBuzzBtn}
+            {!user?.bannedAt && (
+              <>
+                {followUserBtn}
+                <TipBuzzBtn label="" />
+                <ChatBtn label="" />
+              </>
+            )}
             {shareBtn}
             <UserContextMenu username={username} />
           </Group>
@@ -200,6 +226,31 @@ export function ProfileSidebar({ username, className }: { username: string; clas
         <Text color="dimmed" size="sm">
           Joined {formatDate(user.createdAt)}
         </Text>
+        {user?.bannedAt && (
+          <Group>
+            <Popover withArrow>
+              <Popover.Target>
+                <UnstyledButton>
+                  <Badge color="red">
+                    <Group spacing={0}>
+                      <Text>{user?.banReason ? `Banned: ${user?.banReason}` : 'Banned'}</Text>
+                      {user?.bannedReasonDetails && (
+                        <IconInfoCircle size={16} style={{ marginLeft: 4 }} />
+                      )}
+                    </Group>
+                  </Badge>
+                </UnstyledButton>
+              </Popover.Target>
+              <Popover.Dropdown maw={350}>
+                {user?.bannedReasonDetails ? (
+                  <RenderHtml html={user?.bannedReasonDetails} style={{ fontSize: '14px' }} />
+                ) : (
+                  <Text>This user has been banned from the site.</Text>
+                )}
+              </Popover.Dropdown>
+            </Popover>
+          </Group>
+        )}
       </Stack>
 
       {profile.location && !muted && (
@@ -231,25 +282,27 @@ export function ProfileSidebar({ username, className }: { username: string; clas
           ))}
         </Group>
       )}
-      {!isMobile && (
-        <Group grow>
-          {muted ? mutedAlert : editProfileBtn}
-          {followUserBtn}
-        </Group>
+      {!isMobile && !user?.bannedAt && (
+        <>
+          <Group grow>
+            {muted ? mutedAlert : editProfileBtn}
+            {followUserBtn}
+          </Group>
+          <TipBuzzBtn />
+          <ChatBtn />
+        </>
       )}
 
       <Divider my={sizeOpts.spacing} />
 
       {shouldDisplayStats && (
         <UserStats
-          rating={{ value: stats.ratingAllTime, count: stats.ratingCountAllTime }}
           followers={stats.followerCountAllTime}
-          favorites={stats.favoriteCountAllTime}
+          favorites={stats.thumbsUpCountAllTime}
           downloads={stats.downloadCountAllTime}
+          generations={stats.generationCountAllTime}
         />
       )}
-
-      {!isMobile && tipBuzzBtn}
 
       {(!isCurrentUser || shouldDisplayStats) && <Divider my={sizeOpts.spacing} />}
 
@@ -260,25 +313,67 @@ export function ProfileSidebar({ username, className }: { username: string; clas
           </Text>
           <Group spacing="xs">
             {(showAllBadges ? badges : badges.slice(0, sizeOpts.badgeCount)).map((award) => {
-              const data = (award.data ?? {}) as { url?: string };
+              const data = (award.data ?? {}) as BadgeCosmetic['data'];
               const url = (data.url ?? '') as string;
+              const isEnlarged = enlargedBadge === award.id;
 
               if (!url) {
                 return null;
               }
 
+              const style = {
+                transition: 'transform 0.1s',
+                cursor: 'pointer',
+                width: sizeOpts.badges,
+                transform: isEnlarged ? 'scale(2)' : undefined,
+                zIndex: isEnlarged ? 100 : undefined,
+                filter: isEnlarged ? 'drop-shadow(0px 0px 3px #000000)' : undefined,
+              };
+
               return (
-                <Popover key={award.id} withArrow width={200} position="top">
+                <Popover
+                  key={award.id}
+                  withArrow
+                  width={200}
+                  position="top"
+                  offset={35}
+                  onChange={(opened) => {
+                    if (opened) {
+                      setEnlargedBadge(award.id);
+                    } else {
+                      setEnlargedBadge((curr) => (curr === award.id ? null : curr));
+                    }
+                  }}
+                >
                   <Popover.Target>
-                    <Box style={{ cursor: 'pointer' }}>
-                      <EdgeMedia src={url} width={sizeOpts.badges} />
-                    </Box>
+                    {data.animated ? (
+                      <Box style={style}>
+                        <EdgeMedia src={url} alt={award.name} />
+                      </Box>
+                    ) : (
+                      <Box style={style}>
+                        <EdgeMedia src={url} alt={award.name} />
+                      </Box>
+                    )}
                   </Popover.Target>
                   <Popover.Dropdown>
                     <Stack spacing={0}>
                       <Text size="sm" align="center" weight={500}>
                         {award.name}
                       </Text>
+                      {award.videoUrl && (
+                        <Anchor
+                          href={award.videoUrl}
+                          size="xs"
+                          opacity={0.9}
+                          mt={4}
+                          target="_blank"
+                        >
+                          <span style={{ display: 'flex', alignItems: 'center' }}>
+                            How it was made <IconExternalLink size={14} style={{ marginLeft: 4 }} />
+                          </span>
+                        </Anchor>
+                      )}
                     </Stack>
                   </Popover.Dropdown>
                 </Popover>

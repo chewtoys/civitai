@@ -1,31 +1,19 @@
 import { Carousel } from '@mantine/carousel';
-import {
-  ActionIcon,
-  AspectRatio,
-  Box,
-  Button,
-  Center,
-  createStyles,
-  Group,
-  Loader,
-  Paper,
-  Stack,
-  Text,
-  ThemeIcon,
-} from '@mantine/core';
-import { IconInfoCircle, IconPhotoOff } from '@tabler/icons-react';
-import { useRouter } from 'next/router';
-
-import { ImageGuard, ImageGuardConnect } from '~/components/ImageGuard/ImageGuard';
-import { MediaHash } from '~/components/ImageHash/ImageHash';
+import { ActionIcon, Box, Card, Center, createStyles, Loader } from '@mantine/core';
+import { IconInfoCircle } from '@tabler/icons-react';
 import { ImagePreview } from '~/components/ImagePreview/ImagePreview';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { ImageProps } from '~/components/ImageViewer/ImageViewer';
-import Link from 'next/link';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
 import { useEffect, useMemo } from 'react';
-import { applyUserPreferencesImages } from '../Search/search.utils';
 import { ImageMetaPopover } from '~/components/ImageMeta/ImageMeta';
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { ImageGuard2, ImageGuardConnect } from '~/components/ImageGuard/ImageGuard2';
+import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
+import {
+  ExplainHiddenImages,
+  useExplainHiddenImages,
+} from '~/components/Image/ExplainHiddenImages/ExplainHiddenImages';
+import { BrowsingLevelProvider } from '~/components/BrowsingLevel/BrowsingLevelProvider';
 
 const useStyles = createStyles((theme) => ({
   control: {
@@ -33,7 +21,7 @@ const useStyles = createStyles((theme) => ({
       width: 24,
       height: 24,
 
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         minWidth: 16,
         minHeight: 16,
       },
@@ -41,13 +29,13 @@ const useStyles = createStyles((theme) => ({
   },
   carousel: {
     display: 'block',
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       display: 'none',
     },
   },
   mobileBlock: {
     display: 'block',
-    [theme.fn.largerThan('md')]: {
+    [containerQuery.largerThan('md')]: {
       display: 'none',
     },
   },
@@ -76,7 +64,7 @@ const useStyles = createStyles((theme) => ({
       to: 'rgba(37,38,43,0)',
       deg: 0,
     }),
-    backdropFilter: 'blur(13px) saturate(160%)',
+    // backdropFilter: 'blur(13px) saturate(160%)',
     boxShadow: '0 -2px 6px 1px rgba(0,0,0,0.16)',
     zIndex: 10,
     gap: 6,
@@ -87,11 +75,11 @@ const useStyles = createStyles((theme) => ({
     bottom: 6,
     left: 6,
     borderRadius: theme.radius.sm,
-    background: theme.fn.rgba(
-      theme.colorScheme === 'dark' ? theme.colors.dark[9] : theme.colors.gray[0],
-      0.8
-    ),
-    backdropFilter: 'blur(13px) saturate(160%)',
+    background:
+      theme.colorScheme === 'dark'
+        ? theme.fn.rgba(theme.colors.dark[6], 0.6)
+        : theme.colors.gray[0],
+    // backdropFilter: 'blur(13px) saturate(160%)',
     boxShadow: '0 -2px 6px 1px rgba(0,0,0,0.16)',
     padding: 4,
   },
@@ -111,39 +99,40 @@ const useStyles = createStyles((theme) => ({
   },
 }));
 
-export function ImageCarousel({
+export function ImageCarousel(props: Props) {
+  return (
+    <BrowsingLevelProvider>
+      <ImageCarouselContent {...props} />
+    </BrowsingLevelProvider>
+  );
+}
+
+export function ImageCarouselContent({
   images,
-  entityId,
-  entityType,
-  nsfw,
+  connectType,
+  connectId,
   mobile = false,
   onClick,
-  isLoading,
+  isLoading: loading,
   onImageChange,
 }: Props) {
-  const router = useRouter();
-  const currentUser = useCurrentUser();
   const { classes, cx } = useStyles();
-  const {
-    images: hiddenImages,
-    tags: hiddenTags,
-    users: hiddenUsers,
-    isLoading: loadingHiddenPreferences,
-  } = useHiddenPreferencesContext();
 
-  const filteredImages = useMemo(
+  const transformed = useMemo(
     () =>
-      !loadingHiddenPreferences
-        ? applyUserPreferencesImages<(typeof images)[number]>({
-            items: images,
-            hiddenImages,
-            hiddenTags,
-            hiddenUsers,
-            currentUserId: currentUser?.id,
-          })
-        : [],
-    [currentUser?.id, hiddenImages, hiddenTags, hiddenUsers, images, loadingHiddenPreferences]
+      images.map((image) => ({
+        ...image,
+        tagIds: image.tags?.map((x) => (typeof x === 'number' ? x : x.id)),
+      })),
+    [images]
   );
+
+  const { items: filteredImages, loadingPreferences } = useApplyHiddenPreferences({
+    type: 'images',
+    data: transformed,
+  });
+  const isLoading = loading || loadingPreferences;
+  const hiddenExplained = useExplainHiddenImages(transformed);
 
   useEffect(() => {
     if (filteredImages.length > 0) {
@@ -151,47 +140,27 @@ export function ImageCarousel({
     }
   }, [filteredImages]);
 
-  if (!filteredImages.length) {
+  if (isLoading)
     return (
-      <Paper
-        p="sm"
-        radius="md"
+      <Box
         className={cx(!mobile && classes.carousel, mobile && classes.mobileBlock)}
         sx={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          minHeight: mobile ? 300 : 500,
+          minHeight: mobile ? 300 : 600,
         }}
-        withBorder
       >
-        <Stack align="center" maw={380}>
-          <Stack spacing={4} align="center">
-            <ThemeIcon color="gray" size={64} radius={100}>
-              <IconPhotoOff size={32} />
-            </ThemeIcon>
-            <Text size="lg">No showcase images available</Text>
-          </Stack>
-          <Group grow w="100%">
-            {currentUser ? (
-              <Link href="/user/account#content-moderation">
-                <Button variant="outline">Adjust Settings</Button>
-              </Link>
-            ) : (
-              <Link href={`/login?returnUrl=${router.asPath}`}>
-                <Button variant="outline">Log In</Button>
-              </Link>
-            )}
-          </Group>
-        </Stack>
-      </Paper>
+        <Center>
+          <Loader size="md" />
+        </Center>
+      </Box>
     );
-  }
 
   return (
     <Box pos="relative">
       <Carousel
-        key={entityId}
+        key={connectId}
         className={cx(
           !mobile && classes.carousel,
           mobile && classes.mobileBlock,
@@ -201,8 +170,8 @@ export function ImageCarousel({
         slideSize="50%"
         breakpoints={[{ maxWidth: 'sm', slideSize: '100%', slideGap: 2 }]}
         slideGap="xl"
-        align={filteredImages.length > 2 ? 'start' : 'center'}
-        slidesToScroll={mobile ? 1 : 2}
+        align={filteredImages.length > 1 ? 'start' : 'center'}
+        slidesToScroll="auto"
         withControls={filteredImages.length > 2 ? true : false}
         controlSize={mobile ? 32 : 56}
         loop
@@ -214,101 +183,78 @@ export function ImageCarousel({
           }
         }}
       >
-        <ImageGuard
-          images={filteredImages}
-          nsfw={nsfw}
-          connect={{ entityId, entityType }}
-          render={(image) => {
-            return (
-              <Carousel.Slide>
-                <Box
-                  sx={{ cursor: 'pointer' }}
-                  onClick={onClick ? () => onClick(image) : undefined}
-                  tabIndex={0}
-                  role="button"
-                  onKeyDown={
-                    onClick
-                      ? (e) => {
-                          const keyDown = e.key !== undefined ? e.key : e.keyCode;
-                          if (
-                            keyDown === 'Enter' ||
-                            keyDown === 13 ||
-                            ['Spacebar', ' '].indexOf(keyDown as string) >= 0 ||
-                            keyDown === 32
-                          ) {
-                            // (prevent default so the page doesn't scroll when pressing space)
-                            e.preventDefault();
-                            onClick(image);
-                          }
-                        }
-                      : undefined
-                  }
-                >
-                  <ImageGuard.Content>
-                    {({ safe }) => (
-                      <Center style={{ height: '100%', width: '100%' }}>
-                        <div style={{ width: '100%', position: 'relative' }}>
-                          <ImageGuard.ToggleConnect position="top-left" />
-                          <ImageGuard.Report context="image" />
-                          {!safe ? (
-                            <AspectRatio
-                              ratio={1}
-                              sx={(theme) => ({
-                                width: '100%',
-                                borderRadius: theme.radius.md,
-                                overflow: 'hidden',
-                              })}
-                            >
-                              <MediaHash {...image} />
-                            </AspectRatio>
-                          ) : (
-                            <ImagePreview
-                              image={image}
-                              edgeImageProps={{
-                                width: 450,
-                                style: { objectPosition: mobile ? 'top' : 'center' },
-                              }}
-                              radius="md"
-                              style={{ width: '100%' }}
-                              aspectRatio={1}
-                            />
-                          )}
-                          {image.meta && (
-                            <ImageMetaPopover
-                              meta={image.meta}
-                              generationProcess={image.generationProcess ?? undefined}
-                              imageId={image.id}
-                            >
-                              <ActionIcon variant="light" className={classes.meta}>
-                                <IconInfoCircle color="white" strokeWidth={2.5} size={18} />
-                              </ActionIcon>
-                            </ImageMetaPopover>
-                          )}
-                        </div>
-                      </Center>
+        {filteredImages.map((image) => (
+          <Carousel.Slide key={image.id}>
+            <Box
+              sx={{ cursor: 'pointer' }}
+              onClick={onClick ? () => onClick(image) : undefined}
+              tabIndex={0}
+              role="button"
+              onKeyDown={
+                onClick
+                  ? (e) => {
+                      const keyDown = e.key !== undefined ? e.key : e.keyCode;
+                      if (
+                        keyDown === 'Enter' ||
+                        keyDown === 13 ||
+                        ['Spacebar', ' '].indexOf(keyDown as string) >= 0 ||
+                        keyDown === 32
+                      ) {
+                        // (prevent default so the page doesn't scroll when pressing space)
+                        e.preventDefault();
+                        onClick(image);
+                      }
+                    }
+                  : undefined
+              }
+            >
+              <Center className="size-full">
+                <div className="relative w-full">
+                  <ImageGuard2 image={image} connectType={connectType} connectId={connectId}>
+                    {(safe) => (
+                      <>
+                        <ImageGuard2.BlurToggle className="absolute left-2 top-2 z-10" />
+                        <ImageContextMenu image={image} className="absolute right-2 top-2 z-10" />
+                        <ImagePreview
+                          image={image}
+                          edgeImageProps={{
+                            width: 450,
+                            style: { objectPosition: mobile ? 'top' : 'center' },
+                          }}
+                          radius="md"
+                          style={{ width: '100%' }}
+                          aspectRatio={1}
+                          nsfw={!safe}
+                        />
+                        {image.meta && (
+                          <ImageMetaPopover meta={image.meta} imageId={image.id}>
+                            <ActionIcon variant="light" className={classes.meta}>
+                              <IconInfoCircle color="white" strokeWidth={2.5} size={18} />
+                            </ActionIcon>
+                          </ImageMetaPopover>
+                        )}
+                      </>
                     )}
-                  </ImageGuard.Content>
-                </Box>
-              </Carousel.Slide>
-            );
-          }}
-        />
+                  </ImageGuard2>
+                </div>
+              </Center>
+            </Box>
+          </Carousel.Slide>
+        ))}
+        {hiddenExplained.hasHidden && (
+          <Carousel.Slide>
+            <Card withBorder component={Center} mih={450} h="100%" w="100%">
+              <ExplainHiddenImages {...hiddenExplained} />
+            </Card>
+          </Carousel.Slide>
+        )}
       </Carousel>
-
-      {isLoading && (
-        <Box className={classes.loader}>
-          <Center>
-            <Loader />
-          </Center>
-        </Box>
-      )}
     </Box>
   );
 }
 
 type Props = {
   images: ImageProps[];
-  nsfw: boolean;
   mobile?: boolean;
   onClick?: (image: ImageProps) => void;
   isLoading?: boolean;

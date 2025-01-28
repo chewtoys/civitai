@@ -1,4 +1,5 @@
-import { Partner, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { Partner } from '~/shared/utils/prisma/models';
 import { NextApiRequest, NextApiResponse } from 'next';
 import { PartnerEndpoint } from '~/server/utils/endpoint-helpers';
 import { dbWrite } from '~/server/db/client';
@@ -57,6 +58,8 @@ export default PartnerEndpoint(
             )}
           ) t ("modelVersionId", "url", "partnerId")
           JOIN "ModelVersion" mv ON mv.id = t."modelVersionId"
+          JOIN "Model" m ON m.id = mv."modelId"
+          WHERE m."allowCommercialUse" && ARRAY['Rent'::"CommercialUse", 'Sell'::"CommercialUse"]
           ON CONFLICT ("partnerId", "modelVersionId") DO UPDATE SET "url" = excluded."url"
         `;
       }

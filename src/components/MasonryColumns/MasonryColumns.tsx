@@ -1,6 +1,5 @@
 import OneKeyMap from '@essentials/one-key-map';
 import trieMemoize from 'trie-memoize';
-import { createStyles } from '@mantine/core';
 import React from 'react';
 import { useMasonryColumns } from '~/components/MasonryColumns/masonry.utils';
 import { useMasonryContext } from '~/components/MasonryColumns/MasonryProvider';
@@ -9,7 +8,9 @@ import {
   MasonryAdjustHeightFn,
   MasonryImageDimensionsFn,
 } from '~/components/MasonryColumns/masonry.types';
-import { useMasonryContainerContext } from '~/components/MasonryColumns/MasonryContainer';
+import { AdUnitRenderable } from '~/components/Ads/AdUnitRenderable';
+import { TwCard } from '~/components/TwCard/TwCard';
+import clsx from 'clsx';
 
 type Props<TData> = {
   data: TData[];
@@ -19,6 +20,8 @@ type Props<TData> = {
   maxItemHeight?: number;
   itemId?: (data: TData) => string | number;
   staticItem?: (props: { columnWidth: number; height: number }) => React.ReactNode;
+  /** [lowerInterval, upperInterval] */
+  withAds?: boolean;
 };
 
 export function MasonryColumns<TData>({
@@ -29,17 +32,9 @@ export function MasonryColumns<TData>({
   maxItemHeight,
   itemId,
   staticItem,
+  withAds,
 }: Props<TData>) {
-  const { columnWidth, columnGap, rowGap, maxSingleColumnWidth } = useMasonryContext();
-  const { columnCount } = useMasonryContainerContext();
-
-  const { classes } = useStyles({
-    columnCount,
-    columnWidth,
-    columnGap,
-    rowGap,
-    maxSingleColumnWidth,
-  });
+  const { columnCount, columnWidth } = useMasonryContext();
 
   const columns = useMasonryColumns(
     data,
@@ -47,72 +42,49 @@ export function MasonryColumns<TData>({
     columnCount,
     imageDimensions,
     adjustHeight,
-    maxItemHeight
+    maxItemHeight,
+    withAds
   );
 
   return (
-    <div className={classes.columns}>
+    <div className="mx-auto flex justify-center gap-4">
       {columns.map((items, colIndex) => (
-        <div key={colIndex} className={classes.column}>
+        <div
+          key={colIndex}
+          className={clsx(
+            'flex max-w-[450px] flex-col gap-4',
+            columnCount === 1 ? 'w-full' : 'w-[320px]'
+          )}
+          style={columnCount > 1 ? { width: columnWidth } : undefined}
+        >
+          {staticItem?.({ columnWidth, height: 450 })}
           {items.map(({ height, data }, index) => {
-            const key = itemId?.(data) ?? index;
-            if (colIndex === 0 && index === 0 && staticItem) {
-              return (
-                <React.Fragment key={key}>
-                  {staticItem({ columnWidth, height: 450 })}
-                  <div id={key.toString()}>
-                    {createRenderElement(RenderComponent, index, data, columnWidth, height)}
-                  </div>
-                </React.Fragment>
-              );
+            switch (data.type) {
+              case 'data':
+                return (
+                  <RenderComponent
+                    key={itemId?.(data.data) ?? index}
+                    index={index}
+                    data={data.data}
+                    width={columnWidth}
+                    height={height}
+                  />
+                );
+              case 'ad':
+                return (
+                  <AdUnitRenderable key={`ad_${index}`}>
+                    <TwCard className="w-full items-center justify-center shadow">
+                      <data.data.AdUnit />
+                    </TwCard>
+                  </AdUnitRenderable>
+                );
             }
-
-            return (
-              <div key={key} id={key.toString()}>
-                {createRenderElement(RenderComponent, index, data, columnWidth, height)}
-              </div>
-            );
           })}
         </div>
       ))}
     </div>
   );
 }
-
-const useStyles = createStyles(
-  (
-    theme,
-    {
-      columnCount,
-      columnWidth,
-      columnGap,
-      rowGap,
-      maxSingleColumnWidth,
-    }: {
-      columnCount: number;
-      columnWidth: number;
-      columnGap: number;
-      rowGap: number;
-      maxSingleColumnWidth?: number;
-    }
-  ) => {
-    return {
-      columns: {
-        display: 'flex',
-        columnGap,
-        justifyContent: 'center',
-        margin: '0 auto',
-      },
-      column: {
-        display: 'flex',
-        flexDirection: 'column',
-        width: columnCount === 1 ? '100%' : columnWidth,
-        maxWidth: maxSingleColumnWidth,
-        rowGap,
-      },
-    };
-  }
-);
 
 // supposedly ~5.5x faster than createElement without the memo
 const createRenderElement = trieMemoize(

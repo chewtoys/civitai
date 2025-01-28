@@ -7,18 +7,22 @@ import {
   Card,
   Center,
   Checkbox,
-  Container,
   Group,
   Loader,
   Paper,
   SegmentedControl,
   Stack,
   Text,
+  Textarea,
   Title,
+  useMantineTheme,
 } from '@mantine/core';
 import { TooltipProps } from '@mantine/core/lib/Tooltip/Tooltip';
+import { useMergedRef } from '@mantine/hooks';
 import { showNotification } from '@mantine/notifications';
 import {
+  IconAlertTriangle,
+  IconBan,
   IconCheck,
   IconExternalLink,
   IconInfoCircle,
@@ -26,46 +30,45 @@ import {
   IconSquareCheck,
   IconSquareOff,
   IconTrash,
+  IconUserMinus,
+  IconUserOff,
 } from '@tabler/icons-react';
 import produce from 'immer';
-import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 
 import { ButtonTooltip } from '~/components/CivitaiWrapped/ButtonTooltip';
+import { Collection } from '~/components/Collection/Collection';
 import { ContentClamp } from '~/components/ContentClamp/ContentClamp';
+import { useCsamImageSelectStore } from '~/components/Csam/useCsamImageSelect.store';
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
+import { useReportCsamImages } from '~/components/Image/image.utils';
 import PromptHighlight from '~/components/Image/PromptHighlight/PromptHighlight';
-import { ImageGuard } from '~/components/ImageGuard/ImageGuard';
+import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
 import { MediaHash } from '~/components/ImageHash/ImageHash';
 import { ImageMetaPopover } from '~/components/ImageMeta/ImageMeta';
-import { MasonryGrid2 } from '~/components/MasonryGrid/MasonryGrid2';
+import { InViewLoader } from '~/components/InView/InViewLoader';
+import { MasonryColumns } from '~/components/MasonryColumns/MasonryColumns';
+import { MasonryContainer } from '~/components/MasonryColumns/MasonryContainer';
+import { MasonryProvider } from '~/components/MasonryColumns/MasonryProvider';
+import { MasonryCard } from '~/components/MasonryGrid/MasonryCard';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { NoContent } from '~/components/NoContent/NoContent';
 import { PopConfirm } from '~/components/PopConfirm/PopConfirm';
-import { ImageMetaProps } from '~/server/schema/image.schema';
-import { ImageGetInfinite, ImageModerationReviewQueueImage } from '~/types/router';
-import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
-import { splitUppercase, titleCase } from '~/utils/string-helpers';
-import { trpc } from '~/utils/trpc';
+import { useInView } from '~/hooks/useInView';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import { MAX_APPEAL_MESSAGE_LENGTH } from '~/server/common/constants';
+import { NsfwLevel } from '~/server/common/enums';
+import { resolveAppealSchema } from '~/server/schema/report.schema';
+import { AppealStatus, EntityType } from '~/shared/utils/prisma/enums';
+import { ImageModerationReviewQueueImage } from '~/types/router';
+import { formatDate } from '~/utils/date-helpers';
 import { getImageEntityUrl } from '~/utils/moderators/moderator.util';
-
-// export const getServerSideProps = createServerSideProps({
-//   useSession: true,
-//   resolver: async ({ session }) => {
-//     if (!session?.user?.isModerator || session.user?.bannedAt) {
-//       return {
-//         redirect: {
-//           destination: '/',
-//           permanent: false,
-//         },
-//       };
-//     }
-//   },
-// });
-
-// const REMOVABLE_TAGS = ['child', 'teen', 'baby', 'girl', 'boy'];
-// const ADDABLE_TAGS = ['anime', 'cartoon', 'comics', 'manga', 'explicit nudity', 'suggestive'];
+import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
+import { getDisplayName, splitUppercase } from '~/utils/string-helpers';
+import { trpc } from '~/utils/trpc';
 
 type StoreState = {
   selected: Record<number, boolean>;
@@ -106,6 +109,11 @@ const useStore = create<StoreState>()(
 const ImageReviewType = {
   minor: 'Minors',
   poi: 'POI',
+  tag: 'Blocked Tags',
+  newUser: 'New Users',
+  reported: 'Reported',
+  csam: 'CSAM',
+  appeal: 'Appeals',
 } as const;
 
 type ImageReviewType = keyof typeof ImageReviewType;
@@ -114,7 +122,9 @@ export default function Images() {
   // const queryUtils = trpc.useContext();
   // const selectMany = useStore((state) => state.selectMany);
   const deselectAll = useStore((state) => state.deselectAll);
-  const [type, setType] = useState<ImageReviewType | 'reported'>('minor');
+  const [type, setType] = useState<ImageReviewType>('minor');
+  const [activeTag, setActiveNameTag] = useState<number | null>(null);
+  const { csamReports, appealReports } = useFeatureFlags();
 
   const viewingReported = type === 'reported';
 
@@ -122,81 +132,411 @@ export default function Images() {
     () => ({
       needsReview: !viewingReported ? type : undefined,
       reportReview: viewingReported ? true : undefined,
+      tagIds: activeTag ? [activeTag] : undefined,
     }),
-    [type, viewingReported]
+    [type, viewingReported, activeTag]
   );
-  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage, isRefetching } =
+  const { data: nameTags } = trpc.image.getModeratorPOITags.useQuery(undefined, {
+    enabled: type === 'poi',
+  });
+  const { data, isLoading, fetchNextPage, hasNextPage, isRefetching } =
     trpc.image.getModeratorReviewQueue.useInfiniteQuery(filters, {
       getNextPageParam: (lastPage) => lastPage.nextCursor,
     });
   const images = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data?.pages]);
 
-  const handleTypeChange = (value: ImageReviewType | 'reported') => {
+  const handleTypeChange = (value: ImageReviewType) => {
     setType(value);
   };
 
   useEffect(deselectAll, [type, deselectAll]);
 
-  const segments = [
-    ...Object.entries(ImageReviewType).map(([key, value]) => ({ value: key, label: value })),
-    { value: 'reported', label: 'Reported' },
-  ];
+  const segments = Object.entries(ImageReviewType)
+    // filter out csam and appeal if not enabled
+    .filter(([key]) => {
+      if (key === 'csam') return csamReports;
+      if (key === 'appeal') return appealReports;
+      return true;
+    })
+    .map(([key, value]) => ({
+      value: key,
+      label: value,
+    }));
 
   return (
-    <Container size="xl" py="xl">
-      <Stack>
-        <Paper
-          withBorder
-          shadow="lg"
-          p="xs"
-          sx={{
-            display: 'inline-flex',
-            float: 'right',
-            alignSelf: 'flex-end',
-            marginRight: 6,
-            position: 'sticky',
-            top: 'calc(var(--mantine-header-height,0) + 16px)',
-            marginBottom: -80,
-            zIndex: 10,
-          }}
-        >
-          <ModerationControls images={images} filters={filters} view={type} />
-        </Paper>
+    <MasonryProvider columnWidth={310} maxColumnCount={7} maxSingleColumnWidth={450}>
+      <MasonryContainer py="xl">
+        <Stack>
+          <Paper
+            withBorder
+            shadow="lg"
+            p="xs"
+            sx={{
+              display: 'inline-flex',
+              float: 'right',
+              alignSelf: 'flex-end',
+              marginRight: 6,
+              position: 'sticky',
+              top: 'var(--header-height,0)',
+              marginBottom: -80,
+              zIndex: 30,
+            }}
+          >
+            <ModerationControls images={images} filters={filters} view={type} />
+          </Paper>
 
-        <Stack spacing={0} mb="lg">
-          <Group>
-            <Title order={1}>Images Needing Review</Title>
-            <SegmentedControl size="sm" data={segments} onChange={handleTypeChange} value={type} />
-          </Group>
-          <Text color="dimmed">
-            These are images that have been{' '}
-            {viewingReported ? 'reported by users' : 'marked by our AI'} which needs further
-            attention from the mods
-          </Text>
+          <Stack spacing={0} mb="lg">
+            <Group>
+              <Title order={1}>Images Needing Review</Title>
+              <SegmentedControl
+                size="sm"
+                data={segments}
+                onChange={handleTypeChange}
+                value={type}
+              />
+            </Group>
+            <Text color="dimmed">
+              These are images that have been{' '}
+              {viewingReported ? 'reported by users' : 'marked by our AI'} which needs further
+              attention from the mods
+            </Text>
+          </Stack>
+
+          {type === 'poi' && nameTags && (
+            <Collection
+              items={nameTags}
+              limit={20}
+              badgeProps={{ radius: 'xs', size: 'sm' }}
+              renderItem={(tag) => {
+                const isActive = activeTag === tag.id;
+
+                return (
+                  <Badge
+                    component="a"
+                    color={isActive ? 'blue' : 'gray'}
+                    radius="xs"
+                    size="sm"
+                    px={8}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => setActiveNameTag(isActive ? null : tag.id)}
+                  >
+                    <Text component="span" size="xs" weight={500}>
+                      {tag.name}
+                    </Text>{' '}
+                    <Text component="span" size="xs" color="dimmed" weight={500}>
+                      {tag.count}
+                    </Text>
+                  </Badge>
+                );
+              }}
+              grouped
+            />
+          )}
+
+          {isLoading ? (
+            <Center py="xl">
+              <Loader size="xl" />
+            </Center>
+          ) : images.length ? (
+            <>
+              <MasonryColumns
+                data={images}
+                imageDimensions={(data) => {
+                  const width = data?.width ?? 450;
+                  const height = data?.height ?? 450;
+                  return { width, height };
+                }}
+                maxItemHeight={600}
+                render={ImageGridItem}
+                itemId={(data) => data.id}
+              />
+              {hasNextPage && (
+                <InViewLoader
+                  loadFn={fetchNextPage}
+                  loadCondition={!isRefetching && hasNextPage}
+                  style={{ gridColumn: '1/-1' }}
+                >
+                  <Center p="xl" sx={{ height: 36 }} mt="md">
+                    <Loader />
+                  </Center>
+                </InViewLoader>
+              )}
+            </>
+          ) : (
+            <NoContent mt="lg" message="There are no images that need review" />
+          )}
         </Stack>
-
-        {isLoading ? (
-          <Center py="xl">
-            <Loader size="xl" />
-          </Center>
-        ) : images.length ? (
-          <MasonryGrid2
-            data={images}
-            isRefetching={isRefetching}
-            isFetchingNextPage={isFetchingNextPage}
-            hasNextPage={hasNextPage}
-            fetchNextPage={fetchNextPage}
-            columnWidth={300}
-            filters={filters}
-            render={(props) => <ImageGridItem {...props} />}
-          />
-        ) : (
-          <NoContent mt="lg" message="There are no images that need review" />
-        )}
-      </Stack>
-    </Container>
+      </MasonryContainer>
+    </MasonryProvider>
   );
 }
+
+function ImageGridItem({ data: image, height }: ImageGridItemProps) {
+  const selected = useStore(useCallback((state) => state.selected[image.id] ?? false, [image.id]));
+  const toggleSelected = useStore((state) => state.toggleSelected);
+  const theme = useMantineTheme();
+
+  const hasReport = !!image.report;
+  const hasAppeal = !!image.appeal;
+  const pendingReport = hasReport && image.report?.status === 'Pending';
+  const entityUrl = getImageEntityUrl(image);
+
+  const { ref: inViewRef, inView } = useInView();
+  const ref = useRef<HTMLElement>(null);
+  const mergedRef = useMergedRef(inViewRef, ref);
+
+  return (
+    <MasonryCard
+      shadow="sm"
+      withBorder
+      ref={mergedRef as any}
+      style={{
+        minHeight: height,
+        outline: selected
+          ? `3px solid ${theme.colors[theme.primaryColor][theme.fn.primaryShade()]}`
+          : undefined,
+        opacity: !image.needsReview && !pendingReport ? 0.2 : undefined,
+      }}
+    >
+      <>
+        <Card.Section sx={{ height: `${height}px` }} className="relative">
+          {inView && (
+            <>
+              <Checkbox
+                checked={selected}
+                onChange={() => toggleSelected(image.id)}
+                size="lg"
+                className="absolute right-2 top-2 z-10"
+              />
+
+              <ImageGuard2 image={image}>
+                {(safe) => (
+                  <div className="relative" onClick={() => toggleSelected(image.id)}>
+                    <ImageGuard2.BlurToggle className="absolute left-2 top-2 z-10" />
+                    {!safe ? (
+                      <AspectRatio ratio={(image.width ?? 1) / (image.height ?? 1)}>
+                        <MediaHash {...image} />
+                      </AspectRatio>
+                    ) : (
+                      <EdgeMedia
+                        src={image.url}
+                        name={image.name ?? image.id.toString()}
+                        alt={image.name ?? undefined}
+                        type={image.type}
+                        width={450}
+                        placeholder="empty"
+                      />
+                    )}
+                  </div>
+                )}
+              </ImageGuard2>
+              {!!entityUrl && (
+                <ActionIcon
+                  component={Link}
+                  href={`${entityUrl}?moderator`}
+                  variant="transparent"
+                  style={{ position: 'absolute', bottom: '5px', left: '5px' }}
+                  size="lg"
+                  target="_blank"
+                >
+                  <IconExternalLink
+                    color="white"
+                    filter="drop-shadow(1px 1px 2px rgb(0 0 0 / 50%)) drop-shadow(0px 5px 15px rgb(0 0 0 / 60%))"
+                    opacity={0.8}
+                    strokeWidth={2.5}
+                    size={26}
+                  />
+                </ActionIcon>
+              )}
+              {image.meta ? (
+                <ImageMetaPopover meta={image.meta}>
+                  <ActionIcon
+                    variant="transparent"
+                    style={{ position: 'absolute', bottom: '5px', right: '5px' }}
+                    size="lg"
+                  >
+                    <IconInfoCircle
+                      color="white"
+                      filter="drop-shadow(1px 1px 2px rgb(0 0 0 / 50%)) drop-shadow(0px 5px 15px rgb(0 0 0 / 60%))"
+                      opacity={0.8}
+                      strokeWidth={2.5}
+                      size={26}
+                    />
+                  </ActionIcon>
+                </ImageMetaPopover>
+              ) : image.metadata?.profilePicture ? (
+                <Badge
+                  variant="filled"
+                  style={{ position: 'absolute', bottom: '10px', right: '5px' }}
+                >
+                  Avatar
+                </Badge>
+              ) : null}
+            </>
+          )}
+        </Card.Section>
+        {hasReport && (
+          <Stack spacing={8} p="xs" sx={{ cursor: 'auto', color: 'initial' }}>
+            <Group position="apart" noWrap>
+              <Stack spacing={2}>
+                <Text size="xs" color="dimmed" inline>
+                  Reported by
+                </Text>
+                <Group spacing={4}>
+                  <Link legacyBehavior href={`/user/${image.report?.user.username}`} passHref>
+                    <Anchor size="xs" target="_blank" lineClamp={1} inline>
+                      {image.report?.user.username}
+                    </Anchor>
+                  </Link>
+                  {(image.report?.count ?? 0) > 1 && (
+                    <Badge size="xs" color="red">
+                      +{(image.report?.count ?? 0) - 1}
+                    </Badge>
+                  )}
+                </Group>
+              </Stack>
+              <Stack spacing={2} align="flex-end">
+                <Text size="xs" color="dimmed" inline>
+                  Reported for
+                </Text>
+                <Badge size="sm">{splitUppercase(image.report?.reason ?? '')}</Badge>
+              </Stack>
+            </Group>
+            {image.minor && (
+              <Badge variant="light" color="pink">
+                Acceptable Minor
+              </Badge>
+            )}
+            <ContentClamp maxHeight={150}>
+              {image.report?.details
+                ? Object.entries(image.report.details).map(([key, value]) => (
+                    <Text key={key} size="sm">
+                      <Text weight="bold" span className="capitalize">
+                        {splitUppercase(key)}:
+                      </Text>{' '}
+                      {value}
+                    </Text>
+                  ))
+                : null}
+            </ContentClamp>
+          </Stack>
+        )}
+        {image.needsReview === 'minor' && (
+          <Stack>
+            {image.minor && (
+              <Badge variant="light" color="pink">
+                Acceptable Minor
+              </Badge>
+            )}
+            <PromptHighlight
+              prompt={image.meta?.prompt}
+              negativePrompt={image.meta?.negativePrompt}
+            >
+              {({ includesInappropriate, html }) =>
+                !includesInappropriate ? (
+                  <></>
+                ) : (
+                  <Card.Section p="xs" sx={{ cursor: 'auto', color: 'initial' }}>
+                    <Text size="sm" lh={1.2} dangerouslySetInnerHTML={{ __html: html }} />
+                  </Card.Section>
+                )
+              }
+            </PromptHighlight>
+          </Stack>
+        )}
+        {image.needsReview === 'poi' && !!image.names?.length && (
+          <Card.Section p="xs" sx={{ cursor: 'auto', color: 'initial' }}>
+            <Group spacing={4}>
+              {image.names.map((name) => (
+                <Badge key={name} size="sm">
+                  {name}
+                </Badge>
+              ))}
+            </Group>
+          </Card.Section>
+        )}
+        {image.needsReview === 'tag' && !!image.tags && (
+          <Card.Section p="xs" sx={{ cursor: 'auto', color: 'initial' }}>
+            <Group spacing={4}>
+              {image.tags
+                .filter((x) => x.nsfwLevel === NsfwLevel.Blocked)
+                .map(({ name }) => (
+                  <Badge key={name} size="sm">
+                    {name}
+                  </Badge>
+                ))}
+            </Group>
+          </Card.Section>
+        )}
+        {image.needsReview === 'appeal' && hasAppeal && (
+          <Card.Section p="xs">
+            <Stack spacing={8} sx={{ cursor: 'auto', color: 'initial' }}>
+              <Group position="apart" noWrap>
+                <Stack spacing={2}>
+                  <Text size="xs" color="dimmed" inline>
+                    Appealed by
+                  </Text>
+                  <Link legacyBehavior href={`/user/${image.appeal?.user.username}`} passHref>
+                    <Anchor size="xs" target="_blank" lineClamp={1} inline>
+                      {image.appeal?.user.username}
+                    </Anchor>
+                  </Link>
+                </Stack>
+                <Stack spacing={2} align="flex-end">
+                  <Text size="xs" color="dimmed" inline>
+                    Created at
+                  </Text>
+                  {image.appeal?.createdAt ? (
+                    <Text size="xs">{formatDate(image.appeal?.createdAt)}</Text>
+                  ) : null}
+                </Stack>
+              </Group>
+              {image.appeal?.moderator && (
+                <Group position="apart" noWrap>
+                  <Stack spacing={2}>
+                    <Text size="xs" color="dimmed" inline>
+                      Moderated by
+                    </Text>
+                    <Text size="xs" lineClamp={1} inline>
+                      {image.appeal?.moderator.username}
+                    </Text>
+                  </Stack>
+                  <Stack spacing={2} align="flex-end">
+                    <Text size="xs" color="dimmed" inline>
+                      Removed at
+                    </Text>
+                    {image.removedAt ? <Text size="xs">{formatDate(image.removedAt)}</Text> : null}
+                  </Stack>
+                </Group>
+              )}
+              {image.tosReason ? (
+                <Badge size="sm" color="pink">
+                  Removed for: {getDisplayName(image.tosReason)}
+                </Badge>
+              ) : null}
+              <ContentClamp maxHeight={150}>
+                {image.appeal?.reason ? <Text size="sm">{image.appeal.reason}</Text> : null}
+              </ContentClamp>
+            </Stack>
+          </Card.Section>
+        )}
+      </>
+    </MasonryCard>
+  );
+}
+
+type ImageGridItemProps = {
+  data: ImageModerationReviewQueueImage;
+  index: number;
+  width: number;
+  height: number;
+};
+
+const tooltipProps: Omit<TooltipProps, 'label' | 'children'> = {
+  position: 'bottom',
+  withArrow: true,
+  withinPortal: true,
+};
 
 function ModerationControls({
   images,
@@ -205,22 +545,17 @@ function ModerationControls({
 }: {
   images: ImageModerationReviewQueueImage[];
   filters: any;
-  view: ImageReviewType | 'reported';
+  view: ImageReviewType;
 }) {
-  const queryUtils = trpc.useContext();
+  const queryUtils = trpc.useUtils();
   const viewingReported = view === 'reported';
   const selected = useStore((state) => Object.keys(state.selected).map(Number));
   const selectMany = useStore((state) => state.selectMany);
   const deselectAll = useStore((state) => state.deselectAll);
-
-  const tooltipProps: Omit<TooltipProps, 'label' | 'children'> = {
-    position: 'bottom',
-    withArrow: true,
-    withinPortal: true,
-  };
+  const router = useRouter();
 
   const moderateImagesMutation = trpc.image.moderate.useMutation({
-    async onMutate({ ids, needsReview, delete: deleted }) {
+    async onMutate({ ids, needsReview, reviewAction }) {
       await queryUtils.image.getModeratorReviewQueue.cancel();
       queryUtils.image.getModeratorReviewQueue.setInfiniteData(
         filters,
@@ -231,7 +566,7 @@ function ModerationControls({
             for (const item of page.items) {
               if (ids.includes(item.id)) {
                 item.needsReview =
-                  deleted === true || needsReview === null ? null : item.needsReview;
+                  reviewAction !== null || needsReview === null ? null : item.needsReview;
               }
             }
         })
@@ -239,11 +574,18 @@ function ModerationControls({
     },
     onSuccess(_, input) {
       const actions: string[] = [];
-      if (input.delete) actions.push('deleted');
+      if (input.reviewAction === 'delete') actions.push('deleted');
+      else if (input.reviewAction === 'removeName') actions.push('name removed');
       else if (!input.needsReview) actions.push('approved');
-      else if (input.nsfw) actions.push('marked as NSFW');
 
       showSuccessNotification({ message: `The images have been ${actions.join(', ')}` });
+    },
+  });
+
+  const createCsamReport = useReportCsamImages({
+    async onSuccess() {
+      await queryUtils.image.getModeratorReviewQueue.invalidate();
+      deselectAll();
     },
   });
 
@@ -276,12 +618,47 @@ function ModerationControls({
     },
   });
 
+  const handleRemoveNames = () => {
+    deselectAll();
+    moderateImagesMutation.mutate({
+      ids: selected,
+      reviewAction: 'removeName',
+      reviewType: view,
+    });
+  };
+
+  const handleNotPOI = () => {
+    deselectAll();
+    moderateImagesMutation.mutate({
+      ids: selected,
+      reviewAction: 'mistake',
+      reviewType: view,
+    });
+  };
+
+  const handleReportCsam = () => {
+    if (view === 'csam') {
+      const selectedImages = images.filter((x) => selected.includes(x.id));
+      const userImages = selectedImages.reduce<Record<number, number[]>>(
+        (acc, image) => ({ ...acc, [image.user.id]: [...(acc[image.user.id] ?? []), image.id] }),
+        {}
+      );
+      for (const [userId, ids] of Object.entries(userImages)) {
+        useCsamImageSelectStore.getState().setSelected(Number(userId), ids);
+      }
+      const userIds = Object.keys(userImages);
+      router.push(`/moderator/csam/${userIds.join(',')}`);
+    } else {
+      createCsamReport.mutate({ imageIds: selected });
+    }
+  };
+
   const handleDeleteSelected = () => {
     deselectAll();
     moderateImagesMutation.mutate(
       {
         ids: selected,
-        delete: true,
+        reviewAction: 'delete',
         reviewType: view,
       },
       {
@@ -328,6 +705,7 @@ function ModerationControls({
   const handleRefresh = () => {
     handleClearAll();
     queryUtils.image.getModeratorReviewQueue.invalidate(filters);
+    queryUtils.image.getModeratorPOITags.invalidate();
     showNotification({
       id: 'refreshing',
       title: 'Refreshing',
@@ -352,30 +730,79 @@ function ModerationControls({
           <IconSquareOff size="1.25rem" />
         </ActionIcon>
       </ButtonTooltip>
-      <PopConfirm
-        message={`Are you sure you want to approve ${selected.length} image(s)?`}
-        position="bottom-end"
-        onConfirm={handleApproveSelected}
-        withArrow
-      >
-        <ButtonTooltip label="Accept" {...tooltipProps}>
-          <ActionIcon variant="outline" disabled={!selected.length} color="green">
-            <IconCheck size="1.25rem" />
-          </ActionIcon>
-        </ButtonTooltip>
-      </PopConfirm>
-      <PopConfirm
-        message={`Are you sure you want to delete ${selected.length} image(s)?`}
-        position="bottom-end"
-        onConfirm={handleDeleteSelected}
-        withArrow
-      >
-        <ButtonTooltip label="Delete" {...tooltipProps}>
-          <ActionIcon variant="outline" disabled={!selected.length} color="red">
-            <IconTrash size="1.25rem" />
-          </ActionIcon>
-        </ButtonTooltip>
-      </PopConfirm>
+      {view === 'appeal' ? (
+        <AppealActions selected={selected} filters={filters} />
+      ) : (
+        <PopConfirm
+          message={`Are you sure you want to approve ${selected.length} image(s)?`}
+          position="bottom-end"
+          onConfirm={handleApproveSelected}
+          withArrow
+          withinPortal
+        >
+          <ButtonTooltip label="Accept" {...tooltipProps}>
+            <ActionIcon variant="outline" disabled={!selected.length} color="green">
+              <IconCheck size="1.25rem" />
+            </ActionIcon>
+          </ButtonTooltip>
+        </PopConfirm>
+      )}
+      {view === 'poi' && (
+        <PopConfirm
+          message={`Are you sure these ${selected.length} image(s) are not real people?`}
+          position="bottom-end"
+          onConfirm={handleNotPOI}
+          withArrow
+          withinPortal
+        >
+          <ButtonTooltip label="Not POI" {...tooltipProps}>
+            <ActionIcon variant="outline" disabled={!selected.length} color="green">
+              <IconUserOff size="1.25rem" />
+            </ActionIcon>
+          </ButtonTooltip>
+        </PopConfirm>
+      )}
+      {view === 'poi' && (
+        <PopConfirm
+          message={`Are you sure you want to remove the name on ${selected.length} image(s)?`}
+          position="bottom-end"
+          onConfirm={handleRemoveNames}
+          withArrow
+          withinPortal
+        >
+          <ButtonTooltip label="Remove Name" {...tooltipProps}>
+            <ActionIcon variant="outline" disabled={!selected.length} color="yellow">
+              <IconUserMinus size="1.25rem" />
+            </ActionIcon>
+          </ButtonTooltip>
+        </PopConfirm>
+      )}
+      {view !== 'appeal' && (
+        <PopConfirm
+          message={`Are you sure you want to delete ${selected.length} image(s)?`}
+          position="bottom-end"
+          onConfirm={handleDeleteSelected}
+          withArrow
+          withinPortal
+        >
+          <ButtonTooltip label="Delete" {...tooltipProps}>
+            <ActionIcon variant="outline" disabled={!selected.length} color="red">
+              <IconTrash size="1.25rem" />
+            </ActionIcon>
+          </ButtonTooltip>
+        </PopConfirm>
+      )}
+
+      <ButtonTooltip {...tooltipProps} label="Report CSAM">
+        <ActionIcon
+          variant="outline"
+          disabled={!selected.length}
+          onClick={handleReportCsam}
+          color="orange"
+        >
+          <IconAlertTriangle size="1.25rem" />
+        </ActionIcon>
+      </ButtonTooltip>
       <ButtonTooltip label="Refresh" {...tooltipProps}>
         <ActionIcon variant="outline" onClick={handleRefresh} color="blue">
           <IconReload size="1.25rem" />
@@ -385,171 +812,141 @@ function ModerationControls({
   );
 }
 
-function ImageGridItem({ data: image, width: itemWidth }: ImageGridItemProps) {
-  const selected = useStore(useCallback((state) => state.selected[image.id] ?? false, [image.id]));
-  const toggleSelected = useStore((state) => state.toggleSelected);
+function AppealActions({ selected, filters }: { selected: number[]; filters: MixedObject }) {
+  const queryUtils = trpc.useUtils();
+  const deselectAll = useStore((state) => state.deselectAll);
 
-  const height = useMemo(() => {
-    if (!image.width || !image.height) return 300;
-    const width = itemWidth > 0 ? itemWidth : 300;
-    const aspectRatio = image.width / image.height;
-    const imageHeight = Math.floor(width / aspectRatio);
-    return Math.min(imageHeight, 600);
-  }, [itemWidth, image.width, image.height]);
+  const [resolvedMessage, setResolvedMessage] = useState<string>();
+  const [error, setError] = useState<string>();
 
-  const hasReport = !!image.report;
-  const pendingReport = hasReport && image.report?.status === 'Pending';
-  const entityUrl = getImageEntityUrl(image);
+  const resolveAppealMutation = trpc.report.resolveAppeal.useMutation({
+    async onMutate({ ids }) {
+      await queryUtils.image.getModeratorReviewQueue.cancel();
+      queryUtils.image.getModeratorReviewQueue.setInfiniteData(
+        filters,
+        produce((data) => {
+          if (!data?.pages?.length) return;
+
+          for (const page of data.pages)
+            for (const item of page.items) {
+              if (ids.includes(item.id)) {
+                item.needsReview = null;
+              }
+            }
+        })
+      );
+    },
+    onSuccess: (_, { status }) => {
+      showSuccessNotification({ message: `The images have been ${status.toLowerCase()}` });
+    },
+    onError: (error) => {
+      showErrorNotification({
+        title: 'Failed to resolve appeal',
+        error: new Error(error.message),
+      });
+    },
+  });
+
+  const handleResolveAppeal = (status: AppealStatus) => {
+    if (!resolvedMessage) return;
+
+    deselectAll();
+    resolveAppealMutation.mutate({
+      ids: selected,
+      status,
+      entityType: EntityType.Image,
+      resolvedMessage,
+    });
+  };
+
+  const handleResolvedMessageChange = (message: string) => {
+    const result = resolveAppealSchema.pick({ resolvedMessage: true }).safeParse({
+      resolvedMessage,
+    });
+    if (!result.success) {
+      setError(result.error.flatten().fieldErrors.resolvedMessage?.[0]);
+    } else {
+      setError('');
+    }
+
+    setResolvedMessage(message);
+  };
 
   return (
-    <Card
-      shadow="sm"
-      p={0}
-      sx={{ opacity: !image.needsReview && !pendingReport ? 0.2 : undefined }}
-      withBorder
-    >
-      <Card.Section sx={{ height: `${height}px` }}>
-        <Checkbox
-          checked={selected}
-          onChange={() => toggleSelected(image.id)}
-          size="lg"
-          sx={{
-            position: 'absolute',
-            top: 5,
-            right: 5,
-            zIndex: 9,
-          }}
-        />
-        <ImageGuard
-          images={[image]}
-          render={(image) => (
-            <Box
-              sx={{ position: 'relative', height: '100%', overflow: 'hidden' }}
-              onClick={() => toggleSelected(image.id)}
-            >
-              <ImageGuard.ToggleImage
-                sx={(theme) => ({
-                  position: 'absolute',
-                  top: theme.spacing.xs,
-                  left: theme.spacing.xs,
-                  zIndex: 10,
-                })}
-                position="static"
-              />
-              <ImageGuard.Unsafe>
-                <AspectRatio ratio={(image.width ?? 1) / (image.height ?? 1)}>
-                  <MediaHash {...image} />
-                </AspectRatio>
-              </ImageGuard.Unsafe>
-              <ImageGuard.Safe>
-                <EdgeMedia
-                  src={image.url}
-                  name={image.name ?? image.id.toString()}
-                  alt={image.name ?? undefined}
-                  type={image.type}
-                  width={450}
-                  placeholder="empty"
-                />
-                {!!entityUrl && (
-                  <Link href={entityUrl} passHref>
-                    <ActionIcon
-                      component="a"
-                      variant="transparent"
-                      style={{ position: 'absolute', bottom: '5px', left: '5px' }}
-                      size="lg"
-                      target="_blank"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
-                    >
-                      <IconExternalLink
-                        color="white"
-                        filter="drop-shadow(1px 1px 2px rgb(0 0 0 / 50%)) drop-shadow(0px 5px 15px rgb(0 0 0 / 60%))"
-                        opacity={0.8}
-                        strokeWidth={2.5}
-                        size={26}
-                      />
-                    </ActionIcon>
-                  </Link>
-                )}
-                {image.meta && (
-                  <ImageMetaPopover
-                    meta={image.meta as ImageMetaProps}
-                    generationProcess={image.generationProcess ?? 'txt2img'}
-                  >
-                    <ActionIcon
-                      variant="transparent"
-                      style={{ position: 'absolute', bottom: '5px', right: '5px' }}
-                      size="lg"
-                    >
-                      <IconInfoCircle
-                        color="white"
-                        filter="drop-shadow(1px 1px 2px rgb(0 0 0 / 50%)) drop-shadow(0px 5px 15px rgb(0 0 0 / 60%))"
-                        opacity={0.8}
-                        strokeWidth={2.5}
-                        size={26}
-                      />
-                    </ActionIcon>
-                  </ImageMetaPopover>
-                )}
-              </ImageGuard.Safe>
-            </Box>
-          )}
-        />
-      </Card.Section>
-      {hasReport && (
-        <Stack spacing={8} p="xs">
-          <Group position="apart" noWrap>
-            <Stack spacing={2}>
-              <Text size="xs" color="dimmed" inline>
-                Reported by
-              </Text>
-              <Link href={`/user/${image.report?.user.username}`} passHref>
-                <Anchor size="xs" target="_blank" lineClamp={1} inline>
-                  {image.report?.user.username}
-                </Anchor>
-              </Link>
-            </Stack>
-            <Stack spacing={2} align="flex-end">
-              <Text size="xs" color="dimmed" inline>
-                Reported for
-              </Text>
-              <Badge size="sm">{splitUppercase(image.report?.reason ?? '')}</Badge>
-            </Stack>
-          </Group>
-          <ContentClamp maxHeight={150}>
-            {image.report?.details
-              ? Object.entries(image.report.details).map(([key, value]) => (
-                  <Text key={key} size="sm">
-                    <Text weight="bold" span>
-                      {titleCase(key)}:
-                    </Text>{' '}
-                    {value}
-                  </Text>
-                ))
-              : null}
-          </ContentClamp>
-        </Stack>
-      )}
-      {image.needsReview === 'minor' && (
-        <PromptHighlight prompt={image.meta?.prompt}>
-          {({ includesInappropriate, html }) =>
-            !includesInappropriate ? (
-              <></>
-            ) : (
-              <Card.Section p="xs">
-                <Text size="sm" lh={1.2} dangerouslySetInnerHTML={{ __html: html }} />
-              </Card.Section>
-            )
-          }
-        </PromptHighlight>
-      )}
-    </Card>
+    <>
+      <PopConfirm
+        message={
+          <ConfirmResolvedAppeal
+            status={AppealStatus.Approved}
+            onChange={handleResolvedMessageChange}
+            itemCount={selected.length}
+            error={error}
+          />
+        }
+        position="bottom-end"
+        onConfirm={() => handleResolveAppeal(AppealStatus.Approved)}
+        onCancel={() => setResolvedMessage('')}
+        withArrow
+        withinPortal
+      >
+        <ButtonTooltip label="Approve" {...tooltipProps}>
+          <ActionIcon variant="outline" disabled={!selected.length} color="green">
+            <IconCheck size="1.25rem" />
+          </ActionIcon>
+        </ButtonTooltip>
+      </PopConfirm>
+      <PopConfirm
+        message={
+          <ConfirmResolvedAppeal
+            status={AppealStatus.Rejected}
+            onChange={handleResolvedMessageChange}
+            itemCount={selected.length}
+            error={error}
+          />
+        }
+        position="bottom-end"
+        onConfirm={() => handleResolveAppeal(AppealStatus.Rejected)}
+        onCancel={() => setResolvedMessage('')}
+        withArrow
+        withinPortal
+      >
+        <ButtonTooltip label="Reject" {...tooltipProps}>
+          <ActionIcon variant="outline" disabled={!selected.length} color="red">
+            <IconBan size="1.25rem" />
+          </ActionIcon>
+        </ButtonTooltip>
+      </PopConfirm>
+    </>
   );
 }
 
-type ImageGridItemProps = {
-  data: ImageModerationReviewQueueImage;
-  index: number;
-  width: number;
-};
+function ConfirmResolvedAppeal({
+  status,
+  onChange,
+  itemCount,
+  error,
+}: {
+  status: AppealStatus;
+  onChange: (message: string) => void;
+  itemCount?: number;
+  error?: string;
+}) {
+  return (
+    <Stack spacing="xs">
+      <Text size="sm">
+        Are you sure you want to {status === AppealStatus.Approved ? 'approve' : 'reject'}{' '}
+        {itemCount} image(s)?
+      </Text>
+      <Textarea
+        label="Resolved message"
+        description="This message will be sent to the user who appealed the image"
+        error={error}
+        onChange={(e) => onChange(e.currentTarget.value)}
+        minRows={2}
+        maxRows={5}
+        maxLength={MAX_APPEAL_MESSAGE_LENGTH}
+        autosize
+      />
+    </Stack>
+  );
+}

@@ -1,19 +1,30 @@
-import { CollectionReadConfiguration, CollectionWriteConfiguration } from '@prisma/client';
 import { Icon, IconEyeOff, IconLock, IconWorld } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
 import { useMemo } from 'react';
 import { z } from 'zod';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useFiltersContext } from '~/providers/FiltersProvider';
 import { CollectionSort } from '~/server/common/enums';
-import { GetAllCollectionsInfiniteSchema } from '~/server/schema/collection.schema';
+import {
+  EnableCollectionYoutubeSupportInput,
+  GetAllCollectionsInfiniteSchema,
+  RemoveCollectionItemInput,
+  SetCollectionItemNsfwLevelInput,
+  SetItemScoreInput,
+} from '~/server/schema/collection.schema';
 import { CollectionItemExpanded } from '~/server/services/collection.service';
+import {
+  CollectionMode,
+  CollectionReadConfiguration,
+  CollectionType,
+  CollectionWriteConfiguration,
+} from '~/shared/utils/prisma/enums';
+import { CollectionByIdModel } from '~/types/router';
+import { isFutureDate } from '~/utils/date-helpers';
+import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
 import { removeEmpty } from '~/utils/object-helpers';
 import { trpc } from '~/utils/trpc';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
-import { applyUserPreferencesCollections } from '~/components/Search/search.utils';
-import { CollectionSearchIndexRecord } from '~/server/search-index/collections.search-index';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { CollectionByIdModel, CollectionGetInfinite } from '~/types/router';
 
 const collectionQueryParamSchema = z
   .object({
@@ -62,12 +73,12 @@ export const getCollectionItemReviewData = (collectionItem: CollectionItemExpand
       return {
         type: collectionItem.type,
         image: collectionItem.data,
-        meta: collectionItem.data.meta
-          ? {
-              ...collectionItem.data.meta,
-              generationProcess: collectionItem.data.generationProcess,
-            }
-          : null,
+        // meta: collectionItem.data.meta
+        //   ? {
+        //       ...collectionItem.data.meta,
+        //       generationProcess: collectionItem.data.generationProcess,
+        //     }
+        //   : null,
         user: collectionItem.data.user,
         url: `/images/${collectionItem.data.id}`,
         baseModel: collectionItem.data.baseModel,
@@ -88,7 +99,7 @@ export const getCollectionItemReviewData = (collectionItem: CollectionItemExpand
     case 'post': {
       return {
         type: collectionItem.type,
-        image: collectionItem.data.image,
+        image: collectionItem.data.images[0],
         user: collectionItem.data.user,
         url: `/posts/${collectionItem.data.id}`,
         itemAddedAt: collectionItem.createdAt,
@@ -97,7 +108,14 @@ export const getCollectionItemReviewData = (collectionItem: CollectionItemExpand
     case 'article': {
       return {
         type: collectionItem.type,
-        cover: collectionItem.data.cover,
+        image: collectionItem.data.coverImage
+          ? {
+              ...collectionItem.data.coverImage,
+              hasMeta:
+                !collectionItem.data.coverImage.hideMeta && !!collectionItem.data.coverImage.meta,
+              onSite: false,
+            }
+          : undefined,
         user: collectionItem.data.user,
         title: collectionItem.data.title,
         url: `/articles/${collectionItem.data.id}`,
@@ -114,16 +132,7 @@ export const useQueryCollections = (
 ) => {
   filters ??= {};
 
-  const currentUser = useCurrentUser();
-
-  const {
-    images: hiddenImages,
-    tags: hiddenTags,
-    users: hiddenUsers,
-    isLoading: isLoadingHidden,
-  } = useHiddenPreferencesContext();
-
-  const { data, ...rest } = trpc.collection.getInfinite.useInfiniteQuery(
+  const { data, isLoading, ...rest } = trpc.collection.getInfinite.useInfiniteQuery(
     { ...filters },
     {
       getNextPageParam: (lastPage) => lastPage.nextCursor,
@@ -132,21 +141,14 @@ export const useQueryCollections = (
     }
   );
 
-  const collections = useMemo(() => {
-    if (isLoadingHidden) return [];
-    const arr = data?.pages.flatMap((x) => (!!x ? x.items : [])) ?? [];
-    const filtered = applyUserPreferencesCollections<CollectionGetInfinite[number]>({
-      items: arr,
-      hiddenUsers,
-      hiddenImages,
-      hiddenTags,
-      currentUserId: currentUser?.id,
-    });
+  const flatData = useMemo(() => data?.pages.flatMap((x) => (!!x ? x.items : [])), [data]);
+  const { items: collections, loadingPreferences } = useApplyHiddenPreferences({
+    type: 'collections',
+    data: flatData,
+    isRefetching: rest.isRefetching,
+  });
 
-    return filtered;
-  }, [data, hiddenUsers, hiddenImages, hiddenTags]);
-
-  return { data, collections, ...rest };
+  return { data, collections, isLoading: isLoading || loadingPreferences, ...rest };
 };
 
 export type PrivacyData = {
@@ -213,4 +215,213 @@ export const isCollectionSubsmissionPeriod = (collection?: CollectionByIdModel) 
     new Date(metadata.submissionStartDate) < new Date() &&
     new Date(metadata.submissionEndDate) > new Date()
   );
+};
+
+export const useSystemCollections = () => {
+  const currentUser = useCurrentUser();
+  const { data: systemCollections = [], ...other } = trpc.user.getBookmarkCollections.useQuery(
+    undefined,
+    { enabled: !!currentUser }
+  );
+
+  const groupedCollections = useMemo(() => {
+    const grouped = systemCollections.reduce((acc, collection) => {
+      if (collection.type) acc[collection.type] = collection;
+      return acc;
+    }, {} as Record<CollectionType, (typeof systemCollections)[number]>);
+
+    return grouped;
+  }, [systemCollections]);
+
+  return {
+    ...other,
+    systemCollections,
+    groupedCollections,
+  };
+};
+
+export const useCollectionsForPostCreation = ({
+  collectionIds = [],
+}: {
+  collectionIds?: number[];
+}) => {
+  const { data: collections = [], ...other } = trpc.collection.getPermissionDetails.useQuery(
+    {
+      ids: collectionIds,
+    },
+    {
+      enabled: collectionIds?.length > 0,
+    }
+  );
+
+  return {
+    collections,
+    ...other,
+  };
+};
+
+export const useCollection = (
+  collectionId: number,
+  opts?: {
+    enabled?: boolean;
+  }
+) => {
+  const { data: { collection, permissions } = {}, ...rest } = trpc.collection.getById.useQuery(
+    {
+      id: collectionId,
+    },
+    {
+      enabled: true,
+      ...opts,
+    }
+  );
+
+  return {
+    collection,
+    permissions,
+    ...rest,
+  };
+};
+
+export const contestCollectionReactionsHidden = (
+  collection: Pick<NonNullable<CollectionByIdModel>, 'mode' | 'metadata'>
+) => {
+  return (
+    collection.mode === CollectionMode.Contest &&
+    !!collection.metadata?.votingPeriodStart &&
+    isFutureDate(collection.metadata?.votingPeriodStart ?? new Date())
+  );
+};
+
+export const useMutateCollection = () => {
+  const queryUtils = trpc.useUtils();
+  const removeCollectionItemMutation = trpc.collection.removeFromCollection.useMutation({
+    onSuccess: async (res, req) => {
+      showSuccessNotification({
+        autoClose: 5000, // 10s
+        title: 'Item has been removed.',
+        message: 'Item has been removed from collection and is no longer visible.',
+      });
+
+      if (res.type === CollectionType.Model) {
+        // Attempt to update the data:
+        await queryUtils.model.getAll.invalidate();
+      }
+
+      if (res.type === CollectionType.Image) {
+        await queryUtils.image.getInfinite.invalidate();
+      }
+
+      await queryUtils.collection.getById.invalidate({ id: req.collectionId });
+    },
+    onError(error) {
+      showErrorNotification({
+        title: 'Unable to remove item from collection',
+        error: new Error(error.message),
+      });
+    },
+  });
+
+  const updateCollectionItemNsfwLevelMutation =
+    trpc.collection.updateCollectionItemNSFWLevel.useMutation({
+      onSuccess: async (res, req) => {
+        showSuccessNotification({
+          autoClose: 5000, // 10s
+          title: 'NSFW level has been updated.',
+          message: 'NSFW level has been updated for the item.',
+        });
+      },
+      onError(error) {
+        showErrorNotification({
+          title: 'Unable to update NSFW level',
+          error: new Error(error.message),
+        });
+      },
+    });
+
+  const joinCollectionAsManagerMutation = trpc.collection.joinCollectionAsManager.useMutation();
+
+  const getYoutubeAuthUrlMutation = trpc.collection.getYoutubeAuthUrl.useMutation();
+  const enableYoutubeSupportMutation = trpc.collection.enableYoutubeSupport.useMutation();
+
+  const removeCollectionItemHandler = async (data: RemoveCollectionItemInput) => {
+    await removeCollectionItemMutation.mutateAsync(data);
+  };
+
+  const updateCollectionItemNsfwLevelHandler = async (
+    data: SetCollectionItemNsfwLevelInput,
+    opts: Parameters<typeof updateCollectionItemNsfwLevelMutation.mutateAsync>[1]
+  ) => {
+    await updateCollectionItemNsfwLevelMutation.mutateAsync(data, opts);
+  };
+
+  const getYoutubeAuthUrlHandler = async (data: { id: number }) => {
+    return getYoutubeAuthUrlMutation.mutateAsync(data);
+  };
+  const enableYoutubeSupportHandler = async (data: EnableCollectionYoutubeSupportInput) => {
+    return enableYoutubeSupportMutation.mutateAsync(data);
+  };
+  const joinCollectionAsManagerHandler = async (data: { id: number }) => {
+    return joinCollectionAsManagerMutation.mutateAsync(data);
+  };
+
+  return {
+    removeCollectionItem: removeCollectionItemHandler,
+    removingCollectionItem: removeCollectionItemMutation.isLoading,
+    updateCollectionItemNsfwLevel: updateCollectionItemNsfwLevelHandler,
+    updatingCollectionItemNsfwLevel: updateCollectionItemNsfwLevelMutation.isLoading,
+    updateCollectionItemNsfwLevelPayload: updateCollectionItemNsfwLevelMutation.variables,
+    getYoutubeAuthUrl: getYoutubeAuthUrlHandler,
+    getYoutubeAuthUrlLoading: getYoutubeAuthUrlMutation.isLoading,
+    enableYoutubeSupport: enableYoutubeSupportHandler,
+    enableYoutubeSupportLoading: enableYoutubeSupportMutation.isLoading,
+    joinCollectionAsManager: joinCollectionAsManagerHandler,
+    joinCollectionAsManagerLoading: joinCollectionAsManagerMutation.isLoading,
+  };
+};
+
+export const useSetCollectionItemScore = () => {
+  const queryUtils = trpc.useUtils();
+  const setItemScoreMutation = trpc.collection.setItemScore.useMutation({
+    onError: (error) => {
+      showErrorNotification({
+        title: 'Failed to set item score',
+        error: new Error(error.message),
+      });
+    },
+  });
+
+  const setItemScoreHandler = (
+    data: SetItemScoreInput,
+    opts: Parameters<typeof setItemScoreMutation.mutateAsync>[1]
+  ) => {
+    return setItemScoreMutation.mutateAsync(data, opts);
+  };
+
+  return {
+    setItemScore: setItemScoreHandler,
+    loading: setItemScoreMutation.isLoading,
+  };
+};
+
+export const useCollectionEntryCount = (
+  collectionId: number,
+  opts?: {
+    enabled?: boolean;
+  }
+) => {
+  const { data, ...rest } = trpc.collection.getEntryCount.useQuery(
+    {
+      id: collectionId,
+    },
+    {
+      enabled: true,
+      ...opts,
+    }
+  );
+
+  return {
+    data,
+    ...rest,
+  };
 };

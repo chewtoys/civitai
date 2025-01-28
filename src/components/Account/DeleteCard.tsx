@@ -1,17 +1,17 @@
 import { Button, Card, Stack, Text, Title } from '@mantine/core';
 import { closeModal, openConfirmModal } from '@mantine/modals';
-import { signOut } from 'next-auth/react';
-
+import { useAccountContext } from '~/components/CivitaiWrapped/AccountProvider';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { showErrorNotification } from '~/utils/notifications';
 import { trpc } from '~/utils/trpc';
 
 export function DeleteCard() {
   const currentUser = useCurrentUser();
+  const { logout } = useAccountContext();
 
   const deleteAccountMutation = trpc.user.delete.useMutation({
     async onSuccess() {
-      await signOut();
+      await logout();
     },
     onError(error) {
       showErrorNotification({ error: new Error(error.message) });
@@ -39,10 +39,10 @@ export function DeleteCard() {
           confirmProps: { color: 'red', loading: deleteAccountMutation.isLoading },
           cancelProps: { loading: deleteAccountMutation.isLoading },
           onConfirm: () =>
-            currentUser ? deleteAccountMutation.mutateAsync({ ...currentUser }) : undefined,
+            currentUser ? deleteAccountMutation.mutateAsync({ id: currentUser.id }) : undefined,
           onCancel: () =>
             currentUser
-              ? deleteAccountMutation.mutateAsync({ ...currentUser, removeModels: true })
+              ? deleteAccountMutation.mutateAsync({ id: currentUser.id, removeModels: true })
               : undefined,
           onClose: () => closeModal('delete-confirm'),
         }),

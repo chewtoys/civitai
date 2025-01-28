@@ -1,17 +1,25 @@
-import { ClickHouseClient } from '@clickhouse/client';
+import { z } from 'zod';
+import { CustomClickHouseClient } from '~/server/clickhouse/client';
+import { NotificationCategory } from '~/server/common/enums';
 
 export type NotificationProcessor = {
   displayName: string;
   priority?: number;
   toggleable?: boolean;
-  prepareQuery?: (input: NotificationProcessorRunInput) => Promise<string> | string;
-  prepareMessage: (notification: BareNotification) => NotificationMessage | undefined;
+  prepareQuery?: (input: NotificationProcessorRunInput) => Promise<string | undefined> | string;
+  prepareMessage: (notification: Omit<BareNotification, 'id'>) => NotificationMessage | undefined;
+  getDetails?: (notifications: BareNotification[]) => BareNotification[];
+  category: NotificationCategory;
+  defaultDisabled?: boolean;
 };
 
-export type BareNotification = {
-  type: string;
-  details: MixedObject;
-};
+export const bareNotification = z.object({
+  id: z.number(),
+  type: z.string(),
+  details: z.record(z.string(), z.any()),
+});
+export type BareNotification = z.infer<typeof bareNotification>;
+
 type NotificationMessage = {
   message: string;
   url?: string;
@@ -19,7 +27,8 @@ type NotificationMessage = {
 };
 export type NotificationProcessorRunInput = {
   lastSent: string;
-  clickhouse: ClickHouseClient | null;
+  lastSentDate: Date;
+  clickhouse: CustomClickHouseClient | undefined;
 };
 
 export function createNotificationProcessor(processor: Record<string, NotificationProcessor>) {

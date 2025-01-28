@@ -1,7 +1,14 @@
+import { BadgeProps, ButtonProps } from '@mantine/core';
 import { useContext, createContext, ReactNode } from 'react';
+import { ReviewReactions } from '~/shared/utils/prisma/enums';
 
 type ReactionSettingsState = {
+  hideReactions?: boolean;
   hideReactionCount?: boolean;
+  buttonStyling?: (
+    reaction: ReviewReactions | 'AddReaction' | 'BuzzTip',
+    hasReacted?: boolean
+  ) => Omit<ButtonProps, 'onClick'> & BadgeProps;
 };
 
 const ReactionSettingsContext = createContext<ReactionSettingsState | null>(null);

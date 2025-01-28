@@ -1,4 +1,4 @@
-import { ModelStatus } from '@prisma/client';
+import { ModelStatus } from '~/shared/utils/prisma/enums';
 import { ModelVersionWizard } from '~/components/Resource/Wizard/ModelVersionWizard';
 import { dbRead } from '~/server/db/client';
 import { getDefaultModelVersion } from '~/server/services/model-version.service';
@@ -32,7 +32,7 @@ export const getServerSideProps = createServerSideProps({
     const isModerator = session.user?.isModerator ?? false;
     const isOwner = model.userId === session.user?.id || isModerator;
     const unpublished = model.status === ModelStatus.UnpublishedViolation;
-    if (!isOwner || unpublished)
+    if (!isModerator && (!isOwner || unpublished))
       return {
         redirect: {
           destination: `/models/${params.id}?modelVersionId=${versionId}`,
@@ -47,7 +47,7 @@ export const getServerSideProps = createServerSideProps({
       }
     );
     if (!version) return { notFound: true };
-    if (version.status !== ModelStatus.Draft)
+    if (version.status !== ModelStatus.Draft && !isOwner)
       return {
         redirect: {
           destination: `/models/${params.id}?modelVersionId=${versionId}`,

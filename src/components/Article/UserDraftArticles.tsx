@@ -14,7 +14,7 @@ import {
 } from '@mantine/core';
 import { openConfirmModal } from '@mantine/modals';
 import { IconExternalLink, IconTrash } from '@tabler/icons-react';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useState } from 'react';
 
 import { NoContent } from '~/components/NoContent/NoContent';
@@ -89,6 +89,7 @@ export function UserDraftArticles() {
           <thead className={cx(classes.header, { [classes.scrolled]: scrolled })}>
             <tr>
               <th>Title</th>
+              <th>Status</th>
               <th>Category</th>
               <th>Created</th>
               <th>Last Updated</th>
@@ -107,11 +108,18 @@ export function UserDraftArticles() {
               items.map((article) => (
                 <tr key={article.id}>
                   <td>
-                    <Link href={`/articles/${article.id}/edit`} passHref>
+                    <Link legacyBehavior href={`/articles/${article.id}/edit`} passHref>
                       <Anchor lineClamp={2}>
                         {article.title} <IconExternalLink size={16} stroke={1.5} />
                       </Anchor>
                     </Link>
+                  </td>
+                  <td>
+                    {
+                      <Badge color={article.status === 'Draft' ? 'gray' : 'yellow'}>
+                        {article.status}
+                      </Badge>
+                    }
                   </td>
                   <td>{article.category ? <Badge>{article.category.name}</Badge> : 'N/A'}</td>
                   <td>{article.createdAt ? formatDate(article.createdAt) : 'N/A'}</td>

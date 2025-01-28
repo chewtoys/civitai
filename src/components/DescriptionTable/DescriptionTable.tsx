@@ -1,5 +1,6 @@
-import { Box, Paper, PaperProps, Table, TableProps, Text } from '@mantine/core';
+import { Box, Group, Paper, PaperProps, Table, TableProps, Text } from '@mantine/core';
 import React from 'react';
+import { InfoPopover } from '~/components/InfoPopover/InfoPopover';
 
 export function DescriptionTable({
   items,
@@ -14,19 +15,36 @@ export function DescriptionTable({
     const item = items[i];
     if (item.visible === false) continue;
 
+    let labelEl =
+      typeof item.label === 'string' ? <Text weight="500">{item.label}</Text> : item.label;
+    if (item.info) {
+      labelEl = (
+        <Group spacing={4}>
+          {labelEl}
+          <InfoPopover size="xs" withArrow iconProps={{ size: 16 }}>
+            {item.info}
+          </InfoPopover>
+        </Group>
+      );
+    }
+
     rows.push(
       <Box component="tr" key={i}>
         <Box
           component="td"
+          className={item.className}
           sx={(theme) => ({
             backgroundColor:
               theme.colorScheme === 'dark' ? theme.colors.dark[6] : theme.colors.gray[0],
             width: labelWidth,
+            padding: '7px 7px !important',
           })}
         >
-          {typeof item.label === 'string' ? <Text weight="500">{item.label}</Text> : item.label}
+          {labelEl}
         </Box>
-        <Box component="td">{item.value}</Box>
+        <Box component="td" className={item.className} sx={{ padding: '7px 7px !important' }}>
+          {item.value}
+        </Box>
       </Box>
     );
   }
@@ -57,8 +75,14 @@ export function DescriptionTable({
   );
 }
 
-export type Props = TableProps & {
-  items: Array<{ label: React.ReactNode; value: React.ReactNode; visible?: boolean }>;
+export type Props = Omit<TableProps, 'title'> & {
+  items: Array<{
+    label: React.ReactNode;
+    value: React.ReactNode;
+    visible?: boolean;
+    info?: React.ReactNode;
+    className?: string;
+  }>;
   title?: React.ReactNode;
   labelWidth?: React.CSSProperties['width'];
   withBorder?: boolean;

@@ -1,15 +1,13 @@
 import { z } from 'zod';
-import { Currency } from '@prisma/client';
+import { Currency } from '~/shared/utils/prisma/enums';
 import { constants } from '~/server/common/constants';
+import { booleanString } from '~/utils/zod-helpers';
 
 export type CreateCustomerInput = z.infer<typeof createCustomerSchema>;
 export const createCustomerSchema = z.object({ id: z.number(), email: z.string().email() });
 
 export type CreateSubscribeSessionInput = z.infer<typeof createSubscribeSessionSchema>;
 export const createSubscribeSessionSchema = z.object({ priceId: z.string() });
-
-export type GetUserSubscriptionInput = z.infer<typeof getUserSubscriptionSchema>;
-export const getUserSubscriptionSchema = z.object({ userId: z.number() });
 
 export type CreateDonateSessionInput = z.infer<typeof createDonateSessionSchema>;
 export const createDonateSessionSchema = z.object({ returnUrl: z.string() });
@@ -29,7 +27,7 @@ export const buzzPriceMetadataSchema = z.object({
 
 const buzzPurchaseMetadataSchema = z
   .object({
-    type: z.literal('buzzPurchase'),
+    type: z.enum(['buzzPurchase', 'clubMembershipPayment']),
     buzzAmount: z.coerce.number().positive(),
     unitAmount: z.coerce.number().positive(),
     userId: z.coerce.number().positive(),
@@ -49,6 +47,8 @@ export const paymentIntentCreationSchema = z.object({
   currency: z.nativeEnum(Currency),
   metadata: paymentIntentMetadataSchema,
   paymentMethodTypes: z.array(z.string()).nullish(),
+  recaptchaToken: z.string(),
+  setupFuturePayment: z.boolean().default(true),
 });
 
 export type GetPaymentIntentsForBuzzSchema = z.infer<typeof getPaymentIntentsForBuzzSchema>;
@@ -56,4 +56,14 @@ export const getPaymentIntentsForBuzzSchema = z.object({
   userId: z.coerce.number().optional(),
   startingAt: z.coerce.date().min(constants.buzz.cutoffDate).optional(),
   endingAt: z.coerce.date().min(constants.buzz.cutoffDate).optional(),
+});
+
+export type SetupIntentCreateSchema = z.infer<typeof setupIntentCreateSchema>;
+export const setupIntentCreateSchema = z.object({
+  paymentMethodTypes: z.array(z.string()).nullish(),
+});
+
+export type PaymentMethodDeleteInput = z.infer<typeof paymentMethodDeleteInput>;
+export const paymentMethodDeleteInput = z.object({
+  paymentMethodId: z.string(),
 });

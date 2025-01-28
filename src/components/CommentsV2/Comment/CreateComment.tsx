@@ -1,22 +1,30 @@
 import { Alert, Center, Group, Text } from '@mantine/core';
-import { NextLink } from '@mantine/next';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import router from 'next/router';
 import { CommentForm } from './CommentForm';
 import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { SimpleUser } from '~/server/selectors/user.selector';
 import { useCommentsContext } from '~/components/CommentsV2/CommentsProvider';
-import { IconLock } from '@tabler/icons-react';
+import { IconClubs, IconLock } from '@tabler/icons-react';
 
 type CreateCommentProps = {
   onCancel?: () => void;
   autoFocus?: boolean;
-  replyTo?: SimpleUser;
+  replyToCommentId?: number;
+  className?: string;
+  borderless?: boolean;
 };
 
-export function CreateComment({ onCancel, autoFocus, replyTo }: CreateCommentProps) {
+export function CreateComment({
+  onCancel,
+  autoFocus,
+  replyToCommentId,
+  className,
+  borderless,
+}: CreateCommentProps) {
   const currentUser = useCurrentUser();
-  const { isLocked, isMuted } = useCommentsContext();
+  const { isLocked, isMuted, forceLocked } = useCommentsContext();
 
   if (!currentUser)
     return (
@@ -26,7 +34,7 @@ export function CreateComment({ onCancel, autoFocus, replyTo }: CreateCommentPro
             You must{' '}
             <Text
               variant="link"
-              component={NextLink}
+              component={Link}
               href={`/login?returnUrl=${router.asPath}`}
               rel="nofollow"
               inline
@@ -38,6 +46,14 @@ export function CreateComment({ onCancel, autoFocus, replyTo }: CreateCommentPro
         </Group>
       </Alert>
     );
+
+  if (forceLocked) {
+    return (
+      <Alert color="yellow">
+        <Center>You do not have permissions to add comments.</Center>
+      </Alert>
+    );
+  }
 
   if (isLocked || isMuted)
     return (
@@ -51,9 +67,14 @@ export function CreateComment({ onCancel, autoFocus, replyTo }: CreateCommentPro
     );
 
   return (
-    <Group align="flex-start" noWrap spacing="sm">
-      <UserAvatar user={currentUser} size="md" />
-      <CommentForm onCancel={onCancel} replyTo={replyTo} autoFocus={autoFocus} />
+    <Group align="flex-start" noWrap spacing="sm" className={className}>
+      <UserAvatar user={currentUser} size={replyToCommentId ? 'sm' : 'md'} />
+      <CommentForm
+        onCancel={onCancel}
+        autoFocus={autoFocus}
+        replyToCommentId={replyToCommentId}
+        borderless={borderless}
+      />
     </Group>
   );
 }

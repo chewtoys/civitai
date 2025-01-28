@@ -1,29 +1,19 @@
-import { createServerSideProps } from '~/server/utils/server-side-helpers';
-import { userPageQuerySchema } from '~/server/schema/user.schema';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { SidebarLayout } from '~/components/Profile/SidebarLayout';
 import { trpc } from '~/utils/trpc';
-import { Center, Container, Loader, Stack, Text, ThemeIcon, useMantineTheme } from '@mantine/core';
+import { createStyles } from '@mantine/core';
 import { NotFound } from '~/components/AppLayout/NotFound';
 import { ProfileSidebar } from '~/components/Profile/ProfileSidebar';
-import { ImageGuard } from '~/components/ImageGuard/ImageGuard';
-import { MediaHash } from '~/components/ImageHash/ImageHash';
-import { ImagePreview } from '~/components/ImagePreview/ImagePreview';
-import { constants } from '~/server/common/constants';
-import React, { useMemo } from 'react';
-import {
-  getAllAvailableProfileSections,
-  ProfileSectionComponent,
-  shouldDisplayUserNullState,
-} from '~/components/Profile/profile.utils';
-import { ProfileSectionSchema, ProfileSectionType } from '~/server/schema/user-profile.schema';
-import { IconCloudOff } from '@tabler/icons-react';
-import { ProfileHeader } from '~/components/Profile/ProfileHeader';
+
+import React from 'react';
+
 import { Meta } from '~/components/Meta/Meta';
 import { abbreviateNumber } from '~/utils/number-helpers';
-import { getEdgeUrl } from '~/client-utils/cf-images-utils';
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
 import { TrackView } from '~/components/TrackView/TrackView';
+import { ScrollArea } from '~/components/ScrollArea/ScrollArea';
+import { PageLoader } from '~/components/PageLoader/PageLoader';
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { useHiddenPreferencesData } from '~/hooks/hidden-preferences';
+import { NoContent } from '~/components/NoContent/NoContent';
 
 export function ProfileLayout({
   username,
@@ -32,21 +22,19 @@ export function ProfileLayout({
   username: string;
   children: React.ReactNode;
 }) {
-  const { isLoading, data: user } = trpc.userProfile.get.useQuery({
-    username,
-  });
+  const enabled = username.toLowerCase() !== 'civitai';
+  const { isInitialLoading, data: user } = trpc.userProfile.get.useQuery({ username }, { enabled });
+  const { blockedUsers } = useHiddenPreferencesData();
+  const isBlocked = blockedUsers.some((x) => x.id === user?.id);
 
   const stats = user?.stats;
+  const { classes } = useStyles();
 
-  if (isLoading) {
-    return (
-      <Center>
-        <Loader />
-      </Center>
-    );
+  if (isInitialLoading) {
+    return <PageLoader />;
   }
 
-  if (!user || !user.username) {
+  if (!user || !user.username || !enabled) {
     return <NotFound />;
   }
 
@@ -60,9 +48,9 @@ export function ProfileLayout({
           )}), Models Uploaded: ${abbreviateNumber(0)}, Followers: ${abbreviateNumber(
             stats.followerCountAllTime
           )}, Total Likes Received: ${abbreviateNumber(
-            stats.favoriteCountAllTime
+            stats.thumbsUpCountAllTime
           )}, Total Downloads Received: ${abbreviateNumber(stats.downloadCountAllTime)}. `}
-          image={!user.image ? undefined : getEdgeUrl(user.image, { width: 1200 })}
+          images={user.profilePicture}
           links={[{ href: `${env.NEXT_PUBLIC_BASE_URL}/user/${username}`, rel: 'canonical' }]}
         />
       ) : (
@@ -72,18 +60,39 @@ export function ProfileLayout({
         />
       )}
       {user && <TrackView entityId={user.id} entityType="User" type="ProfileView" />}
-      <SidebarLayout.Root>
-        <SidebarLayout.Sidebar>
-          <ProfileSidebar username={username} />
-        </SidebarLayout.Sidebar>
-        <SidebarLayout.Content>
-          <Container fluid w="100%">
-            {children}
-          </Container>
-        </SidebarLayout.Content>
-      </SidebarLayout.Root>
+      <div className={classes.root}>
+        <div className={classes.sidebar}>
+          <ScrollArea>
+            <ProfileSidebar username={username} />
+          </ScrollArea>
+        </div>
+        {isBlocked ? (
+          <div className="mx-auto flex h-full items-center">
+            <NoContent message="Unable to display content because you have blocked this user" />
+          </div>
+        ) : (
+          <ScrollArea p="md">{children}</ScrollArea>
+        )}
+      </div>
     </>
   );
 }
 
 export default ProfileLayout;
+
+const useStyles = createStyles((theme) => ({
+  sidebar: {
+    width: 320,
+    height: '100%',
+    background: theme.colorScheme === 'dark' ? theme.colors.dark[6] : theme.colors.gray[0],
+
+    [containerQuery.smallerThan('sm')]: {
+      display: 'none',
+    },
+  },
+  root: {
+    display: 'flex',
+    flex: 1,
+    height: '100%',
+  },
+}));

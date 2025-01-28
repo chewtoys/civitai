@@ -1,108 +1,33 @@
-import {
-  ActionIcon,
-  AspectRatio,
-  Box,
-  Card,
-  Center,
-  Chip,
-  Container,
-  Group,
-  Loader,
-  Menu,
-  SegmentedControl,
-  SegmentedControlItem,
-  SegmentedControlProps,
-  Stack,
-  Tabs,
-  Text,
-  Title,
-  createStyles,
-  ThemeIcon,
-} from '@mantine/core';
-import { openConfirmModal } from '@mantine/modals';
-import { NextLink } from '@mantine/next';
-import { MetricTimeframe, ReviewReactions } from '@prisma/client';
-import {
-  IconArrowBackUp,
-  IconBan,
-  IconCategory,
-  IconCloudOff,
-  IconDotsVertical,
-  IconFileText,
-  IconFlag,
-  IconFolder,
-  IconInfoCircle,
-  IconLayoutList,
-  IconMicrophone,
-  IconMicrophoneOff,
-  IconPhoto,
-  IconTrash,
-} from '@tabler/icons-react';
+import { Anchor, Center, Loader, Stack, Text, ThemeIcon } from '@mantine/core';
+import { IconCloudOff } from '@tabler/icons-react';
+import Link from 'next/link';
 import { useRouter } from 'next/router';
-import React, { useEffect, useMemo } from 'react';
-
-import { getEdgeUrl } from '~/client-utils/cf-images-utils';
-import { AppLayout } from '~/components/AppLayout/AppLayout';
+import React, { useMemo } from 'react';
 import { NotFound } from '~/components/AppLayout/NotFound';
-import { TipBuzzButton } from '~/components/Buzz/TipBuzzButton';
-import { CivitaiTabs } from '~/components/CivitaiWrapped/CivitaiTabs';
-import { DomainIcon } from '~/components/DomainIcon/DomainIcon';
-import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
-import { SortFilter } from '~/components/Filters';
-import { FollowUserButton } from '~/components/FollowUserButton/FollowUserButton';
-import { HideUserButton } from '~/components/HideUserButton/HideUserButton';
-import ImagesInfinite from '~/components/Image/Infinite/ImagesInfinite';
-import { useImageQueryParams } from '~/components/Image/image.utils';
-import { RankBadge } from '~/components/Leaderboard/RankBadge';
-import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
-import { MasonryContainer } from '~/components/MasonryColumns/MasonryContainer';
-import { MasonryProvider } from '~/components/MasonryColumns/MasonryProvider';
-import { Meta } from '~/components/Meta/Meta';
-import { TrackView } from '~/components/TrackView/TrackView';
-import { Username } from '~/components/User/Username';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { openContext } from '~/providers/CustomModalsProvider';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
-import { constants } from '~/server/common/constants';
-import { ImageSort } from '~/server/common/enums';
-import { ReportEntity } from '~/server/schema/report.schema';
-import { userPageQuerySchema } from '~/server/schema/user.schema';
-import { createServerSideProps } from '~/server/utils/server-side-helpers';
-import { sortDomainLinks } from '~/utils/domain-link';
-import { showErrorNotification } from '~/utils/notifications';
-import { abbreviateNumber } from '~/utils/number-helpers';
-import { removeEmpty } from '~/utils/object-helpers';
-import { invalidateModeratedContent } from '~/utils/query-invalidation-utils';
-import { postgresSlugify } from '~/utils/string-helpers';
-import { trpc } from '~/utils/trpc';
-import { formatDate } from '~/utils/date-helpers';
-import { UserStatBadges } from '~/components/UserStatBadges/UserStatBadges';
-import { env } from '~/env/client.mjs';
-import { ImageFiltersDropdown } from '~/components/Image/Filters/ImageFiltersDropdown';
-import ProfileLayout from '~/components/Profile/ProfileLayout';
-import { ProfileHeader } from '~/components/Profile/ProfileHeader';
+import { Page } from '~/components/AppLayout/Page';
+import { UserProfileLayout } from '~/components/Profile/old/OldProfileLayout';
 import {
   getAllAvailableProfileSections,
   ProfileSectionComponent,
   shouldDisplayUserNullState,
 } from '~/components/Profile/profile.utils';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { ProfileSectionSchema, ProfileSectionType } from '~/server/schema/user-profile.schema';
-import { UserImagesPage } from '~/pages/user/[username]/images';
-import { UserProfileLayout } from '~/components/Profile/old/OldProfileLayout';
+import { userPageQuerySchema } from '~/server/schema/user.schema';
+import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { removeEmpty } from '~/utils/object-helpers';
+import { trpc } from '~/utils/trpc';
 
 export const getServerSideProps = createServerSideProps({
   useSSG: true,
-  resolver: async ({ ssg, ctx, features }) => {
+  resolver: async ({ ssg, ctx }) => {
     const { username, id } = userPageQuerySchema.parse(ctx.params);
     if (username) {
       await ssg?.user.getCreator.prefetch({ username });
     }
 
     return {
-      props: removeEmpty({
-        id,
-        username,
-      }),
+      props: removeEmpty({ id, username }),
     };
   },
 });
@@ -110,12 +35,16 @@ export const getServerSideProps = createServerSideProps({
 function ProfileOverview() {
   const router = useRouter();
   const { username } = router.query as { username: string };
+
+  const { canViewNsfw } = useFeatureFlags();
+
   const { isLoading, data: user } = trpc.userProfile.get.useQuery({
     username,
   });
-  const { isLoading: isLoadingOverview, data: userOverview } = trpc.userProfile.overview.useQuery({
-    username,
-  });
+  const { data: userOverview } = trpc.userProfile.overview.useQuery(
+    { username },
+    { enabled: canViewNsfw }
+  );
 
   const sections = useMemo(
     () =>
@@ -127,7 +56,7 @@ function ProfileOverview() {
     [user]
   );
 
-  if (isLoading || isLoadingOverview) {
+  if (isLoading) {
     return (
       <Center mt="md">
         <Loader />
@@ -135,7 +64,7 @@ function ProfileOverview() {
     );
   }
 
-  if (!user || !user.username || !userOverview) {
+  if (!isLoading && !user) {
     return <NotFound />;
   }
 
@@ -153,8 +82,22 @@ function ProfileOverview() {
               <IconCloudOff size={80} />
             </ThemeIcon>
             <Text size="lg" maw={600} align="center">
-              Whoops! Looks like this user doesn&rsquo;t have any content yet or has chosen not to
-              display anything. Check back later!
+              {user.bannedAt ? (
+                <Text span>
+                  This user account has been banned due to a violation of Civitai&apos;s Terms of
+                  Service. For more details on our policies, please refer to the{' '}
+                  <Link href="/content/tos" legacyBehavior passHref>
+                    <Anchor>Terms of Service</Anchor>
+                  </Link>{' '}
+                  and{' '}
+                  <Link href="/safety" legacyBehavior passHref>
+                    <Anchor>Safety Center</Anchor>
+                  </Link>{' '}
+                  pages.
+                </Text>
+              ) : (
+                "This user hasn't posted any content, or has chosen not to display anything at the moment. Check back later to see if they've shared something new!"
+              )}
             </Text>
           </Stack>
         </Stack>
@@ -182,16 +125,6 @@ function ProfileOverview() {
   );
 }
 
-export function UserProfileEntry() {
-  const features = useFeatureFlags();
-
-  if (features.profileOverhaul) {
-    return <ProfileOverview />;
-  }
-
-  return <UserImagesPage />;
-}
-
-UserProfileEntry.getLayout = UserProfileLayout;
-
-export default UserProfileEntry;
+export default Page(ProfileOverview, {
+  getLayout: UserProfileLayout,
+});

@@ -1,8 +1,21 @@
-import { ActionIcon, Badge, Container, Group, Stack, Title, SelectItem } from '@mantine/core';
-import { TagTarget, TagType } from '@prisma/client';
+import {
+  ActionIcon,
+  Badge,
+  Container,
+  Group,
+  Stack,
+  Title,
+  SelectItem,
+  MantineColor,
+  Tooltip,
+  Text,
+} from '@mantine/core';
+import { TagsOnTagsType, TagTarget, TagType } from '~/shared/utils/prisma/enums';
 import {
   IconAlbum,
+  IconArrowMergeRight,
   IconBox,
+  IconColumnInsertRight,
   IconPhoto,
   IconTag,
   IconTagOff,
@@ -18,17 +31,24 @@ import { getDisplayName } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
 import { MantineReactTable, MRT_ColumnDef, MRT_SortingState } from 'mantine-react-table';
 import { ActionIconSelect } from '~/components/ActionIconSelect/ActionIconSelect';
-import { NextLink } from '@mantine/next';
+import { ActionIconInput } from '~/components/ActionIconInput.tsx/ActionIconInput';
+import { NotFound } from '~/components/AppLayout/NotFound';
+import { openConfirmModal } from '@mantine/modals';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+
+const tagColor: Record<TagsOnTagsType, MantineColor> = {
+  Parent: 'gray',
+  Replace: 'pink',
+  Append: 'green',
+};
 
 export default function Tags() {
-  const queryUtils = trpc.useContext();
+  const queryUtils = trpc.useUtils();
   const features = useFeatureFlags();
-  const [tagSearch, setTagSearch] = useState('');
-  const [selected, setSelected] = useState({});
   const [sorting, setSorting] = useState<MRT_SortingState>([]);
 
-  const { data, isLoading, isRefetching, refetch } = trpc.tag.getManagableTags.useQuery();
+  const { data, isLoading } = trpc.tag.getManagableTags.useQuery();
   const tags = useMemo(() => data ?? [], [data]);
   const addableTags = useMemo(() => {
     if (!tags) return [];
@@ -74,16 +94,23 @@ export default function Tags() {
   });
 
   const addTagMutation = trpc.tag.addTags.useMutation({
-    async onMutate({ tags: toAdd, entityIds }) {
+    async onMutate({ tags: toAdd, entityIds, relationship }) {
       const isTagIds = typeof toAdd[0] === 'number';
+      relationship ??= 'Parent';
 
       queryUtils.tag.getManagableTags.setData(undefined, (data) => {
         if (!data) return [];
 
-        const toAddTags: typeof tags = [];
-        for (const tag of addableTags) {
-          if (isTagIds && (toAdd as number[]).includes(tag.id)) toAddTags.push(tag);
-          else if (!isTagIds && (toAdd as string[]).includes(tag.name)) toAddTags.push(tag);
+        const toAddTags: any[] = [];
+        for (const tag of toAdd) {
+          if (isTagIds) {
+            const tagData = addableTags.find((x) => x.id === tag);
+            if (tagData) toAddTags.push({ ...tagData, relationship });
+          } else {
+            const tagData = addableTags.find((x) => x.name === tag);
+            if (tagData) toAddTags.push({ ...tagData, relationship });
+            else toAddTags.push({ name: tag, relationship });
+          }
         }
 
         return data.map((tag) =>
@@ -98,9 +125,9 @@ export default function Tags() {
     },
   });
 
-  const handleDisableTagOnEntity = (entityId: number, tag: number) =>
+  const handleDisableTagOnEntity = (entityId: number, tag: number | string) =>
     disableTagMutation.mutate({
-      tags: [tag],
+      tags: [tag] as number[] | string[],
       entityIds: [entityId],
       entityType: 'tag',
     });
@@ -112,7 +139,7 @@ export default function Tags() {
         header: 'Name',
         size: 150,
         enableColumnActions: false,
-        filterFn: 'startsWith',
+        filterFn: 'contains',
       },
       {
         id: 'type',
@@ -132,7 +159,7 @@ export default function Tags() {
       {
         id: 'stats',
         header: 'Stats',
-        accessorFn: (x) => x.stats.imageCount + x.stats.modelCount + x.stats.postCount,
+        accessorFn: (x) => x.imageCount + x.modelCount + x.postCount,
         maxSize: 300,
         enableColumnActions: false,
         Cell: ({ row }) => {
@@ -140,28 +167,25 @@ export default function Tags() {
           return (
             <Group noWrap spacing={5}>
               {tag.target.includes(TagTarget.Image) && (
-                <NextLink href={`/images?tags=${row.id}&view=feed`} target="_blank">
+                <Link href={`/images?tags=${row.id}&view=feed`} target="_blank">
                   <IconBadge icon={<IconPhoto size={14} />}>
-                    {abbreviateNumber(tag.stats.imageCount)}
+                    {abbreviateNumber(tag.imageCount)}
                   </IconBadge>
-                </NextLink>
+                </Link>
               )}
               {tag.target.includes(TagTarget.Model) && (
-                <NextLink
-                  href={`${features.alternateHome ? '/models' : '/'}?tags=${row.id}&view=feed`}
-                  target="_blank"
-                >
+                <Link href={`/models?tags=${row.id}&view=feed`} target="_blank">
                   <IconBadge icon={<IconBox size={14} />}>
-                    {abbreviateNumber(tag.stats.modelCount)}
+                    {abbreviateNumber(tag.modelCount)}
                   </IconBadge>
-                </NextLink>
+                </Link>
               )}
               {tag.target.includes(TagTarget.Post) && (
-                <NextLink href={`/posts?tags=${row.id}&view=feed`} target="_blank">
+                <Link href={`/posts?tags=${row.id}&view=feed`} target="_blank">
                   <IconBadge icon={<IconAlbum size={14} />}>
-                    {abbreviateNumber(tag.stats.postCount)}
+                    {abbreviateNumber(tag.postCount)}
                   </IconBadge>
-                </NextLink>
+                </Link>
               )}
             </Group>
           );
@@ -181,13 +205,18 @@ export default function Tags() {
           return (
             <Group spacing={5}>
               {tag.tags.map((t) => (
-                <Badge key={t.id} variant="filled" color="gray" pr={0}>
+                <Badge
+                  key={t.id ?? t.name}
+                  variant="filled"
+                  color={tagColor[t.relationship]}
+                  pr={0}
+                >
                   <Group spacing={0}>
                     {t.name}
                     <ActionIcon
                       size="sm"
                       variant="transparent"
-                      onClick={() => handleDisableTagOnEntity(tag.id, t.id)}
+                      onClick={() => handleDisableTagOnEntity(tag.id, t.id ?? t.name)}
                     >
                       <IconX strokeWidth={3} size=".75rem" />
                     </ActionIcon>
@@ -201,17 +230,15 @@ export default function Tags() {
         filterFn: (row, id, filterValue) => {
           if (!filterValue.length) return true;
           if (!row.original.tags?.length) return false;
-          return filterValue.every((x: number) => row.original.tags.some((y) => y.id === x));
-        },
-        filterVariant: 'multi-select',
-        mantineFilterMultiSelectProps: {
-          searchable: true,
-          data: addableTagsOptions as any,
+          console.log(filterValue);
+          return row.original.tags.some((y) => y.name.startsWith(filterValue));
         },
       },
     ],
     [addableTagsOptions]
   );
+
+  if (!features.moderateTags) return <NotFound />;
 
   return (
     <Container size="xl">
@@ -241,6 +268,8 @@ export default function Tags() {
           renderTopToolbarCustomActions={({ table }) => {
             const getSelected = () =>
               table.getSelectedRowModel().flatRows.map((x) => x.original.id);
+            const getSelectedName = () =>
+              table.getSelectedRowModel().flatRows.map((x) => x.original.name);
 
             const handleDisableTagOnSelected = (tag: number) =>
               disableTagMutation.mutate({
@@ -249,12 +278,28 @@ export default function Tags() {
                 entityType: 'tag',
               });
 
-            const handleAddTagToSelected = (tag: number) =>
-              addTagMutation.mutate({
-                tags: [tag],
-                entityIds: getSelected(),
-                entityType: 'tag',
+            const handleAddTagToSelected = (tag: number | string, relationship: TagsOnTagsType) => {
+              const selectedNames = getSelectedName();
+              openConfirmModal({
+                title: `Add Tag ${relationship}`,
+                children: (
+                  <Text size="sm">
+                    Are you sure you want to add <strong>{tag}</strong> as a{' '}
+                    <strong>{relationship}</strong> to {selectedNames.join(', ')}?
+                  </Text>
+                ),
+                centered: true,
+                labels: { confirm: 'Yes', cancel: 'No' },
+                onConfirm: () => {
+                  addTagMutation.mutate({
+                    tags: [tag] as number[] | string[],
+                    relationship,
+                    entityIds: getSelected(),
+                    entityType: 'tag',
+                  });
+                },
               });
+            };
 
             const handleDeleteSelected = () =>
               deleteTagsMutation.mutate({
@@ -263,31 +308,65 @@ export default function Tags() {
 
             return (
               <Group noWrap spacing="xs">
-                <ActionIconSelect
-                  items={addableTagsOptions}
-                  onSelect={(id) => handleAddTagToSelected(id)}
-                  withinPortal
-                >
-                  <IconTag size="1.25rem" />
-                </ActionIconSelect>
-                <ActionIconSelect
-                  items={addableTagsOptions}
-                  onSelect={(id) => handleDisableTagOnSelected(id)}
-                  withinPortal
-                >
-                  <IconTagOff size="1.25rem" />
-                </ActionIconSelect>
-                <PopConfirm
-                  message={`Are you sure you want to delete these tags?`}
-                  position="bottom-end"
-                  onConfirm={handleDeleteSelected}
-                  withArrow
-                  withinPortal
-                >
-                  <ActionIcon variant="outline" color="red">
-                    <IconTrash size="1.25rem" />
-                  </ActionIcon>
-                </PopConfirm>
+                <Tooltip label="Add parent">
+                  <div>
+                    <ActionIconSelect
+                      items={addableTagsOptions}
+                      onSelect={(id) => handleAddTagToSelected(id, 'Parent')}
+                      withinPortal
+                    >
+                      <IconTag size="1.25rem" />
+                    </ActionIconSelect>
+                  </div>
+                </Tooltip>
+                <Tooltip label="Remove parent">
+                  <div>
+                    <ActionIconSelect
+                      items={addableTagsOptions}
+                      onSelect={(id) => handleDisableTagOnSelected(id)}
+                      withinPortal
+                    >
+                      <IconTagOff size="1.25rem" />
+                    </ActionIconSelect>
+                  </div>
+                </Tooltip>
+                <Tooltip label="Replace with">
+                  <div>
+                    <ActionIconInput
+                      onSubmit={(tag) => handleAddTagToSelected(tag, 'Replace')}
+                      placeholder="Tag to replace with"
+                      withinPortal
+                    >
+                      <IconArrowMergeRight size="1.25rem" />
+                    </ActionIconInput>
+                  </div>
+                </Tooltip>
+                <Tooltip label="Also append">
+                  <div>
+                    <ActionIconInput
+                      onSubmit={(tag) => handleAddTagToSelected(tag, 'Append')}
+                      placeholder="Tag to append"
+                      withinPortal
+                    >
+                      <IconColumnInsertRight size="1.25rem" />
+                    </ActionIconInput>
+                  </div>
+                </Tooltip>
+                <Tooltip label="Delete">
+                  <div>
+                    <PopConfirm
+                      message={`Are you sure you want to delete these tags?`}
+                      position="bottom-end"
+                      onConfirm={handleDeleteSelected}
+                      withArrow
+                      withinPortal
+                    >
+                      <ActionIcon variant="outline" color="red">
+                        <IconTrash size="1.25rem" />
+                      </ActionIcon>
+                    </PopConfirm>
+                  </div>
+                </Tooltip>
               </Group>
             );
           }}

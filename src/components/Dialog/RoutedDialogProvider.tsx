@@ -7,10 +7,12 @@ import {
   getBrowserRouter,
   useBrowserRouter,
 } from '~/components/BrowserRouter/BrowserRouterProvider';
-import { NextRouter, resolveHref } from 'next/dist/shared/lib/router/router';
+import { NextRouter } from 'next/dist/shared/lib/router/router';
+import { resolveHref } from 'next/dist/client/resolve-href';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { QS } from '~/utils/qs';
 import { getHasClientHistory } from '~/store/ClientHistoryStore';
+import { Anchor, AnchorProps } from '@mantine/core';
 
 type DialogKey = keyof typeof dialogs;
 
@@ -20,6 +22,7 @@ export function RoutedDialogProvider() {
   const prevState = useRef<{ url: string; as: string }>();
   const currentUser = useCurrentUser();
 
+  // handle next router popstate
   useEffect(() => {
     router.beforePopState((state) => {
       const previous = prevState.current;
@@ -85,6 +88,7 @@ export function RoutedDialogProvider() {
         props: { ...browserRouter.query, ...state },
         options: { onClose: () => handleCloseRoutedDialog(name) },
         type: 'routed-dialog',
+        target: dialogs[name].target,
       });
     }
 
@@ -139,6 +143,8 @@ export function RoutedDialogLink<T extends DialogKey, TPassHref extends boolean 
   className,
   passHref,
   style,
+  onClick,
+  variant = 'text',
 }: {
   name: T;
   state: ComponentProps<(typeof dialogs)[T]['component']>;
@@ -146,6 +152,8 @@ export function RoutedDialogLink<T extends DialogKey, TPassHref extends boolean 
   className?: string;
   children: TPassHref extends true ? React.ReactElement : React.ReactNode;
   style?: React.CSSProperties;
+  onClick?: () => void;
+  variant?: AnchorProps['variant'];
 }) {
   const router = useRouter();
   const { query = QS.parse(QS.stringify(router.query)) } = getBrowserRouter();
@@ -154,8 +162,9 @@ export function RoutedDialogLink<T extends DialogKey, TPassHref extends boolean 
   const handleClick = (e: any) => {
     if (!e.ctrlKey) {
       e.preventDefault();
-      e.stopPropagation();
+      // e.stopPropagation();
       triggerRoutedDialog({ name, state });
+      onClick?.();
     }
   };
 
@@ -163,15 +172,21 @@ export function RoutedDialogLink<T extends DialogKey, TPassHref extends boolean 
     return cloneElement(children as React.ReactElement, {
       href: asPath,
       onClick: handleClick,
-      className,
-      style,
+      // className,
+      // style,
     });
   }
 
   return (
-    <a href={asPath} onClick={handleClick} className={className} style={style}>
+    <Anchor
+      href={asPath}
+      onClick={handleClick}
+      className={className}
+      style={style}
+      variant={variant}
+    >
       {children}
-    </a>
+    </Anchor>
   );
 }
 

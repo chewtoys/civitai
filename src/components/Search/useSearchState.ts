@@ -27,6 +27,7 @@ import {
   IMAGES_SEARCH_INDEX,
   MODELS_SEARCH_INDEX,
   USERS_SEARCH_INDEX,
+  TOOLS_SEARCH_INDEX,
 } from '~/server/common/constants';
 import {
   CollectionSearchParams,
@@ -36,6 +37,11 @@ import {
   bountiesInstantSearchRoutingParser,
   BountySearchParams,
 } from '~/components/Search/parsers/bounties.parser';
+import { searchIndexMap } from '~/components/Search/search.types';
+import {
+  ToolSearchParams,
+  toolsInstantSearchRoutingParser,
+} from '~/components/Search/parsers/tool.parser';
 
 type StoreState = {
   models: ModelSearchParams;
@@ -44,6 +50,7 @@ type StoreState = {
   users: UserSearchParams;
   collections: CollectionSearchParams;
   bounties: BountySearchParams;
+  tools: ToolSearchParams;
   setSearchParamsByUiState: (uiState: UiState) => void;
   setModelsSearchParams: (filters: Partial<ModelSearchParams>) => void;
   setImagesSearchParams: (filters: Partial<ImageSearchParams>) => void;
@@ -51,16 +58,8 @@ type StoreState = {
   setUserSearchParams: (filters: Partial<UserSearchParams>) => void;
   setCollectionSearchParams: (filters: Partial<CollectionSearchParams>) => void;
   setBountiesSearchParams: (filters: Partial<BountySearchParams>) => void;
+  setToolsSearchParams: (filters: Partial<ToolSearchParams>) => void;
 };
-
-export const SearchPathToIndexMap = {
-  ['models']: MODELS_SEARCH_INDEX,
-  ['images']: IMAGES_SEARCH_INDEX,
-  ['articles']: ARTICLES_SEARCH_INDEX,
-  ['users']: USERS_SEARCH_INDEX,
-  ['collections']: COLLECTIONS_SEARCH_INDEX,
-  ['bounties']: BOUNTIES_SEARCH_INDEX,
-} as const;
 
 export const IndexToLabel = {
   [MODELS_SEARCH_INDEX]: 'Models',
@@ -69,6 +68,7 @@ export const IndexToLabel = {
   [USERS_SEARCH_INDEX]: 'Users',
   [COLLECTIONS_SEARCH_INDEX]: 'Collections',
   [BOUNTIES_SEARCH_INDEX]: 'Bounties',
+  [TOOLS_SEARCH_INDEX]: 'Tools',
 } as const;
 
 export const getRoutingForIndex = (index: SearchIndex): InstantSearchRoutingParser => {
@@ -85,6 +85,8 @@ export const getRoutingForIndex = (index: SearchIndex): InstantSearchRoutingPars
       return collectionsInstantSearchRoutingParser;
     case BOUNTIES_SEARCH_INDEX:
       return bountiesInstantSearchRoutingParser;
+    case TOOLS_SEARCH_INDEX:
+      return toolsInstantSearchRoutingParser;
   }
 };
 
@@ -99,6 +101,7 @@ export const useSearchStore = create<StoreState>()(
         users: {},
         collections: {},
         bounties: {},
+        tools: {},
         // methods
         setSearchParamsByUiState: (uiState: UiState) => {
           const [index] = Object.keys(uiState);
@@ -150,6 +153,11 @@ export const useSearchStore = create<StoreState>()(
                 ] as BountySearchParams;
               });
               break;
+            case TOOLS_SEARCH_INDEX:
+              set((state) => {
+                state.tools = routing.stateToRoute(uiState)[TOOLS_SEARCH_INDEX] as ToolSearchParams;
+              });
+              break;
           }
         },
         setModelsSearchParams: (params) =>
@@ -176,6 +184,10 @@ export const useSearchStore = create<StoreState>()(
           set((state) => {
             state.bounties = params;
           }),
+        setToolsSearchParams: (params) =>
+          set((state) => {
+            state.tools = params;
+          }),
       };
     })
   )
@@ -185,6 +197,7 @@ export const routing: InstantSearchProps['routing'] = {
   router: createInstantSearchRouterNext({
     singletonRouter,
     routerOptions: {
+      cleanUrlOnDispose: false,
       createURL({ routeState, location }) {
         const pattern = /\/search\/([^\/]+)/;
         const match = location.pathname.match(pattern);
@@ -208,6 +221,8 @@ export const routing: InstantSearchProps['routing'] = {
           query = QS.stringify(routeState[COLLECTIONS_SEARCH_INDEX]);
         } else if (routeState[BOUNTIES_SEARCH_INDEX]) {
           query = QS.stringify(routeState[BOUNTIES_SEARCH_INDEX]);
+        } else if (routeState[TOOLS_SEARCH_INDEX]) {
+          query = QS.stringify(routeState[TOOLS_SEARCH_INDEX]);
         }
 
         // Needs to be absolute url, otherwise instantsearch complains
@@ -218,10 +233,10 @@ export const routing: InstantSearchProps['routing'] = {
         const match = location.pathname.match(pattern);
 
         if (match) {
-          const key = match[1] as keyof typeof SearchPathToIndexMap;
+          const key = match[1] as keyof typeof searchIndexMap;
 
-          if (SearchPathToIndexMap.hasOwnProperty(key)) {
-            const index = SearchPathToIndexMap[key] as SearchIndex;
+          if (searchIndexMap.hasOwnProperty(key)) {
+            const index = searchIndexMap[key] as SearchIndex;
 
             return getRoutingForIndex(index).parseURL({ location });
           }
@@ -252,6 +267,9 @@ export const routing: InstantSearchProps['routing'] = {
       }
       if (routeState[BOUNTIES_SEARCH_INDEX]) {
         return getRoutingForIndex(BOUNTIES_SEARCH_INDEX).routeToState(routeState);
+      }
+      if (routeState[TOOLS_SEARCH_INDEX]) {
+        return getRoutingForIndex(TOOLS_SEARCH_INDEX).routeToState(routeState);
       }
 
       return routeState;

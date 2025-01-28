@@ -1,29 +1,28 @@
 import { Menu, useMantineTheme } from '@mantine/core';
-import { CollectionType } from '@prisma/client';
-import { IconEdit, IconFlag, IconTrash } from '@tabler/icons-react';
+import { IconEdit, IconFlag, IconTrash, IconInfoCircle } from '@tabler/icons-react';
 import { useRouter } from 'next/router';
 import React from 'react';
+import { openReportModal } from '~/components/Dialog/dialog-registry';
 
 import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
-import { AddToCollectionMenuItem } from '~/components/MenuItems/AddToCollectionMenuItem';
 import { DeletePostButton } from '~/components/Post/DeletePostButton';
+import { env } from '~/env/client';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { openContext } from '~/providers/CustomModalsProvider';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { ReportEntity } from '~/server/schema/report.schema';
 
 export function PostControls({
   postId,
   userId,
+  isModelVersionPost,
   children,
 }: {
   postId: number;
   userId: number;
+  isModelVersionPost?: number | null;
   children: React.ReactElement;
 }) {
   const router = useRouter();
   const theme = useMantineTheme();
-  const features = useFeatureFlags();
   const currentUser = useCurrentUser();
   const isOwner = userId === currentUser?.id;
   const isModerator = currentUser?.isModerator ?? false;
@@ -41,7 +40,7 @@ export function PostControls({
                 <Menu.Item
                   color={theme.colors.red[6]}
                   icon={<IconTrash size={14} stroke={1.5} />}
-                  onClick={onClick}
+                  onClick={() => onClick()}
                 >
                   Delete Post
                 </Menu.Item>
@@ -64,13 +63,26 @@ export function PostControls({
           <LoginRedirect reason="report-content">
             <Menu.Item
               icon={<IconFlag size={14} stroke={1.5} />}
-              onClick={() =>
-                openContext('report', { entityType: ReportEntity.Post, entityId: postId })
-              }
+              onClick={() => openReportModal({ entityType: ReportEntity.Post, entityId: postId })}
             >
               Report
             </Menu.Item>
           </LoginRedirect>
+        )}
+        {isModerator && (
+          <>
+            <Menu.Label>Moderator</Menu.Label>
+            {env.NEXT_PUBLIC_POST_LOOKUP_URL && (
+              <Menu.Item
+                component="a"
+                target="_blank"
+                icon={<IconInfoCircle size={14} stroke={1.5} />}
+                href={`${env.NEXT_PUBLIC_POST_LOOKUP_URL}${postId}`}
+              >
+                Lookup Post
+              </Menu.Item>
+            )}
+          </>
         )}
       </Menu.Dropdown>
     </Menu>

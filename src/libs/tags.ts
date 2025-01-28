@@ -1,6 +1,7 @@
-import { NsfwLevel, TagType } from '@prisma/client';
+import { TagSource, TagType } from '~/shared/utils/prisma/enums';
 import { z } from 'zod';
 import { moderationDisplayNames } from '~/libs/moderation';
+import { NsfwLevel } from '~/server/common/enums';
 
 export const taggableEntitySchema = z.enum(['model', 'image', 'tag', 'article']);
 export type TaggableEntityType = z.infer<typeof taggableEntitySchema>;
@@ -11,7 +12,7 @@ export type VotableTagModel = {
   id: number;
   name: string;
   type: TagType;
-  nsfw: NsfwLevel;
+  nsfwLevel: NsfwLevel;
   score: number;
   upVotes: number;
   downVotes: number;
@@ -48,4 +49,15 @@ export function getTagDisplayName(name: string) {
 }
 
 export const tagsNeedingReview = ['child', 'teen', 'baby', 'girl', 'boy'];
-export const tagsToIgnore = ['baby', 'emaciated bodies'];
+export const tagsToIgnore: Partial<Record<TagSource, string[]>> = {
+  Rekognition: [
+    'baby',
+    'emaciated bodies',
+    'weapons',
+    // Adding these since Rekognition seems to be tagging anything red...
+    'extremist',
+    'hate symbols',
+    'nazi party',
+    'white supremacy',
+  ],
+};

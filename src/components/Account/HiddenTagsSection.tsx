@@ -1,27 +1,34 @@
-import { ActionIcon, Autocomplete, Badge, Card, Group, Loader, Stack, Text } from '@mantine/core';
+import { ActionIcon, Autocomplete, Badge, Card, Loader, Stack, Text } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import { IconSearch, IconX } from '@tabler/icons-react';
-import { useRef, useState } from 'react';
+import { uniqBy } from 'lodash-es';
+import { useMemo, useRef, useState } from 'react';
+import { BasicMasonryGrid } from '~/components/MasonryGrid/BasicMasonryGrid';
 import { useHiddenPreferencesData, useToggleHiddenPreferences } from '~/hooks/hidden-preferences';
+import { getTagDisplayName } from '~/libs/tags';
+import { TagSort } from '~/server/common/enums';
 
 import { trpc } from '~/utils/trpc';
 
-export function HiddenTagsSection() {
+export function HiddenTagsSection({ withTitle = true }: { withTitle?: boolean }) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState('');
   const [debouncedSearch] = useDebouncedValue(search, 300);
 
-  const tags = useHiddenPreferencesData().tag;
-  const hiddenTags = tags.filter((x) => x.type === 'hidden');
-  const moderationTags = tags
-    .filter((x) => x.type === 'moderated' || x.type === 'always')
-    .map((x) => x.id);
+  const tags = useHiddenPreferencesData().hiddenTags;
+  const hiddenTags = useMemo(() => {
+    const uniqueTags = uniqBy(
+      tags.filter((x) => x.hidden && !x.parentId),
+      'id'
+    );
 
-  const blockedTags = hiddenTags.filter((x) => !moderationTags.includes(x.id));
+    return uniqueTags;
+  }, [tags]);
 
   const { data, isLoading } = trpc.tag.getAll.useQuery({
-    entityType: ['Model'],
+    // entityType: ['Model'],
     query: debouncedSearch.toLowerCase().trim(),
+    sort: TagSort.MostHidden,
   });
   const modelTags =
     data?.items
@@ -36,7 +43,12 @@ export function HiddenTagsSection() {
   };
 
   return (
-    <>
+    <Card withBorder>
+      {withTitle && (
+        <Card.Section withBorder inheritPadding py="xs">
+          <Text weight={500}>Hidden Tags</Text>
+        </Card.Section>
+      )}
       <Card.Section withBorder sx={{ marginTop: -1 }}>
         <Autocomplete
           name="tag"
@@ -52,38 +64,53 @@ export function HiddenTagsSection() {
           }}
           withinPortal
           variant="unstyled"
+          zIndex={400}
+          limit={10}
         />
       </Card.Section>
-      <Card.Section inheritPadding pt="md">
+      <Card.Section inheritPadding py="md">
         <Stack spacing={5}>
-          {blockedTags.length > 0 && (
-            <Group spacing={4}>
-              {blockedTags.map((tag) => (
-                <Badge
-                  key={tag.id}
-                  sx={{ paddingRight: 3 }}
-                  rightSection={
-                    <ActionIcon
-                      size="xs"
-                      color="blue"
-                      radius="xl"
-                      variant="transparent"
-                      onClick={() => handleToggleBlockedTag(tag)}
-                    >
-                      <IconX size={10} />
-                    </ActionIcon>
-                  }
-                >
-                  {tag.name}
-                </Badge>
-              ))}
-            </Group>
-          )}
+          <BasicMasonryGrid
+            items={hiddenTags}
+            render={TagBadge}
+            maxHeight={250}
+            columnGutter={4}
+            columnWidth={140}
+          />
           <Text color="dimmed" size="xs">
             {`We'll hide content with these tags throughout the site.`}
           </Text>
         </Stack>
       </Card.Section>
-    </>
+    </Card>
+  );
+}
+
+function TagBadge({ data, width }: { data: { id: number; name: string }; width: number }) {
+  const toggleHiddenMutation = useToggleHiddenPreferences();
+
+  const handleToggleBlocked = async (tag: { id: number; name: string }) => {
+    await toggleHiddenMutation.mutateAsync({ kind: 'tag', data: [tag] });
+  };
+
+  return (
+    <Badge
+      key={data.id}
+      sx={{ paddingRight: 3 }}
+      w={width}
+      rightSection={
+        <ActionIcon
+          size="xs"
+          color="blue"
+          radius="xl"
+          variant="transparent"
+          onClick={() => handleToggleBlocked(data)}
+        >
+          <IconX size={10} />
+        </ActionIcon>
+      }
+    >
+      {getTagDisplayName(data.name ?? '[deleted]')}
+    </Badge>
   );
 }

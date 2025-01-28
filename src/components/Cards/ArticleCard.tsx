@@ -1,133 +1,104 @@
-import { Badge, Group, Stack, Text, UnstyledButton } from '@mantine/core';
+import { Badge, Text } from '@mantine/core';
 import React from 'react';
-import { FeedCard } from '~/components/Cards/FeedCard';
 import { useCardStyles } from '~/components/Cards/Cards.styles';
-import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
-import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
-import { useRouter } from 'next/router';
 import { IconBolt, IconBookmark, IconEye, IconMessageCircle2 } from '@tabler/icons-react';
 import { abbreviateNumber } from '~/utils/number-helpers';
-import { IconBadge } from '~/components/IconBadge/IconBadge';
 import { slugit } from '~/utils/string-helpers';
 import { formatDate } from '~/utils/date-helpers';
-import { ArticleGetAll } from '~/types/router';
+import type { ArticleGetAllRecord } from '~/server/services/article.service';
 import { ArticleContextMenu } from '~/components/Article/ArticleContextMenu';
 import {
   InteractiveTipBuzzButton,
   useBuzzTippingStore,
 } from '~/components/Buzz/InteractiveTipBuzzButton';
+import { AspectRatioImageCard } from '~/components/CardTemplates/AspectRatioImageCard';
+import { UserAvatarSimple } from '~/components/UserAvatar/UserAvatarSimple';
 
-const IMAGE_CARD_WIDTH = 332;
-
-export function ArticleCard({ data, aspectRatio, useCSSAspectRatio = false }: Props) {
+export function ArticleCard({ data, aspectRatio }: Props) {
   const { classes, cx } = useCardStyles({ aspectRatio: 1 });
-  const router = useRouter();
-  const { id, title, cover, publishedAt, user, tags, stats } = data;
+  const { id, title, coverImage, publishedAt, user, tags, stats } = data;
   const category = tags?.find((tag) => tag.isCategory);
-  const { commentCount, viewCount, favoriteCount, tippedAmountCount } = stats || {
+  const { commentCount, viewCount, collectedCount, tippedAmountCount } = stats || {
     commentCount: 0,
     viewCount: 0,
     favoriteCount: 0,
+    collectedCount: 0,
     likeCount: 0,
     tippedAmountCount: 0,
   };
   const tippedAmount = useBuzzTippingStore({ entityType: 'Article', entityId: data.id });
 
   return (
-    <FeedCard
+    <AspectRatioImageCard
       href={`/articles/${id}/${slugit(title)}`}
       aspectRatio={aspectRatio}
-      useCSSAspectRatio={useCSSAspectRatio}
-    >
-      <div className={classes.root}>
-        <Group
-          spacing={4}
-          position="apart"
-          className={cx(classes.contentOverlay, classes.top)}
-          noWrap
-        >
+      contentType="article"
+      contentId={id}
+      image={coverImage}
+      cosmetic={data.cosmetic?.data}
+      header={
+        <div className="flex w-full justify-between">
           {category && (
             <Badge
-              color="dark"
               size="sm"
-              variant="light"
-              radius="xl"
-              sx={(theme) => ({
-                position: 'absolute',
-                top: theme.spacing.xs,
-                left: theme.spacing.xs,
-                zIndex: 1,
-              })}
+              variant="gradient"
+              gradient={{ from: 'cyan', to: 'blue' }}
+              className={classes.chip}
             >
               {category.name}
             </Badge>
           )}
-          <ArticleContextMenu article={data} ml="auto" />
-        </Group>
-        {cover && (
-          <EdgeMedia
-            src={cover}
-            width={IMAGE_CARD_WIDTH}
-            placeholder="empty"
-            className={classes.image}
-            loading="lazy"
-          />
-        )}
-        <Stack
-          className={cx(classes.contentOverlay, classes.bottom, classes.fullOverlay)}
-          spacing="sm"
-        >
-          {user?.id !== -1 && (
-            <UnstyledButton
-              sx={{ color: 'white' }}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-
-                router.push(`/user/${user.username}`);
-              }}
-            >
-              <UserAvatar user={user} avatarProps={{ radius: 'md', size: 32 }} withUsername />
-            </UnstyledButton>
-          )}
-          <Stack spacing={0}>
+          <ArticleContextMenu article={data} />
+        </div>
+      }
+      footer={
+        <div className="flex w-full flex-col gap-2">
+          <UserAvatarSimple {...user} />
+          <div>
             {publishedAt && (
-              <Text size="xs" weight={500} color="white" inline>
+              <Text className={classes.dropShadow} size="xs" weight={500} color="white" inline>
                 {formatDate(publishedAt)}
               </Text>
             )}
             {title && (
-              <Text size="xl" weight={700} lineClamp={2} lh={1.2}>
+              <Text className={classes.dropShadow} size="xl" weight={700} lineClamp={2} lh={1.2}>
                 {title}
               </Text>
             )}
-          </Stack>
-          <Group position="apart">
-            <Group spacing={4}>
-              <IconBadge icon={<IconBookmark size={14} />} color="dark">
-                <Text size="xs">{abbreviateNumber(favoriteCount)}</Text>
-              </IconBadge>
-              <IconBadge icon={<IconMessageCircle2 size={14} />} color="dark">
+          </div>
+          <div className="flex items-center justify-between gap-1">
+            <Badge className={cx(classes.statChip, classes.chip)} variant="light" radius="xl">
+              <div className="flex items-center gap-0.5">
+                <IconBookmark size={14} strokeWidth={2.5} />
+                <Text size="xs">{abbreviateNumber(collectedCount)}</Text>
+              </div>
+              <div className="flex items-center gap-0.5">
+                <IconMessageCircle2 size={14} strokeWidth={2.5} />
                 <Text size="xs">{abbreviateNumber(commentCount)}</Text>
-              </IconBadge>
+              </div>
               <InteractiveTipBuzzButton toUserId={user.id} entityType={'Article'} entityId={id}>
-                <IconBadge icon={<IconBolt size={14} />} color="dark">
-                  <Text size="xs">{abbreviateNumber(tippedAmountCount + tippedAmount)}</Text>
-                </IconBadge>
+                <div className="flex items-center gap-0.5">
+                  <IconBolt size={14} strokeWidth={2.5} />
+                  <Text size="xs" tt="uppercase">
+                    {abbreviateNumber(tippedAmountCount + tippedAmount)}
+                  </Text>
+                </div>
               </InteractiveTipBuzzButton>
-            </Group>
-            <IconBadge icon={<IconEye size={14} />} color="dark">
-              <Text size="xs">{abbreviateNumber(viewCount)}</Text>
-            </IconBadge>
-          </Group>
-        </Stack>
-      </div>
-    </FeedCard>
+            </Badge>
+            <Badge className={cx(classes.statChip, classes.chip)} variant="light" radius="xl">
+              <div className="flex items-center gap-0.5">
+                <IconEye size={14} strokeWidth={2.5} />
+                <Text size="xs">{abbreviateNumber(viewCount)}</Text>
+              </div>
+            </Badge>
+          </div>
+        </div>
+      }
+    />
   );
 }
 
 type Props = {
-  data: ArticleGetAll['items'][0];
-  aspectRatio?: 'flat' | 'landscape';
-  useCSSAspectRatio?: boolean;
+  data: ArticleGetAllRecord;
+  aspectRatio?: 'landscape' | 'portrait' | 'square';
 };

@@ -1,111 +1,43 @@
+import { Currency } from '~/shared/utils/prisma/enums';
+import type { MetadataParam } from '@stripe/stripe-js';
 import { chunk } from 'lodash-es';
-import { invalidateSession } from '~/server/utils/session-helpers';
+import { Stripe } from 'stripe';
+import { env } from '~/env/server';
+import { constants } from '~/server/common/constants';
+import { dbRead, dbWrite } from '~/server/db/client';
 import {
   handleLogError,
+  throwAuthorizationError,
   throwBadRequestError,
   throwNotFoundError,
   withRetries,
 } from '~/server/utils/errorHandling';
-import * as Schema from '../schema/stripe.schema';
-import { dbWrite, dbRead } from '~/server/db/client';
 import { getServerStripe } from '~/server/utils/get-server-stripe';
-import { Stripe } from 'stripe';
+import { invalidateSession } from '~/server/utils/session-helpers';
 import { getBaseUrl } from '~/server/utils/url-helpers';
-import { env } from '~/env/server.mjs';
 import { createLogger } from '~/utils/logging';
-import { playfab } from '~/server/playfab/client';
-import { Currency } from '@prisma/client';
-import { PaymentIntentCreationSchema } from '../schema/stripe.schema';
-import { MetadataParam } from '@stripe/stripe-js';
-import { constants } from '~/server/common/constants';
 import { formatPriceForDisplay } from '~/utils/number-helpers';
-import { completeStripeBuzzTransaction, createBuzzTransaction } from './buzz.service';
 import { TransactionType } from '../schema/buzz.schema';
+import * as Schema from '../schema/stripe.schema';
+import { PaymentMethodDeleteInput } from '../schema/stripe.schema';
+import {
+  completeStripeBuzzTransaction,
+  createBuzzTransaction,
+  getMultipliersForUser,
+} from './buzz.service';
+import { getOrCreateVault } from '~/server/services/vault.service';
+import { sleep } from '~/server/utils/concurrency-helpers';
+import {
+  SubscriptionProductMetadata,
+  subscriptionProductMetadataSchema,
+} from '~/server/schema/subscriptions.schema';
 
 const baseUrl = getBaseUrl();
 const log = createLogger('stripe', 'blue');
 
-export const getPlans = async () => {
-  const products = await dbRead.product.findMany({
-    where: { active: true, prices: { some: { type: 'recurring', active: true } } },
-    select: {
-      id: true,
-      name: true,
-      description: true,
-      metadata: true,
-      defaultPriceId: true,
-      prices: {
-        select: {
-          id: true,
-          interval: true,
-          intervalCount: true,
-          type: true,
-          unitAmount: true,
-          currency: true,
-          metadata: true,
-        },
-      },
-    },
-  });
-
-  // Only show the default price for a subscription product
-  return products
-    .filter(({ metadata }) => {
-      return !!(metadata as any)?.[env.STRIPE_METADATA_KEY];
-    })
-    .map(({ prices, ...product }) => {
-      const price = prices.filter((x) => x.id === product.defaultPriceId)[0];
-      return {
-        ...product,
-        price: { ...price, unitAmount: price.unitAmount ?? 0 },
-      };
-    })
-    .sort((a, b) => a.price.unitAmount - b.price.unitAmount);
-};
-
-export const getUserSubscription = async ({ userId }: Schema.GetUserSubscriptionInput) => {
-  const subscription = await dbRead.customerSubscription.findUnique({
-    where: { userId },
-    select: {
-      id: true,
-      status: true,
-      cancelAtPeriodEnd: true,
-      cancelAt: true,
-      canceledAt: true,
-      currentPeriodStart: true,
-      currentPeriodEnd: true,
-      createdAt: true,
-      endedAt: true,
-      product: {
-        select: {
-          id: true,
-          name: true,
-          description: true,
-        },
-      },
-      price: {
-        select: {
-          id: true,
-          unitAmount: true,
-          interval: true,
-          intervalCount: true,
-          currency: true,
-        },
-      },
-    },
-  });
-
-  if (!subscription)
-    throw throwNotFoundError(`Could not find subscription for user with id: ${userId}`);
-
-  return {
-    ...subscription,
-    price: { ...subscription.price, unitAmount: subscription.price.unitAmount ?? 0 },
-  };
-};
-
 export const createCustomer = async ({ id, email }: Schema.CreateCustomerInput) => {
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
 
   const user = await dbWrite.user.findUnique({ where: { id }, select: { customerId: true } });
   if (!user?.customerId) {
@@ -129,20 +61,134 @@ export const createSubscribeSession = async ({
   user: Schema.CreateCustomerInput;
 }) => {
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
 
   if (!customerId) {
     customerId = await createCustomer(user);
   }
 
+  const products = await dbRead.product.findMany({});
+  const membershipProducts = products.filter(({ metadata }) => {
+    return !!(metadata as any)?.[env.TIER_METADATA_KEY];
+  });
+
   // Check to see if this user has a subscription with Stripe
   const { data: subscriptions } = await stripe.subscriptions.list({
     customer: customerId,
   });
+  const customer = await stripe.customers.retrieve(customerId);
 
-  if (subscriptions.filter((x) => x.status !== 'canceled').length > 0) {
-    const { url } = await createManageSubscriptionSession({ customerId });
-    await invalidateSession(user.id);
-    return { sessionId: null, url };
+  if (!customer || customer.deleted) {
+    throw throwBadRequestError(`Could not find customer with id: ${customerId}`);
+  }
+
+  const price = await stripe.prices.retrieve(priceId);
+
+  if (!price || !membershipProducts.find((x) => x.id === (price.product as string))) {
+    throw throwNotFoundError(`The product you are trying to purchase does not exists`);
+  }
+
+  const activeSubscription = subscriptions.find((x) => x.status !== 'canceled');
+  const subscriptionItem = activeSubscription?.items.data.find((d) =>
+    membershipProducts.some((p) => p.id === (d.price.product as string))
+  );
+  const activeProduct = membershipProducts.find((p) => p.id === subscriptionItem?.price.product);
+  const priceProduct = products.find((p) => p.id === price.product);
+  const oldTier = ((activeProduct?.metadata ?? {}) as SubscriptionProductMetadata)?.tier;
+  const newTier = ((priceProduct?.metadata ?? {}) as SubscriptionProductMetadata).tier;
+
+  const isUpgrade =
+    activeSubscription &&
+    constants.memberships.tierOrder.indexOf(oldTier) <
+      constants.memberships.tierOrder.indexOf(newTier);
+
+  if (activeSubscription) {
+    if (!subscriptionItem) {
+      throw throwBadRequestError(
+        `Your subscription does not have a main plan. Please contact administration`
+      );
+    }
+
+    const isActivePrice = subscriptionItem.price.id === price.id;
+    if (!isActivePrice) {
+      // Confirm user has a default credit card:
+      if (!customer.default_source) {
+        // Attempt to get and set outselves:
+        const paymentMethods = await stripe.paymentMethods.list({
+          customer: customerId,
+          type: 'card',
+        });
+
+        if (paymentMethods.data.length === 0) {
+          return {
+            sessionId: null,
+            url: `/user/account?missingPaymentMethod=true&tier=${newTier}#payment-methods`,
+          };
+        } else {
+          // Set the first card as the default:
+          await stripe.customers.update(customerId, {
+            invoice_settings: {
+              default_payment_method: paymentMethods.data[0].id,
+            },
+          });
+        }
+      }
+
+      const isFounder =
+        (activeProduct?.metadata as SubscriptionProductMetadata)?.tier ===
+        constants.memberships.founderDiscount.tier;
+
+      const discounts = [];
+
+      if (
+        isUpgrade &&
+        isFounder &&
+        new Date() < constants.memberships.founderDiscount.maxDiscountDate
+      ) {
+        // Create a custom discount for founders to get $5 off
+        const coupon = await stripe.coupons.create({
+          duration: 'once',
+          percent_off: constants.memberships.founderDiscount.discountPercent,
+          max_redemptions: 1,
+          metadata: {
+            customerId,
+          },
+        });
+
+        discounts.push({
+          coupon: coupon.id,
+        });
+      }
+
+      const items = [
+        {
+          id: subscriptionItem.id,
+          price: price.id,
+        },
+      ];
+
+      await stripe.subscriptions.update(subscriptionItem.subscription as string, {
+        items,
+        billing_cycle_anchor: isUpgrade ? 'now' : 'unchanged',
+        proration_behavior: 'none',
+        // Makes it so that if a sub. is not paid, it won't start right away. Should cover us for failed payments during upgrades
+        payment_behavior: isUpgrade ? 'default_incomplete' : undefined,
+        // @ts-ignore This is valid as per stripe's documentation
+        discounts,
+      });
+
+      await invalidateSession(user.id);
+      return {
+        sessionId: null,
+        url: isUpgrade
+          ? `/payment/success?cid=${customerId.slice(-8)}`
+          : `/user/membership?downgraded=true&tier=${newTier}`,
+      };
+    } else {
+      const { url } = await createManageSubscriptionSession({ customerId });
+      await invalidateSession(user.id);
+      return { sessionId: null, url };
+    }
   }
 
   // array of items we are charging the customer
@@ -167,6 +213,7 @@ export const createSubscribeSession = async ({
 
 // export const createPortalSession = async ({ customerId }: { customerId: string }) => {
 //   const stripe = await getServerStripe();
+//   if (!stripe) throw throwBadRequestError('Stripe is not available');
 //   const session = await stripe.billingPortal.sessions.create({
 //     customer: customerId,
 //     return_url: `${baseUrl}/pricing`,
@@ -185,6 +232,7 @@ export const createDonateSession = async ({
   returnUrl: string;
 }) => {
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
 
   if (!customerId) {
     customerId = await createCustomer(user);
@@ -204,10 +252,82 @@ export const createDonateSession = async ({
 
 export const createManageSubscriptionSession = async ({ customerId }: { customerId: string }) => {
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
 
   const session = await stripe.billingPortal.sessions.create({
     customer: customerId,
     return_url: `${baseUrl}/user/account`,
+  });
+
+  return { url: session.url };
+};
+
+export const createSubscriptionChangeSession = async ({
+  customerId,
+  subscriptionId,
+  priceId,
+  subscriptionItemId,
+}: {
+  customerId: string;
+  subscriptionId: string;
+  subscriptionItemId: string;
+  priceId: string;
+}) => {
+  const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
+
+  const session = await stripe.billingPortal.sessions.create({
+    customer: customerId,
+    return_url: `${baseUrl}/user/account`,
+    flow_data: {
+      // @ts-ignore This is valid as per stripe's documentation
+      type: 'subscription_update_confirm',
+      subscription_update_confirm: {
+        subscription: subscriptionId,
+        items: [
+          {
+            id: subscriptionItemId,
+            quantity: 1,
+            price: priceId,
+          },
+        ],
+      },
+      after_completion: {
+        type: 'redirect',
+        redirect: {
+          return_url: `${baseUrl}/payment/success?cid=${customerId.slice(-8)}`,
+        },
+      },
+    },
+  });
+
+  return { url: session.url };
+};
+
+export const createCancelSubscriptionSession = async ({ customerId }: { customerId: string }) => {
+  const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
+
+  // Check to see if this user has a subscription with Stripe
+  const { data: subscriptions } = await stripe.subscriptions.list({
+    customer: customerId,
+  });
+
+  const activeSubscription = subscriptions.find((x) => x.status !== 'canceled');
+  if (!activeSubscription) {
+    throw throwBadRequestError(`No active subscription found`);
+  }
+
+  const session = await stripe.billingPortal.sessions.create({
+    customer: customerId,
+    return_url: `${baseUrl}/user/account`,
+    flow_data: {
+      // @ts-ignore This is valid as per stripe's documentation
+      type: 'subscription_cancel',
+      subscription_cancel: {
+        subscription: activeSubscription.id,
+      },
+    },
   });
 
   return { url: session.url };
@@ -219,8 +339,12 @@ export const createBuzzSession = async ({
   returnUrl,
   priceId,
   customAmount,
-}: Schema.CreateBuzzSessionInput & { customerId?: string; user: Schema.CreateCustomerInput }) => {
+}: Schema.CreateBuzzSessionInput & {
+  customerId?: string;
+  user: Schema.CreateCustomerInput;
+}) => {
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
 
   if (!customerId) {
     customerId = await createCustomer(user);
@@ -230,6 +354,7 @@ export const createBuzzSession = async ({
     where: { id: priceId },
     select: { productId: true, currency: true, type: true },
   });
+
   if (!price)
     throw throwNotFoundError(`The product you are trying to purchase does not exists: ${priceId}`);
 
@@ -261,24 +386,54 @@ export const upsertSubscription = async (
   eventDate: Date,
   eventType: string
 ) => {
+  const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
+
+  const isUpdatingSubscription = eventType === 'customer.subscription.updated';
+  if (isUpdatingSubscription) {
+    // We need to wait a bit to avoid race conditions
+    await sleep(5000);
+  }
+
   const user = await dbWrite.user.findFirst({
     where: { customerId: customerId },
     select: {
       id: true,
       customerId: true,
       subscriptionId: true,
-      subscription: { select: { updatedAt: true, status: true } },
+      subscription: {
+        select: { updatedAt: true, status: true },
+      },
     },
   });
 
   if (!user) throw throwNotFoundError(`User with customerId: ${customerId} not found`);
 
   const userHasSubscription = !!user.subscriptionId;
-  const startingNewSubscription = userHasSubscription && user.subscriptionId !== subscription.id;
+  const isSameSubscriptionItem = user.subscriptionId === subscription.id;
   const isCreatingSubscription = eventType === 'customer.subscription.created';
+  const isCancelingSubscription = eventType === 'customer.subscription.deleted';
+
+  const startingNewSubscription =
+    isCreatingSubscription && userHasSubscription && !isSameSubscriptionItem;
+
+  log('Subscription event:', eventType);
+
+  if (isCancelingSubscription && subscription.cancel_at === null) {
+    // immediate cancel:
+    log('Subscription canceled immediately');
+    await dbWrite.customerSubscription.delete({ where: { id: user.subscriptionId as string } });
+    await getMultipliersForUser(user.id, true);
+    await invalidateSession(user.id);
+    return;
+  }
+
   if (startingNewSubscription) {
     log('Subscription id changed, deleting old subscription');
-    await dbWrite.customerSubscription.delete({ where: { id: user.subscriptionId as string } });
+    if (user.subscriptionId) {
+      await dbWrite.customerSubscription.delete({ where: { userId: user.id } });
+    }
+    await dbWrite.user.update({ where: { id: user.id }, data: { subscriptionId: null } });
   } else if (userHasSubscription && isCreatingSubscription) {
     log('Subscription already up to date');
     return;
@@ -303,20 +458,41 @@ export const upsertSubscription = async (
   };
 
   await dbWrite.$transaction([
-    isCreatingSubscription
-      ? dbWrite.customerSubscription.create({ data })
-      : dbWrite.customerSubscription.upsert({ where: { id: data.id }, update: data, create: data }),
+    dbWrite.customerSubscription.upsert({ where: { id: data.id }, update: data, create: data }),
     dbWrite.user.update({ where: { id: user.id }, data: { subscriptionId: subscription.id } }),
   ]);
 
-  if (user.subscription?.status !== data.status && ['active', 'canceled'].includes(data.status)) {
-    await playfab.trackEvent(user.id, {
-      eventName: data.status === 'active' ? 'user_start_membership' : 'user_cancel_membership',
-      productId: data.productId,
+  const userVault = await dbRead.vault.findFirst({
+    where: { userId: user.id },
+  });
+
+  // Get Stripe details on the vault:
+  const product = await dbRead.product.findFirst({
+    where: { id: data.productId },
+  });
+
+  if (data.status === 'canceled' && userVault) {
+    await dbWrite.vault.update({
+      where: { userId: user.id },
+      data: {
+        storageKb: 0, // Reset storage to 0
+      },
     });
+  } else if (data.status === 'active') {
+    const parsedMeta = subscriptionProductMetadataSchema.safeParse(product?.metadata);
+    const vault = userVault ? userVault : await getOrCreateVault({ userId: user.id });
+    if (parsedMeta.success && vault.storageKb !== parsedMeta.data.vaultSizeKb) {
+      await dbWrite.vault.update({
+        where: { userId: vault.userId },
+        data: {
+          storageKb: parsedMeta.data.vaultSizeKb,
+        },
+      });
+    }
   }
 
   await invalidateSession(user.id);
+  await getMultipliersForUser(user.id, true);
 };
 
 export const toDateTime = (secs: number) => {
@@ -334,11 +510,13 @@ export const upsertProductRecord = async (product: Stripe.Product) => {
     metadata: product.metadata,
     defaultPriceId: product.default_price as string | null,
   };
+
   await dbWrite.product.upsert({
     where: { id: product.id },
     update: productData,
     create: productData,
   });
+
   return productData;
 };
 
@@ -365,6 +543,7 @@ export const upsertPriceRecord = async (price: Stripe.Price) => {
 
 export const initStripePrices = async () => {
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
   const { data: prices } = await stripe.prices.list();
   await Promise.all(
     prices.map(async (price) => {
@@ -375,6 +554,7 @@ export const initStripePrices = async () => {
 
 export const initStripeProducts = async () => {
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
   const { data: products } = await stripe.products.list();
   await Promise.all(
     products.map(async (product) => {
@@ -385,13 +565,18 @@ export const initStripeProducts = async () => {
 
 export const manageCheckoutPayment = async (sessionId: string, customerId: string) => {
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
+  const user = await dbWrite.user.findUniqueOrThrow({
+    where: { customerId },
+    select: { id: true, customerId: true },
+  });
   const { line_items, payment_status } = await stripe.checkout.sessions.retrieve(sessionId, {
     expand: ['line_items'],
   });
 
   const purchases =
     line_items?.data.map((data) => ({
-      customerId,
+      userId: user.id,
       priceId: data.price?.id,
       productId: data.price?.product as string | undefined,
       status: payment_status,
@@ -405,10 +590,11 @@ export const manageCheckoutPayment = async (sessionId: string, customerId: strin
 export const manageInvoicePaid = async (invoice: Stripe.Invoice) => {
   // Check if user exists and has a customerId
   // Use write db to avoid replication lag between webhook requests
-  const user = await dbWrite.user.findUnique({
-    where: { email: invoice.customer_email as string },
+  const user = await dbWrite.user.findUniqueOrThrow({
+    where: { customerId: invoice.customer as string },
     select: { id: true, customerId: true },
   });
+
   if (user && !user.customerId) {
     // Since we're handling an invoice, we assume that the user
     // is already created in stripe. We just update in our records
@@ -419,7 +605,7 @@ export const manageInvoicePaid = async (invoice: Stripe.Invoice) => {
   }
 
   const purchases = invoice.lines.data.map((data) => ({
-    customerId: invoice.customer as string,
+    userId: user.id,
     priceId: data.price?.id,
     productId: data.price?.product as string | undefined,
     status: invoice.status,
@@ -428,15 +614,41 @@ export const manageInvoicePaid = async (invoice: Stripe.Invoice) => {
   await dbWrite.purchase.createMany({ data: purchases });
 
   // Don't check for subscription active because there is a chance it hasn't been updated yet
-  if (invoice.subscription && user) {
+  if (
+    invoice.subscription &&
+    user &&
+    invoice.billing_reason &&
+    ['subscription_cycle', 'subscription_create', 'subscription_update'].includes(
+      invoice.billing_reason
+    )
+  ) {
+    const products = (await dbRead.product.findMany()).filter(
+      (p) => !!(p.metadata as any)?.[env.TIER_METADATA_KEY]
+    );
+    const billedProduct = products.find((p) =>
+      invoice.lines.data.some((l) => l.price?.product === p.id)
+    );
+
+    if (!billedProduct) {
+      return;
+    }
+
+    const billedProductMeta = (billedProduct?.metadata ?? {}) as SubscriptionProductMetadata;
+    const mainPurchase = purchases.find((p) => p.productId === billedProduct?.id);
+
+    if (!mainPurchase) {
+      // Give you no buzz. You no pay.
+      return;
+    }
+
     await withRetries(() =>
       createBuzzTransaction({
         fromAccountId: 0,
         toAccountId: user.id,
-        type: TransactionType.Reward,
+        type: TransactionType.Purchase,
         externalTransactionId: invoice.id,
-        amount: 5000, // Hardcoded for now cause we only have one subscription option
-        description: 'Membership bonus',
+        amount: billedProductMeta.monthlyBuzz ?? 3000, // assume a min of 3000.
+        description: `Membership bonus`,
         details: { invoiceId: invoice.id },
       })
     ).catch(handleLogError);
@@ -459,8 +671,10 @@ export const cancelSubscription = async ({
     subscriptionId = subscription.id;
   }
 
-  if (!subscriptionId) throw new Error('No subscription found');
+  if (!subscriptionId) return;
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
+
   await stripe.subscriptions.del(subscriptionId);
 };
 
@@ -498,6 +712,8 @@ export const getBuzzPackages = async () => {
   });
 };
 
+const futureUsageNotSupportedPaymentMethods = ['customer_balance', 'wechat_pay'];
+
 export const getPaymentIntent = async ({
   unitAmount,
   currency = Currency.USD,
@@ -505,7 +721,11 @@ export const getPaymentIntent = async ({
   paymentMethodTypes,
   customerId,
   user,
-}: PaymentIntentCreationSchema & { user: { id: number; email: string }; customerId?: string }) => {
+  setupFuturePayment = true,
+}: Schema.PaymentIntentCreationSchema & {
+  user: { id: number; email: string };
+  customerId?: string;
+}) => {
   // TODO: If a user doesn't exist, create one. Initially, this will be protected, but ideally, we should create the user on our end
   if (!customerId) {
     customerId = await createCustomer(user);
@@ -523,21 +743,27 @@ export const getPaymentIntent = async ({
   }
 
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
   const paymentIntent = await stripe.paymentIntents.create({
     amount: unitAmount,
     currency,
-    automatic_payment_methods: !paymentMethodTypes
-      ? {
-          enabled: true,
-        }
-      : undefined,
+    automatic_payment_methods:
+      !paymentMethodTypes && setupFuturePayment
+        ? {
+            enabled: true,
+          }
+        : undefined,
     customer: customerId,
     metadata: metadata as MetadataParam,
-    payment_method_types: paymentMethodTypes || undefined,
+    payment_method_types: setupFuturePayment
+      ? paymentMethodTypes || undefined
+      : futureUsageNotSupportedPaymentMethods,
+    setup_future_usage: setupFuturePayment ? 'off_session' : undefined,
   });
 
   return {
     clientSecret: paymentIntent.client_secret,
+    paymentMethodTypes: paymentIntent.payment_method_types,
   };
 };
 
@@ -552,6 +778,7 @@ export const getPaymentIntentsForBuzz = async ({
       where: { id: userId },
       select: { customerId: true },
     });
+
     if (!user) throw new Error(`No user with id ${userId}`);
 
     customer = user.customerId ?? undefined; // undefined is required for the stripe api
@@ -562,6 +789,7 @@ export const getPaymentIntentsForBuzz = async ({
   const unixEndingAt = endingAt ? Math.floor(endingAt.getTime() / 1000) : undefined;
 
   const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
   const paymentIntents = await stripe.paymentIntents.list({
     customer,
     limit: 100, // max limit is 100
@@ -601,4 +829,73 @@ export const getPaymentIntentsForBuzz = async ({
   }
 
   return processedPurchases;
+};
+
+export const getSetupIntent = async ({
+  paymentMethodTypes,
+  customerId,
+  user,
+}: Schema.SetupIntentCreateSchema & {
+  user: { id: number; email: string };
+  customerId?: string;
+}) => {
+  if (!customerId) {
+    customerId = await createCustomer(user);
+  }
+
+  const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
+  const setupIntent = await stripe.setupIntents.create({
+    automatic_payment_methods: !paymentMethodTypes
+      ? {
+          enabled: true,
+        }
+      : undefined,
+    customer: customerId,
+    payment_method_types: paymentMethodTypes || undefined,
+  });
+
+  return {
+    clientSecret: setupIntent.client_secret,
+  };
+};
+
+export const getCustomerPaymentMethods = async (customerId: string) => {
+  const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
+  const paymentMethods = await stripe.paymentMethods.list({
+    customer: customerId,
+  });
+
+  return paymentMethods.data;
+};
+
+export const deleteCustomerPaymentMethod = async ({
+  paymentMethodId,
+  userId,
+  isModerator,
+}: PaymentMethodDeleteInput & {
+  userId: number;
+  isModerator: boolean;
+}) => {
+  const stripe = await getServerStripe();
+  if (!stripe) throw throwBadRequestError('Stripe is not available');
+  const paymentMethod = await stripe.paymentMethods.retrieve(paymentMethodId);
+
+  if (!paymentMethod) {
+    throwBadRequestError(`No payment method with id ${paymentMethodId}`);
+  }
+
+  const user = await dbWrite.user.findUnique({
+    where: { id: userId },
+    select: { customerId: true },
+  });
+
+  if (!user && !isModerator) throw throwBadRequestError(`No user with id ${userId}`);
+
+  if (user?.customerId !== paymentMethod.customer && !isModerator) {
+    throw throwAuthorizationError(`Payment method does not belong to user with id ${userId}`);
+  }
+
+  return await stripe.paymentMethods.detach(paymentMethodId);
 };

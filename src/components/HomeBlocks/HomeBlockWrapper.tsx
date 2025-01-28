@@ -4,10 +4,10 @@ import React from 'react';
 
 export const HomeBlockWrapper = ({ children, ...props }: Props) => {
   return (
-    <MasonryContainer fluid {...props}>
-      {children}
-    </MasonryContainer>
+    <div>
+      <MasonryContainer {...props}>{children}</MasonryContainer>
+    </div>
   );
 };
 
-type Props = ContainerProps & { bleedRight?: boolean };
+type Props = ContainerProps;

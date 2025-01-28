@@ -1,22 +1,28 @@
-import { ModelHashType, ModelStatus, Prisma, ScanResultCode } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { ModelFile } from '~/shared/utils/prisma/models';
+import { ModelHashType, ModelStatus, ScanResultCode } from '~/shared/utils/prisma/enums';
 import { z } from 'zod';
-
-import { env } from '~/env/server.mjs';
-import { dbRead, dbWrite } from '~/server/db/client';
+import { env } from '~/env/server';
+import { NotificationCategory, SearchIndexUpdateQueueAction } from '~/server/common/enums';
+import { dbWrite } from '~/server/db/client';
 import { ScannerTasks } from '~/server/jobs/scan-files';
+import { dataForModelsCache } from '~/server/redis/caches';
+import { ModelMeta } from '~/server/schema/model.schema';
+import { modelsSearchIndex } from '~/server/search-index';
+import { deleteFilesForModelVersionCache } from '~/server/services/model-file.service';
+import { isModelHashBlocked, unpublishModelById } from '~/server/services/model.service';
+import { createNotification } from '~/server/services/notification.service';
 import { WebhookEndpoint } from '~/server/utils/endpoint-helpers';
-import { bytesToKB } from '~/utils/number-helpers';
-import { getGetUrl } from '~/utils/s3-utils';
 
 export default WebhookEndpoint(async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { fileId, ...query } = querySchema.parse(req.query);
   const tasks = query.tasks ?? ['Import', 'Scan', 'Hash', 'ParseMetadata'];
-  const scanResult: ScanResult = req.body;
+  const { metadata, ...scanResult }: ScanResult = req.body;
 
   const where: Prisma.ModelFileFindUniqueArgs['where'] = { id: fileId };
-  const file = await dbRead.modelFile.findUnique({ where });
+  const file = await dbWrite.modelFile.findUnique({ where });
   if (!file) return res.status(404).json({ error: 'File not found' });
 
   const data: Prisma.ModelFileUpdateInput = {};
@@ -35,49 +41,27 @@ export default WebhookEndpoint(async (req, res) => {
     if (hasDanger) scanResult.picklescanExitCode = ScanExitCode.Danger;
   }
 
-  if (tasks.includes('ParseMetadata')) {
-    data.headerData = scanResult.metadata;
+  if (tasks.includes('ParseMetadata') && metadata?.__metadata__) {
+    const headerData = metadata?.__metadata__ as MixedObject;
+    try {
+      if (typeof headerData?.ss_tag_frequency === 'string')
+        headerData.ss_tag_frequency = JSON.parse(headerData.ss_tag_frequency);
+    } catch {}
+    data.headerData = headerData;
   }
 
   // Update url if we imported/moved the file
   if (tasks.includes('Import')) {
     data.exists = scanResult.fileExists === 1;
-    const bucket = env.S3_SETTLED_BUCKET;
+    const bucket = env.S3_UPLOAD_BUCKET;
     const scannerImportedFile = !file.url.includes(bucket) && scanResult.url.includes(bucket);
     if (data.exists && scannerImportedFile) data.url = scanResult.url;
     if (!data.exists) await unpublish(file.modelVersionId);
   }
 
-  if (tasks.includes('Convert')) {
-    // TODO justin: handle conversion result
-    const [format, { url, hashes, conversionOutput }] = Object.entries(scanResult.conversions)[0];
-    const baseUrl = url.split('?')[0];
-    const convertedName = baseUrl.split('/').pop();
-    if (convertedName) {
-      const { url: s3Url } = await getGetUrl(baseUrl);
-      const { headers } = await fetch(s3Url, { method: 'HEAD' });
-      const sizeKB = bytesToKB(parseInt(headers.get('Content-Length') ?? '0'));
-      await dbWrite.modelFile.create({
-        data: {
-          name: convertedName,
-          sizeKB,
-          modelVersionId: file.modelVersionId,
-          url: baseUrl,
-          type: file.type,
-          metadata: { format: format === 'safetensors' ? 'SafeTensor' : 'PickleTensor' },
-          hashes: {
-            create: Object.entries(hashes).map(([type, hash]) => ({
-              type: hashTypeMap[type.toLowerCase()] as ModelHashType,
-              hash,
-            })),
-          },
-        },
-      });
-    }
-  }
-
   // Update if we made changes...
-  if (Object.keys(data).length > 0) await dbWrite.modelFile.update({ where, data });
+  let updatedFile: ModelFile | undefined;
+  if (Object.keys(data).length > 0) updatedFile = await dbWrite.modelFile.update({ where, data });
 
   // Update hashes
   if (tasks.includes('Hash') && scanResult.hashes) {
@@ -93,6 +77,81 @@ export default WebhookEndpoint(async (req, res) => {
           })),
       }),
     ]);
+
+    const sha256Hash = scanResult.hashes.SHA256;
+    if (sha256Hash && (await isModelHashBlocked(sha256Hash))) {
+      await unpublishBlockedModel(file.modelVersionId);
+    }
+  }
+
+  // Hanlde file conversion
+  if (tasks.includes('Convert') && scanResult.conversions) {
+    const [format, { url, hashes, sizeKB }] = Object.entries(scanResult.conversions)[0];
+    const baseUrl = url.split('?')[0];
+    const convertedName = baseUrl.split('/').pop();
+    if (convertedName) {
+      const existingFile = updatedFile ?? file;
+      await dbWrite.modelFile.create({
+        data: {
+          name: convertedName,
+          sizeKB,
+          modelVersionId: existingFile.modelVersionId,
+          url: baseUrl,
+          type: existingFile.type,
+          metadata: { format: format === 'safetensors' ? 'SafeTensor' : 'PickleTensor' },
+          hashes: {
+            create: Object.entries(hashes).map(([type, hash]) => ({
+              type: hashTypeMap[type.toLowerCase()] as ModelHashType,
+              hash,
+            })),
+          },
+          scannedAt: existingFile.scannedAt,
+          rawScanResult: existingFile.rawScanResult ?? Prisma.JsonNull,
+          virusScanResult: existingFile.virusScanResult,
+          virusScanMessage: existingFile.virusScanMessage,
+          pickleScanResult: existingFile.pickleScanResult,
+          pickleScanMessage: existingFile.pickleScanMessage,
+        },
+      });
+    }
+  }
+
+  // Update search index
+  const version = await dbWrite.modelVersion.findUnique({
+    where: { id: file.modelVersionId },
+    select: { modelId: true },
+  });
+  if (version?.modelId) {
+    await modelsSearchIndex.queueUpdate([
+      {
+        id: version.modelId,
+        action: SearchIndexUpdateQueueAction.Update,
+      },
+    ]);
+    await dataForModelsCache.bust(version.modelId);
+  }
+  await deleteFilesForModelVersionCache(file.modelVersionId);
+
+  if (scanResult.fixed?.includes('sshs_hash')) {
+    const version = await dbWrite.modelVersion.findUnique({
+      where: { id: file.modelVersionId },
+      select: { id: true, name: true, model: { select: { userId: true, id: true, name: true } } },
+    });
+
+    if (version?.model?.userId) {
+      await createNotification({
+        category: NotificationCategory.System,
+        type: 'model-hash-fix',
+        key: `model-hash-fix:${version.model.id}:${file.id}`,
+        details: {
+          modelId: version.model.id,
+          versionId: version.id,
+          modelName: version.model.name,
+          versionName: version.name,
+        },
+        userId: version.model.userId,
+      });
+    }
   }
 
   res.status(200).json({ ok: true });
@@ -100,6 +159,24 @@ export default WebhookEndpoint(async (req, res) => {
 
 const hashTypeMap: Record<string, string> = {};
 for (const t of Object.keys(ModelHashType)) hashTypeMap[t.toLowerCase()] = t;
+
+async function unpublishBlockedModel(modelVersionId: number) {
+  const { model } = (await dbWrite.modelVersion.findUnique({
+    where: { id: modelVersionId },
+    select: { id: true, model: true },
+  })) ?? { model: { id: null, meta: null } };
+  if (!model.id) return;
+
+  const meta = (model.meta as ModelMeta | null) || {};
+  await unpublishModelById({
+    id: model.id,
+    reason: 'duplicate',
+    meta,
+    customMessage: 'Model has been unpublished due to matching a blocked hash',
+    userId: -1,
+    isModerator: true,
+  });
+}
 
 async function unpublish(modelVersionId: number) {
   await dbWrite.modelVersion.update({
@@ -160,11 +237,13 @@ type ScanResult = {
   hashes: Record<ModelHashType, string>;
   metadata: MixedObject;
   conversions: Record<'safetensors' | 'ckpt', ConversionResult>;
+  fixed?: string[];
 };
 
 type ConversionResult = {
   url: string;
   hashes: Record<ModelHashType, string>;
+  sizeKB: number;
   conversionOutput: string;
 };
 
@@ -187,7 +266,7 @@ function examinePickleScanMessage({
   picklescanExitCode,
   picklescanDangerousImports,
   picklescanGlobalImports,
-}: ScanResult) {
+}: Omit<ScanResult, 'metadata'>) {
   if (picklescanExitCode === ScanExitCode.Pending) return {};
   picklescanDangerousImports ??= [];
   picklescanGlobalImports ??= [];

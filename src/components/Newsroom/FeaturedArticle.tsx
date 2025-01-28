@@ -8,9 +8,10 @@ import {
   Text,
   Title,
 } from '@mantine/core';
-import { NextLink } from '@mantine/next';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
 import type { CivitaiNewsItem } from '~/server/services/article.service';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 export const FeaturedArticle = ({
   article,
@@ -20,9 +21,15 @@ export const FeaturedArticle = ({
   const { classes, cx } = useStyles({ color: 'blue' });
   return (
     <Box className={cx(classes.card, className)} {...props}>
-      <Box className={classes.imageContainer}>
-        <EdgeMedia src={article.cover} width={512} alt={`Cover image for ${article.title}`} />
-      </Box>
+      {article.coverImage && (
+        <Box className={classes.imageContainer}>
+          <EdgeMedia
+            src={article.coverImage.url}
+            width={512}
+            alt={`Cover image for ${article.title}`}
+          />
+        </Box>
+      )}
       <Stack className={classes.stack}>
         <Title className={classes.title} order={2}>
           {article.title}
@@ -31,7 +38,7 @@ export const FeaturedArticle = ({
         <Text className={classes.text}>{article.summary}</Text>
 
         <Button
-          component={NextLink}
+          component={Link}
           href={`/articles/${article.id}`}
           size="lg"
           className={classes.action}
@@ -86,13 +93,13 @@ const useStyles = createStyles((theme, { color }: { color: MantineColor }, getRe
   },
   title: {
     fontSize: theme.fontSizes.lg,
-    [theme.fn.largerThan('md')]: {
+    [containerQuery.largerThan('md')]: {
       fontSize: theme.fontSizes.xl,
     },
   },
   text: {
     fontSize: theme.fontSizes.md,
-    [theme.fn.largerThan('md')]: {
+    [containerQuery.largerThan('md')]: {
       fontSize: theme.fontSizes.lg,
     },
   },

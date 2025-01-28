@@ -5,14 +5,19 @@ import { automaticMetadataProcessor } from '~/utils/metadata/automatic.metadata'
 import { comfyMetadataProcessor } from '~/utils/metadata/comfy.metadata';
 import { isDefined } from '~/utils/type-guards';
 import { auditImageMeta, preprocessFile } from '~/utils/media-preprocessors';
-import { MediaType } from '@prisma/client';
+import { MediaType } from '~/shared/utils/prisma/enums';
 import { showErrorNotification } from '~/utils/notifications';
 import { calculateSizeInMegabytes } from '~/utils/json-helpers';
 import { constants } from '~/server/common/constants';
+import { rfooocusMetadataProcessor } from '~/utils/metadata/rfooocus.metadata';
+import { setGlobalValue } from '~/utils/metadata/base.metadata';
+import { swarmUIMetadataProcessor } from '~/utils/metadata/swarmui.metadata';
 
 const parsers = {
   automatic: automaticMetadataProcessor,
+  swarmui: swarmUIMetadataProcessor,
   comfy: comfyMetadataProcessor,
+  rfooocus: rfooocusMetadataProcessor,
 };
 
 export async function getMetadata(file: File) {
@@ -28,12 +33,14 @@ export async function getMetadata(file: File) {
       // @ts-ignore - this is a hack to not have to rework our downstream code
       exif.userComment = Int32Array.from(exif.UserComment);
     }
+    setGlobalValue('exif', exif);
 
     let metadata = {};
     try {
       const { parse } = Object.values(parsers).find((x) => x.canParse(exif)) ?? {};
       if (parse) metadata = parse(exif);
-    } catch (e: any) { //eslint-disable-line
+    } catch (e: any) {
+      //eslint-disable-line
       console.error('Error parsing metadata', e);
     }
     const result = imageMetaSchema.safeParse(metadata);
@@ -51,6 +58,7 @@ export const parsePromptMetadata = (generationDetails: string) => {
   return automaticMetadataProcessor.parse({ generationDetails });
 };
 
+export type DataFromFile = AsyncReturnType<typeof getDataFromFile>;
 export const getDataFromFile = async (file: File) => {
   const processed = await preprocessFile(file);
   const { blockedFor } = await auditImageMeta(
@@ -69,7 +77,7 @@ export const getDataFromFile = async (file: File) => {
         metadata.height > constants.mediaUpload.maxVideoDimension
       )
         throw new Error(
-          `Images cannot be larger than ${constants.mediaUpload.maxVideoDimension}px from either side. Please resize your image and try again.`
+          `Images cannot be larger than ${constants.mediaUpload.maxVideoDimension}px from either side. Please resize your image or video and try again.`
         );
     } catch (error: any) {
       showErrorNotification({ error });
@@ -91,6 +99,8 @@ export const getDataFromFile = async (file: File) => {
     }
   }
 
+  const { height, width, hash } = processed.metadata;
+
   return {
     file,
     uuid: uuidv4(),
@@ -98,8 +108,10 @@ export const getDataFromFile = async (file: File) => {
       ? ('blocked' as TrackedFile['status'])
       : ('uploading' as TrackedFile['status']),
     message: blockedFor?.filter(isDefined).join(', '),
+    height,
+    width,
+    hash,
     ...processed,
-    ...processed.metadata,
     url: processed.objectUrl,
   };
 };

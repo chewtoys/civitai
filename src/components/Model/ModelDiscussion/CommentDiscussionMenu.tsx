@@ -11,12 +11,12 @@ import {
   IconLockOpen,
   IconBan,
 } from '@tabler/icons-react';
-import { SessionUser } from 'next-auth';
 import { useDialogContext } from '~/components/Dialog/DialogProvider';
 import { triggerRoutedDialog } from '~/components/Dialog/RoutedDialogProvider';
 
+import { openReportModal } from '~/components/Dialog/dialog-registry';
 import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
-import { openContext } from '~/providers/CustomModalsProvider';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { ReportEntity } from '~/server/schema/report.schema';
 import { CommentGetAllItem } from '~/types/router';
 import { showErrorNotification } from '~/utils/notifications';
@@ -24,13 +24,13 @@ import { trpc } from '~/utils/trpc';
 
 export function CommentDiscussionMenu({
   comment,
-  user,
   size = 'xs',
   hideLockOption = false,
   ...props
 }: Props) {
   const queryUtils = trpc.useContext();
   const dialog = useDialogContext();
+  const user = useCurrentUser();
 
   const isMod = user?.isModerator ?? false;
   const isOwner = comment.user.id === user?.id;
@@ -221,7 +221,7 @@ export function CommentDiscussionMenu({
             <Menu.Item
               icon={<IconFlag size={14} stroke={1.5} />}
               onClick={() =>
-                openContext('report', { entityType: ReportEntity.Comment, entityId: comment.id })
+                openReportModal({ entityType: ReportEntity.Comment, entityId: comment.id })
               }
             >
               Report
@@ -235,7 +235,6 @@ export function CommentDiscussionMenu({
 
 type Props = MenuProps & {
   comment: Pick<CommentGetAllItem, 'id' | 'user' | 'locked' | 'hidden' | 'modelId'>;
-  user?: SessionUser | null;
   size?: MantineNumberSize;
   hideLockOption?: boolean;
 };

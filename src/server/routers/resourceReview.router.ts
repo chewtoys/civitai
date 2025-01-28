@@ -31,7 +31,6 @@ import {
   getResourceReview,
   getResourceReviewsInfinite,
   getUserResourceReview,
-  toggleExcludeResourceReview,
 } from '~/server/services/resourceReview.service';
 import { moderatorProcedure } from '~/server/trpc';
 import { getByUsernameSchema } from '~/server/schema/user.schema';
@@ -61,7 +60,11 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
 });
 
 export const resourceReviewRouter = router({
-  get: publicProcedure.input(getByIdSchema).query(({ input }) => getResourceReview(input)),
+  get: publicProcedure
+    .input(getByIdSchema)
+    .query(({ input, ctx }) =>
+      getResourceReview({ ...input, userId: ctx.user?.id, isModerator: ctx.user?.isModerator })
+    ),
   getUserResourceReview: protectedProcedure
     .input(getUserResourceReviewSchema)
     .query(({ input, ctx }) => getUserResourceReview({ ...input, userId: ctx.user.id })),
@@ -70,7 +73,7 @@ export const resourceReviewRouter = router({
     .query(({ input }) => getResourceReviewsInfinite(input)),
   getPaged: publicProcedure
     .input(getResourceReviewPagedSchema)
-    .query(({ input }) => getPagedResourceReviews(input)),
+    .query(({ input, ctx }) => getPagedResourceReviews({ input, userId: ctx.user?.id })),
   getRatingTotals: publicProcedure
     .input(getRatingTotalsSchema)
     .query(({ input }) => getRatingTotals(input)),

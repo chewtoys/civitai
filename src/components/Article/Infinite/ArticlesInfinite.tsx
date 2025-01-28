@@ -1,28 +1,33 @@
-import { Center, Loader, LoadingOverlay, Stack, Text, ThemeIcon } from '@mantine/core';
+import { Button, Center, Loader, LoadingOverlay } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconCloudOff } from '@tabler/icons-react';
 import { isEqual } from 'lodash-es';
 import { useEffect } from 'react';
 
-import { ArticleCard } from '~/components/Article/Infinite/ArticleCard';
 import { useArticleFilters, useQueryArticles } from '~/components/Article/article.utils';
 import { EndOfFeed } from '~/components/EndOfFeed/EndOfFeed';
-import { UniformGrid } from '~/components/MasonryColumns/UniformGrid';
 import { NoContent } from '~/components/NoContent/NoContent';
 import { GetInfiniteArticlesSchema } from '~/server/schema/article.schema';
 import { removeEmpty } from '~/utils/object-helpers';
 import { InViewLoader } from '~/components/InView/InViewLoader';
+import { ArticleCard } from '~/components/Cards/ArticleCard';
+import { MasonryGrid } from '~/components/MasonryColumns/MasonryGrid';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 
-export function ArticlesInfinite({ filters: filterOverrides = {}, showEof = false }: Props) {
+export function ArticlesInfinite({
+  filters: filterOverrides = {},
+  showEof = false,
+  showEmptyCta,
+  disableStoreFilters,
+}: Props) {
   const articlesFilters = useArticleFilters();
 
-  const filters = removeEmpty({ ...articlesFilters, ...filterOverrides });
+  const filters = disableStoreFilters
+    ? filterOverrides
+    : removeEmpty({ ...articlesFilters, ...filterOverrides });
   const [debouncedFilters, cancel] = useDebouncedValue(filters, 500);
 
-  const { articles, isLoading, fetchNextPage, hasNextPage, isRefetching } = useQueryArticles(
-    debouncedFilters,
-    { keepPreviousData: true }
-  );
+  const { articles, isLoading, fetchNextPage, hasNextPage, isRefetching, isFetching } =
+    useQueryArticles(debouncedFilters, { keepPreviousData: true });
 
   //#region [useEffect] cancel debounced filters
   useEffect(() => {
@@ -39,7 +44,7 @@ export function ArticlesInfinite({ filters: filterOverrides = {}, showEof = fals
       ) : !!articles.length ? (
         <div style={{ position: 'relative' }}>
           <LoadingOverlay visible={isRefetching ?? false} zIndex={9} />
-          <UniformGrid
+          <MasonryGrid
             data={articles}
             render={ArticleCard}
             itemId={(x) => x.id}
@@ -48,7 +53,7 @@ export function ArticlesInfinite({ filters: filterOverrides = {}, showEof = fals
           {hasNextPage && (
             <InViewLoader
               loadFn={fetchNextPage}
-              loadCondition={!isRefetching}
+              loadCondition={!isFetching}
               style={{ gridColumn: '1/-1' }}
             >
               <Center p="xl" sx={{ height: 36 }} mt="md">
@@ -59,17 +64,13 @@ export function ArticlesInfinite({ filters: filterOverrides = {}, showEof = fals
           {!hasNextPage && showEof && <EndOfFeed />}
         </div>
       ) : (
-        <Stack align="center" py="lg">
-          <ThemeIcon size={128} radius={100}>
-            <IconCloudOff size={80} />
-          </ThemeIcon>
-          <Text size={32} align="center">
-            No results found
-          </Text>
-          <Text align="center">
-            {"Try adjusting your search or filters to find what you're looking for"}
-          </Text>
-        </Stack>
+        <NoContent py="lg">
+          {showEmptyCta && (
+            <Link href="/articles/create">
+              <Button radius="xl">Write an Article</Button>
+            </Link>
+          )}
+        </NoContent>
       )}
     </>
   );
@@ -78,4 +79,6 @@ export function ArticlesInfinite({ filters: filterOverrides = {}, showEof = fals
 type Props = {
   filters?: Partial<GetInfiniteArticlesSchema>;
   showEof?: boolean;
+  showEmptyCta?: boolean;
+  disableStoreFilters?: boolean;
 };

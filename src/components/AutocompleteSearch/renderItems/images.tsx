@@ -2,36 +2,38 @@ import React, { forwardRef } from 'react';
 import { AutocompleteItem, Badge, BadgeProps, Center, Group, Stack, Text } from '@mantine/core';
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
 import { IconMessageCircle2, IconMoodSmile } from '@tabler/icons-react';
-import { Highlight } from 'react-instantsearch';
 import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { abbreviateNumber } from '~/utils/number-helpers';
-import { Hit } from 'instantsearch.js';
-import { ImageSearchIndexRecord } from '~/server/search-index/images.search-index';
 import {
   ActionIconBadge,
   useSearchItemStyles,
   ViewMoreItem,
 } from '~/components/AutocompleteSearch/renderItems/common';
 import { MediaHash } from '~/components/ImageHash/ImageHash';
+import { truncate } from 'lodash-es';
+import { ImageMetaProps } from '~/server/schema/image.schema';
+import { constants } from '~/server/common/constants';
+import { SearchIndexDataMap } from '~/components/Search/search.utils2';
+import { getIsSafeBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
 
 export const ImagesSearchItem = forwardRef<
   HTMLDivElement,
-  AutocompleteItem & { hit: Hit<ImageSearchIndexRecord> }
+  AutocompleteItem & { hit: SearchIndexDataMap['images'][number] }
 >(({ value, hit, ...props }, ref) => {
   const { theme } = useSearchItemStyles();
 
   if (!hit) return <ViewMoreItem ref={ref} value={value} {...props} />;
 
-  const { user, tags, stats } = hit;
-  const { commentCountAllTime, ...reactionStats } = stats || {
+  const { user, tagNames, stats } = hit;
+  const alt = truncate(hit.prompt, {
+    length: constants.altTruncateLength,
+  });
+  const { commentCountAllTime, reactionCountAllTime } = stats || {
     commentCountAllTime: 0,
-    viewCountAllTime: 0,
-    favoriteCountAllTime: 0,
-    likeCountAllTime: 0,
+    reactionCountAllTime: 0,
   };
-  const reactionCount = Object.values(reactionStats).reduce((a, b) => a + b, 0);
-  const tagsMax = tags?.slice(0, 3);
-  const remainingTagsCount = tags?.slice(3).length;
+  const tagsMax = tagNames?.slice(0, 3);
+  const remainingTagsCount = tagNames?.slice(3).length;
 
   const tagBadgeProps: BadgeProps = {
     radius: 'xl',
@@ -39,6 +41,8 @@ export const ImagesSearchItem = forwardRef<
     color: 'gray',
     variant: theme.colorScheme === 'dark' ? 'filled' : 'light',
   };
+
+  const nsfw = !getIsSafeBrowsingLevel(hit.nsfwLevel);
 
   return (
     <Group ref={ref} {...props} key={hit.id} spacing="md" align="flex-start" noWrap>
@@ -51,13 +55,14 @@ export const ImagesSearchItem = forwardRef<
           borderRadius: '10px',
         }}
       >
-        {hit.nsfw !== 'None' ? (
+        {nsfw ? (
           <MediaHash {...hit} cropFocus="top" />
         ) : (
           <EdgeMedia
             src={hit.url}
             name={hit.name ?? hit.id.toString()}
             type={hit.type}
+            alt={alt}
             anim={false}
             width={450}
             style={{
@@ -72,20 +77,20 @@ export const ImagesSearchItem = forwardRef<
         )}
       </Center>
       <Stack spacing={8} sx={{ flex: '1 !important' }}>
-        {hit.meta && (
+        {!hit.hideMeta && hit.prompt && (
           <Text lineClamp={2} size="sm" inline>
             <Text weight={600} ml={1} span>
               Positive prompt:{' '}
             </Text>
 
-            {hit.meta?.prompt ?? ''}
+            {hit.prompt ?? ''}
           </Text>
         )}
         <UserAvatar size="xs" user={user} withUsername />
         <Group spacing={8}>
-          {tagsMax?.map((tag) => (
-            <Badge key={tag.id} {...tagBadgeProps}>
-              {tag.name}
+          {tagsMax?.map((tag, index) => (
+            <Badge key={index} {...tagBadgeProps}>
+              {tag}
             </Badge>
           ))}
           {remainingTagsCount > 0 && <Badge {...tagBadgeProps}>+{remainingTagsCount}</Badge>}
@@ -93,7 +98,7 @@ export const ImagesSearchItem = forwardRef<
         {stats && (
           <Group spacing={4}>
             <ActionIconBadge icon={<IconMoodSmile size={12} stroke={2.5} />}>
-              {abbreviateNumber(reactionCount)}
+              {abbreviateNumber(reactionCountAllTime)}
             </ActionIconBadge>
             <ActionIconBadge icon={<IconMessageCircle2 size={12} stroke={2.5} />}>
               {abbreviateNumber(commentCountAllTime)}

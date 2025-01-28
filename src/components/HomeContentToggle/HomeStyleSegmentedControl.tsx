@@ -8,20 +8,12 @@ import {
   ThemeIcon,
   createStyles,
   Badge,
+  Loader,
 } from '@mantine/core';
-import { useLocalStorage } from '@mantine/hooks';
-import {
-  IconCategory,
-  IconFileText,
-  IconHome,
-  IconLayoutList,
-  IconMoneybag,
-  IconPhoto,
-} from '@tabler/icons-react';
-import Link from 'next/link';
-import { useRouter } from 'next/router';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import { IconProps } from '@tabler/icons-react';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import React from 'react';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 
 const useStyles = createStyles((theme, _, getRef) => ({
   label: {
@@ -71,13 +63,15 @@ export function HomeStyleSegmentedControl({
   onChange,
   size,
   sx,
+  loading,
   ...props
 }: Props) {
   const { classes, theme } = useStyles();
+  const { canViewNsfw } = useFeatureFlags();
 
   const options: SegmentedControlItem[] = Object.entries(data).map(([key, value]) => ({
     label: (
-      <Link href={value.url} passHref>
+      <Link legacyBehavior href={value.url} passHref>
         <Anchor variant="text">
           <Group align="center" spacing={8} noWrap>
             <ThemeIcon
@@ -85,12 +79,22 @@ export function HomeStyleSegmentedControl({
               color={activePath === key ? theme.colors.dark[7] : 'transparent'}
               p={6}
             >
-              {value.icon}
+              {value.icon({
+                color:
+                  theme.colorScheme === 'dark' || activePath === key
+                    ? theme.white
+                    : theme.colors.dark[7],
+              })}
             </ThemeIcon>
             <Text size="sm" transform="capitalize" inline>
               {value.label ?? key}
             </Text>
-            {value.count && <Badge>{value.count}</Badge>}
+            {/* Ideally this is a temporary solution. We should be using the `canViewNsfw` feature flag to return the correct numbers to the users */}
+            {canViewNsfw && value.count != null && (
+              <Badge>
+                {loading ? <Loader size="xs" variant="dots" /> : value.count.toLocaleString()}
+              </Badge>
+            )}
           </Group>
         </Anchor>
       </Link>
@@ -115,16 +119,17 @@ export function HomeStyleSegmentedControl({
   );
 }
 
-type DataItem = {
+export type DataItem = {
   url: string;
-  icon: React.ReactNode;
+  icon: (props?: IconProps) => React.ReactNode;
   disabled?: boolean;
-  count?: number | string;
+  count?: number;
   label?: string;
 };
 type Props = {
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   value: string;
   onChange?: (item: DataItem) => void;
+  loading?: boolean;
   data: Record<string, DataItem>;
 } & Omit<SegmentedControlProps, 'data' | 'value' | 'onChange'>;

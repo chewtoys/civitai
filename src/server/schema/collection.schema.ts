@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { isDefined } from '~/utils/type-guards';
+import { constants } from '~/server/common/constants';
+import { CollectionReviewSort, CollectionSort } from '~/server/common/enums';
+import {
+  baseQuerySchema,
+  infiniteQuerySchema,
+  userPreferencesSchema,
+} from '~/server/schema/base.schema';
+import { imageSchema } from '~/server/schema/image.schema';
+import { tagSchema } from '~/server/schema/tag.schema';
 import {
   CollectionContributorPermission,
   CollectionItemStatus,
@@ -7,12 +15,10 @@ import {
   CollectionReadConfiguration,
   CollectionType,
   CollectionWriteConfiguration,
-} from '@prisma/client';
-import { imageSchema } from '~/server/schema/image.schema';
-import { infiniteQuerySchema, userPreferencesSchema } from '~/server/schema/base.schema';
-import { BrowsingMode, CollectionReviewSort, CollectionSort } from '~/server/common/enums';
-import { constants } from '~/server/common/constants';
+} from '~/shared/utils/prisma/enums';
+import { isDefined } from '~/utils/type-guards';
 import { commaDelimitedNumberArray } from '~/utils/zod-helpers';
+import { NsfwLevel } from './../common/enums';
 
 // TODO.Fix: Type-safety. This isn't actually typesafe. You can choose a type and a id that don't match.
 const collectionItemSchema = z.object({
@@ -28,7 +34,14 @@ export type CollectItemInput = z.infer<typeof collectionItemSchema>;
 export type AddCollectionItemInput = z.infer<typeof saveCollectionItemInputSchema>;
 export const saveCollectionItemInputSchema = collectionItemSchema
   .extend({
-    collectionIds: z.coerce.number().array(),
+    collections: z.array(
+      z.object({
+        collectionId: z.number(),
+        tagId: z.number().nullish(),
+        userId: z.number().nullish(),
+        read: z.nativeEnum(CollectionReadConfiguration).optional(),
+      })
+    ),
     removeFromCollectionIds: z.coerce.number().array().optional(),
   })
   .refine(
@@ -68,6 +81,7 @@ export const bulkSaveCollectionItemsInput = z
     articleIds: z.coerce.number().array().optional(),
     postIds: z.coerce.number().array().optional(),
     modelIds: z.coerce.number().array().optional(),
+    tagId: z.coerce.number().nullish(),
   })
   .refine(
     ({ articleIds, imageIds, postIds, modelIds }) =>
@@ -92,6 +106,33 @@ export const collectionMetadataSchema = z
     maxItemsPerUser: z.coerce.number().optional(),
     submissionStartDate: z.coerce.date().nullish(),
     submissionEndDate: z.coerce.date().nullish(),
+    submissionsHiddenUntilEndDate: z.boolean().optional(),
+    existingEntriesDisabled: z.coerce.boolean().optional(),
+    votingPeriodStart: z.coerce.date().nullish(),
+    uploadSettings: z
+      .object({
+        maxItems: z.number(),
+        maxSize: z.number(),
+        maxVideoDuration: z.number(),
+        maxVideoDimensions: z.number(),
+      })
+      .optional(),
+    bannerPosition: z.string().optional(),
+    judgesApplyBrowsingLevel: z.boolean().optional(),
+    judgesCanScoreEntries: z.boolean().optional(),
+    disableFollowOnSubmission: z.boolean().optional(),
+    disableTagRequired: z.boolean().optional(),
+    youtubeSupportEnabled: z.boolean().optional(),
+    vimeoSupportEnabled: z.boolean().optional(),
+    forcedBrowsingLevel: z.number().optional(),
+    entriesRequireTitle: z.boolean().optional(),
+    entriesRequireTools: z.boolean().optional(),
+    termsOfServicesUrl: z.string().optional(),
+    rulesUrl: z.string().optional(),
+    hideAds: z.boolean().optional(),
+    includeContestCallouts: z.boolean().optional(),
+    // Invite URL will make it so that users with the URL can join the collection as managers / admins.
+    inviteUrlEnabled: z.boolean().optional(),
   })
   .refine(
     ({ submissionStartDate, submissionEndDate }) => {
@@ -135,6 +176,7 @@ export const upsertCollectionInput = z
     type: z.nativeEnum(CollectionType).default(CollectionType.Model),
     mode: z.nativeEnum(CollectionMode).nullish(),
     metadata: collectionMetadataSchema.optional(),
+    tags: z.array(tagSchema).nullish(),
   })
   .merge(collectionItemSchema);
 
@@ -162,18 +204,16 @@ export const followCollectionInputSchema = z.object({
 });
 
 export type GetAllCollectionItemsSchema = z.infer<typeof getAllCollectionItemsSchema>;
-export const getAllCollectionItemsSchema = z
-  .object({
-    limit: z.number().min(0).max(100),
-    page: z.number(),
-    cursor: z.number(),
-    collectionId: z.number(),
-    statuses: z.array(z.nativeEnum(CollectionItemStatus)),
-    forReview: z.boolean().optional(),
-    reviewSort: z.nativeEnum(CollectionReviewSort).optional(),
-  })
-  .partial()
-  .required({ collectionId: true });
+export const getAllCollectionItemsSchema = baseQuerySchema.extend({
+  limit: z.number().min(0).max(100).optional(),
+  page: z.number().optional(),
+  cursor: z.number().optional(),
+  collectionId: z.number(),
+  statuses: z.array(z.nativeEnum(CollectionItemStatus)).optional(),
+  forReview: z.boolean().optional(),
+  reviewSort: z.nativeEnum(CollectionReviewSort).optional(),
+  collectionTagId: z.number().optional(),
+});
 
 export type UpdateCollectionItemsStatusInput = z.infer<typeof updateCollectionItemsStatusInput>;
 export const updateCollectionItemsStatusInput = z.object({
@@ -191,14 +231,43 @@ export const addSimpleImagePostInput = z.object({
 export type GetAllCollectionsInfiniteSchema = z.infer<typeof getAllCollectionsInfiniteSchema>;
 export const getAllCollectionsInfiniteSchema = infiniteQuerySchema
   .extend({
-    browsingMode: z
-      .nativeEnum(BrowsingMode)
-      .default(constants.collectionFilterDefaults.browsingMode),
     userId: z.number(),
     types: z.array(z.nativeEnum(CollectionType)),
     privacy: z.array(z.nativeEnum(CollectionReadConfiguration)),
     sort: z.nativeEnum(CollectionSort).default(constants.collectionFilterDefaults.sort),
     ids: commaDelimitedNumberArray({ message: 'ids should be a number array' }),
+    modes: z.array(z.nativeEnum(CollectionMode)),
   })
   .merge(userPreferencesSchema)
   .partial();
+
+export type GetCollectionPermissionDetails = z.infer<typeof getCollectionPermissionDetails>;
+export const getCollectionPermissionDetails = z.object({
+  ids: z.array(z.number()).min(1),
+});
+
+export type RemoveCollectionItemInput = z.infer<typeof removeCollectionItemInput>;
+export const removeCollectionItemInput = z.object({
+  collectionId: z.coerce.number(),
+  itemId: z.coerce.number(),
+});
+
+export type SetItemScoreInput = z.infer<typeof setItemScoreInput>;
+export const setItemScoreInput = z.object({
+  collectionItemId: z.coerce.number(),
+  score: z.coerce.number().min(1).max(10),
+});
+
+export type SetCollectionItemNsfwLevelInput = z.infer<typeof setCollectionItemNsfwLevelInput>;
+export const setCollectionItemNsfwLevelInput = z.object({
+  collectionItemId: z.number(),
+  nsfwLevel: z.nativeEnum(NsfwLevel),
+});
+
+export type EnableCollectionYoutubeSupportInput = z.infer<
+  typeof enableCollectionYoutubeSupportInput
+>;
+export const enableCollectionYoutubeSupportInput = z.object({
+  collectionId: z.number(),
+  authenticationCode: z.string(),
+});

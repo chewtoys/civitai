@@ -1,21 +1,24 @@
-import {
-  CosmeticType,
-  ModelEngagementType,
-  ModelVersionEngagementType,
-  OnboardingStep,
-} from '@prisma/client';
 import { TRPCError } from '@trpc/server';
 import { orderBy } from 'lodash-es';
+import { isProd } from '~/env/other';
+import { env } from '~/env/server';
 import { clickhouse } from '~/server/clickhouse/client';
 import { constants } from '~/server/common/constants';
-import { Context } from '~/server/createContext';
-import { dbWrite } from '~/server/db/client';
-import { redis } from '~/server/redis/client';
-import * as rewards from '~/server/rewards';
-import { GetAllSchema, GetByIdInput } from '~/server/schema/base.schema';
 import {
-  BatchBlockTagsSchema,
-  CompleteOnboardingStepInput,
+  NotificationCategory,
+  OnboardingComplete,
+  OnboardingSteps,
+  SearchIndexUpdateQueueAction,
+} from '~/server/common/enums';
+import { Context } from '~/server/createContext';
+import { dbRead, dbWrite } from '~/server/db/client';
+import { onboardingCompletedCounter, onboardingErrorCounter } from '~/server/prom/client';
+import { redis, REDIS_KEYS, REDIS_SUB_KEYS } from '~/server/redis/client';
+import * as rewards from '~/server/rewards';
+import { firstDailyFollowReward } from '~/server/rewards/active/firstDailyFollow.reward';
+import { GetAllSchema, GetByIdInput } from '~/server/schema/base.schema';
+import { PaymentMethodDeleteInput } from '~/server/schema/stripe.schema';
+import {
   DeleteUserInput,
   GetAllUsersInput,
   GetByUsernameSchema,
@@ -23,43 +26,74 @@ import {
   GetUserCosmeticsSchema,
   GetUserTagsSchema,
   ReportProhibitedRequestInput,
-  ToggleBlockedTagSchema,
+  SetLeaderboardEligibilitySchema,
+  SetUserSettingsInput,
+  ToggleBanUser,
+  ToggleFavoriteInput,
+  ToggleFeatureInput,
   ToggleFollowUserSchema,
   ToggleModelEngagementInput,
   ToggleUserArticleEngagementsInput,
   ToggleUserBountyEngagementsInput,
   UserByReferralCodeSchema,
+  UserOnboardingSchema,
   UserUpdateInput,
 } from '~/server/schema/user.schema';
-import { BadgeCosmetic, NamePlateCosmetic } from '~/server/selectors/cosmetic.selector';
-import { simpleUserSelect } from '~/server/selectors/user.selector';
-import { refreshAllHiddenForUser } from '~/server/services/user-cache.service';
+import { usersSearchIndex } from '~/server/search-index';
 import {
-  acceptTOS,
+  BadgeCosmetic,
+  ContentDecorationCosmetic,
+  NamePlateCosmetic,
+  ProfileBackgroundCosmetic,
+  WithClaimKey,
+} from '~/server/selectors/cosmetic.selector';
+import { simpleUserSelect } from '~/server/selectors/user.selector';
+import { getUserNotificationCount } from '~/server/services/notification.service';
+import {
+  getResourceReviewsByUserId,
+  getUserResourceReview,
+} from '~/server/services/resourceReview.service';
+import {
+  createCustomer,
+  deleteCustomerPaymentMethod,
+  getCustomerPaymentMethods,
+} from '~/server/services/stripe.service';
+import { BlockedByUsers, BlockedUsers } from '~/server/services/user-preferences.service';
+import {
   claimCosmetic,
   createUserReferral,
   deleteUser,
+  deleteUserProfilePictureCache,
+  equipCosmetic,
   getCreators,
+  getUserBookmarkCollections,
   getUserById,
   getUserByUsername,
   getUserCosmetics,
   getUserCreator,
-  getUserEngagedModelVersions,
+  getUserDownloads,
   getUserEngagedModels,
-  getUserTags,
-  getUserUnreadNotificationsCount,
+  getUserEngagedModelVersions,
+  getUserPurchasedRewards,
   getUsers,
+  getUserSettings,
+  getUsersWithSearch,
   isUsernamePermitted,
+  setLeaderboardEligibility,
+  setUserSetting,
   toggleBan,
-  toggleBlockedTag,
+  toggleBookmarked,
+  toggleContestBan,
   toggleFollowUser,
   toggleHideUser,
-  toggleModelFavorite,
+  toggleModelEngagement,
   toggleModelHide,
+  toggleModelNotify,
+  toggleReview,
   toggleUserArticleEngagement,
   toggleUserBountyEngagement,
+  unequipCosmeticByType,
   updateLeaderboardRank,
-  updateOnboardingSteps,
   updateUserById,
   userByReferralCode,
 } from '~/server/services/user.service';
@@ -73,11 +107,20 @@ import {
 } from '~/server/utils/errorHandling';
 import { DEFAULT_PAGE_SIZE, getPagination, getPagingData } from '~/server/utils/pagination-helpers';
 import { invalidateSession } from '~/server/utils/session-helpers';
+import { Flags } from '~/shared/utils';
+import {
+  CosmeticType,
+  ModelEngagementType,
+  ModelVersionEngagementType,
+} from '~/shared/utils/prisma/enums';
 import { isUUID } from '~/utils/string-helpers';
+import { isDefined } from '~/utils/type-guards';
 import { getUserBuzzBonusAmount } from '../common/user-helpers';
+import { verifyCaptchaToken } from '../recaptcha/client';
 import { TransactionType } from '../schema/buzz.schema';
 import { createBuzzTransaction } from '../services/buzz.service';
-import { firstDailyFollowReward } from '~/server/rewards/active/firstDailyFollow.reward';
+import { FeatureAccess, toggleableFeatures } from '../services/feature-flags.service';
+import { deleteImageById, getEntityCoverImage, ingestImage } from '../services/image.service';
 
 export const getAllUsersHandler = async ({
   input,
@@ -87,7 +130,20 @@ export const getAllUsersHandler = async ({
   ctx: Context;
 }) => {
   try {
-    const users = await getUsers({
+    const blockedUsersLists = await Promise.all([
+      BlockedUsers.getCached({ userId: ctx.user?.id }),
+      BlockedByUsers.getCached({ userId: ctx.user?.id }),
+    ]);
+
+    const blockedUsers = [...new Set([...blockedUsersLists.flatMap((x) => x)].map((u) => u.id))];
+
+    if (blockedUsers.length)
+      input.excludedUserIds = [...(input.excludedUserIds ?? []), ...blockedUsers];
+
+    const searchMethod =
+      ctx.user?.isModerator && input.contestBanned ? getUsers : getUsersWithSearch;
+
+    const users = await searchMethod({
       ...input,
       email: ctx.user?.isModerator ? input.email : undefined,
     });
@@ -100,14 +156,24 @@ export const getAllUsersHandler = async ({
 
 export const getUserCreatorHandler = async ({
   input: { username, id, leaderboardId },
+  ctx,
 }: {
   input: GetUserByUsernameSchema;
+  ctx: Context;
 }) => {
+  username = username?.toLowerCase();
   if (!username && !id) throw throwBadRequestError('Must provide username or id');
+  if (id === constants.system.user.id || username === constants.system.user.username) return null;
 
   try {
-    const user = await getUserCreator({ username, id, leaderboardId });
+    const user = await getUserCreator({
+      username,
+      id,
+      leaderboardId,
+      isModerator: ctx.user?.isModerator,
+    });
     if (!user) throw throwNotFoundError('Could not find user');
+    if (!ctx.user?.isModerator) user.excludeFromLeaderboards = false; // Mask from non-moderators
 
     return user;
   } catch (error) {
@@ -136,10 +202,7 @@ export const getUsernameAvailableHandler = async ({
 export const getUserByIdHandler = async ({ input }: { input: GetByIdInput }) => {
   try {
     const user = await getUserById({ ...input, select: simpleUserSelect });
-
-    if (!user) {
-      throw throwNotFoundError(`No user with id ${input.id}`);
-    }
+    if (!user) throw throwNotFoundError(`No user with id ${input.id}`);
 
     return user;
   } catch (error) {
@@ -156,14 +219,12 @@ export const getNotificationSettingsHandler = async ({
   const { id } = ctx.user;
 
   try {
-    const user = await getUserById({
-      id,
-      select: { notificationSettings: { select: { id: true, type: true, disabledAt: true } } },
+    const notificationsSettings = await dbRead.userNotificationSettings.findMany({
+      where: { userId: id },
+      select: { id: true, type: true, disabledAt: true },
     });
 
-    if (!user) throw throwNotFoundError(`No user with id ${id}`);
-
-    return user.notificationSettings;
+    return notificationsSettings;
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     else throw throwDbError(error);
@@ -174,10 +235,21 @@ export const checkUserNotificationsHandler = async ({ ctx }: { ctx: DeepNonNulla
   const { id } = ctx.user;
 
   try {
-    const user = await getUserUnreadNotificationsCount({ id });
-    if (!user) throw throwNotFoundError(`No user with id ${id}`);
+    const unreadCount = await getUserNotificationCount({
+      userId: id,
+      unread: true,
+    });
 
-    return { count: user._count.notifications };
+    const reduced = unreadCount.reduce(
+      (acc, { category, count }) => {
+        const key = category.toLowerCase() as Lowercase<NotificationCategory>;
+        acc[key] = Number(count);
+        acc['all'] += Number(count);
+        return acc;
+      },
+      { all: 0 } as Record<Lowercase<NotificationCategory> | 'all', number>
+    );
+    return reduced;
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     else throw throwDbError(error);
@@ -197,58 +269,77 @@ const verifyAvatar = (avatar: string) => {
   return false;
 };
 
-export const acceptTOSHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
-  try {
-    const { id } = ctx.user;
-    await acceptTOS({ id });
-  } catch (e) {
-    throw throwDbError(e);
-  }
-};
-
-const temp_onboardingOrder: OnboardingStep[] = [OnboardingStep.Moderation, OnboardingStep.Buzz];
 export const completeOnboardingHandler = async ({
   input,
   ctx,
 }: {
-  input: CompleteOnboardingStepInput;
+  input: UserOnboardingSchema;
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
     const { id } = ctx.user;
-    const user = await dbWrite.user.findUnique({
-      where: { id },
-      select: { onboardingSteps: true, email: true, username: true },
-    });
+    const onboarding = Flags.addFlag(ctx.user.onboarding, input.step);
+    const changed = onboarding !== ctx.user.onboarding;
 
-    if (!user) throw throwNotFoundError(`No user with id ${id}`);
-    if (!user?.email) throw throwBadRequestError('User must have an email to complete onboarding');
-    if (!user?.username)
-      throw throwBadRequestError('User must have a username to complete onboarding');
+    switch (input.step) {
+      case OnboardingSteps.TOS: {
+        await dbWrite.user.update({ where: { id }, data: { onboarding } });
+        break;
+      }
+      case OnboardingSteps.Profile: {
+        await dbWrite.user.update({
+          where: { id },
+          data: { onboarding, username: input.username, email: input.email },
+        });
+        break;
+      }
+      case OnboardingSteps.BrowsingLevels: {
+        await dbWrite.user.update({
+          where: { id },
+          data: { onboarding },
+        });
+        break;
+      }
+      case OnboardingSteps.Buzz: {
+        const { recaptchaToken } = input;
+        if (!recaptchaToken) throw throwAuthorizationError('recaptchaToken required');
 
-    if (!input.step) {
-      input.step = temp_onboardingOrder.find((step) => user.onboardingSteps.includes(step));
+        const validCaptcha = await verifyCaptchaToken({
+          token: recaptchaToken,
+          secret: env.CF_MANAGED_TURNSTILE_SECRET,
+          ip: ctx.ip,
+        });
+        if (!validCaptcha) throw throwAuthorizationError('Recaptcha Failed. Please try again.');
+
+        await dbWrite.user.update({ where: { id }, data: { onboarding } });
+        if (input.userReferralCode || input.source) {
+          await createUserReferral({
+            id,
+            userReferralCode: input.userReferralCode,
+            source: input.source,
+            ip: ctx.ip,
+          });
+        }
+
+        await withRetries(() =>
+          createBuzzTransaction({
+            fromAccountId: 0,
+            toAccountId: ctx.user.id,
+            amount: getUserBuzzBonusAmount(ctx.user),
+            description: 'Onboarding bonus',
+            type: TransactionType.Reward,
+            externalTransactionId: `${ctx.user.id}-onboarding-bonus`,
+            toAccountType: 'generation',
+          })
+        ).catch(handleLogError);
+        break;
+      }
     }
-
-    const steps = !input.step ? [] : user.onboardingSteps.filter((step) => step !== input.step);
-    const updatedUser = await updateOnboardingSteps({ id, steps });
-
-    // There are no more onboarding steps, so we can reward the user
-    if (updatedUser.onboardingSteps.length === 0) {
-      await withRetries(() =>
-        createBuzzTransaction({
-          fromAccountId: 0,
-          toAccountId: updatedUser.id,
-          amount: getUserBuzzBonusAmount(ctx.user),
-          description: 'Onboarding bonus',
-          type: TransactionType.Reward,
-          externalTransactionId: `${updatedUser.id}-onboarding-bonus`,
-        })
-      ).catch(handleLogError);
-    }
-
-    return updatedUser;
+    const isComplete = onboarding === OnboardingComplete;
+    if (isComplete && changed && onboardingCompletedCounter) onboardingCompletedCounter.inc();
   } catch (e) {
+    const err = e as Error;
+    if (!err.message.includes('constraint failed')) onboardingErrorCounter?.inc();
     if (e instanceof TRPCError) throw e;
     throw throwDbError(e);
   }
@@ -265,11 +356,13 @@ export const updateUserHandler = async ({
     id,
     badgeId,
     nameplateId,
-    showNsfw,
+    profileDecorationId,
+    profileBackgroundId,
     username,
     source,
     landingPage,
     userReferralCode,
+    profilePicture,
     ...data
   } = input;
   const currentUser = ctx.user;
@@ -281,34 +374,79 @@ export const updateUserHandler = async ({
     if (!valid) throw throwBadRequestError('Invalid avatar URL');
   }
 
-  const isSettingCosmetics = badgeId !== undefined && nameplateId !== undefined;
-
   try {
+    const user = await getUserById({ id, select: { profilePictureId: true } });
+    if (!user) throw throwNotFoundError(`No user with id ${id}`);
+
     const payloadCosmeticIds: number[] = [];
     if (badgeId) payloadCosmeticIds.push(badgeId);
+    else if (badgeId === null)
+      await unequipCosmeticByType({ userId: id, type: CosmeticType.Badge });
+
     if (nameplateId) payloadCosmeticIds.push(nameplateId);
+    else if (nameplateId === null)
+      await unequipCosmeticByType({ userId: id, type: CosmeticType.NamePlate });
+
+    if (profileDecorationId) payloadCosmeticIds.push(profileDecorationId);
+    else if (profileDecorationId === null)
+      await unequipCosmeticByType({ userId: id, type: CosmeticType.ProfileDecoration });
+
+    if (profileBackgroundId) payloadCosmeticIds.push(profileBackgroundId);
+    else if (profileBackgroundId === null)
+      await unequipCosmeticByType({ userId: id, type: CosmeticType.ProfileBackground });
+
+    const isSettingCosmetics = payloadCosmeticIds.length > 0;
+
     const updatedUser = await updateUserById({
       id,
       data: {
         ...data,
         username,
-        showNsfw,
-        cosmetics: !isSettingCosmetics
-          ? undefined
-          : {
-              updateMany: {
-                where: { equippedAt: { not: null } },
-                data: { equippedAt: null },
+        profilePicture: profilePicture
+          ? {
+              connectOrCreate: {
+                where: { id: profilePicture.id ?? -1 },
+                create: {
+                  ...profilePicture,
+                  metadata: {
+                    ...profilePicture.metadata,
+                    profilePicture: true,
+                    userId: id,
+                    username,
+                  },
+                  userId: id,
+                },
               },
-              update: payloadCosmeticIds.map((cosmeticId) => ({
-                where: { userId_cosmeticId: { userId: id, cosmeticId } },
-                data: { equippedAt: new Date() },
-              })),
-            },
+            }
+          : undefined,
       },
     });
 
-    if (data.leaderboardShowcase !== undefined) await updateLeaderboardRank(id);
+    // Delete old profilePic and ingest new one
+    if (user.profilePictureId && profilePicture && user.profilePictureId !== profilePicture.id) {
+      await deleteImageById({ id: user.profilePictureId });
+    }
+
+    if (
+      profilePicture &&
+      updatedUser.profilePictureId &&
+      user.profilePictureId !== profilePicture?.id
+    ) {
+      await ingestImage({
+        image: {
+          id: updatedUser.profilePictureId,
+          url: profilePicture.url,
+          type: profilePicture.type,
+          height: profilePicture.height,
+          width: profilePicture.width,
+        },
+      });
+      await deleteUserProfilePictureCache(id);
+    }
+
+    if (isSettingCosmetics) await equipCosmetic({ userId: id, cosmeticId: payloadCosmeticIds });
+
+    if (data.leaderboardShowcase !== undefined) await updateLeaderboardRank({ userIds: id });
     if (userReferralCode || source || landingPage) {
       await createUserReferral({
         id: updatedUser.id,
@@ -318,8 +456,8 @@ export const updateUserHandler = async ({
         ip: ctx.ip,
       });
     }
-    if (!updatedUser) throw throwNotFoundError(`No user with id ${id}`);
-    if (ctx.user.showNsfw !== showNsfw) await refreshAllHiddenForUser({ userId: id });
+
+    await usersSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Update }]);
 
     return updatedUser;
   } catch (error) {
@@ -337,7 +475,8 @@ export const deleteUserHandler = async ({
 }) => {
   const { id } = input;
   const currentUser = ctx.user;
-  if (id !== currentUser.id) throw throwAuthorizationError();
+  const canRemoveAsModerator = !isProd && currentUser.isModerator;
+  if (id !== currentUser.id && !canRemoveAsModerator) throw throwAuthorizationError();
 
   try {
     const user = await deleteUser(input);
@@ -355,30 +494,36 @@ export const deleteUserHandler = async ({
   }
 };
 
+type EngagedModelType = ModelEngagementType | 'Recommended';
+
 export const getUserEngagedModelsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
   const { id } = ctx.user;
 
   try {
-    const engagementsCache = await redis.get(`user:${id}:model-engagements`);
-    if (engagementsCache)
-      return JSON.parse(engagementsCache) as Record<ModelEngagementType, number[]>;
+    const engagementsCache = await redis.get(
+      `${REDIS_KEYS.USER.BASE}:${id}:${REDIS_SUB_KEYS.USER.MODEL_ENGAGEMENTS}`
+    );
+    if (engagementsCache) return JSON.parse(engagementsCache) as Record<EngagedModelType, number[]>;
 
     const engagements = await getUserEngagedModels({ id });
+    const recommendedReviews = await getResourceReviewsByUserId({ userId: id, recommended: true });
 
     // turn array of user.engagedModels into object with `type` as key and array of modelId as value
-    const engagedModels = engagements.reduce<Record<ModelEngagementType, number[]>>(
-      (acc, model) => {
-        const { type, modelId } = model;
-        if (!acc[type]) acc[type] = [];
-        acc[type].push(modelId);
-        return acc;
-      },
-      {} as Record<ModelEngagementType, number[]>
-    );
+    const engagedModels = engagements.reduce<Record<EngagedModelType, number[]>>((acc, model) => {
+      const { type, modelId } = model;
+      if (!acc[type]) acc[type] = [];
+      acc[type].push(modelId);
+      return acc;
+    }, {} as Record<EngagedModelType, number[]>);
+    engagedModels.Recommended = recommendedReviews.map((r) => r.modelId).filter(isDefined);
 
-    await redis.set(`user:${id}:model-engagements`, JSON.stringify(engagedModels), {
-      EX: 60 * 60 * 24,
-    });
+    await redis.set(
+      `${REDIS_KEYS.USER.BASE}:${id}:${REDIS_SUB_KEYS.USER.MODEL_ENGAGEMENTS}`,
+      JSON.stringify(engagedModels),
+      {
+        EX: 60 * 60 * 24,
+      }
+    );
 
     return engagedModels;
   } catch (error) {
@@ -387,26 +532,37 @@ export const getUserEngagedModelsHandler = async ({ ctx }: { ctx: DeepNonNullabl
   }
 };
 
+type EngagedModelVersionType = ModelVersionEngagementType | 'Downloaded';
+
 export const getUserEngagedModelVersionsHandler = async ({
+  input,
   ctx,
 }: {
+  input: GetByIdInput;
   ctx: DeepNonNullable<Context>;
 }) => {
-  const { id } = ctx.user;
+  const userId = ctx.user.id;
+  const versions = await dbRead.modelVersion.findMany({
+    where: { modelId: input.id },
+    select: { id: true },
+  });
+  const modelVersionIds = versions.map((x) => x.id);
 
   try {
-    const engagements = await getUserEngagedModelVersions({ id });
+    const engagements = await getUserEngagedModelVersions({ userId, modelVersionIds });
+    const downloads = await getUserDownloads({ userId, modelVersionIds });
 
-    // turn array of user.engagedModelVersions into object with `type` as key and array of modelId as value
-    const engagedModelVersions = engagements.reduce<Record<ModelVersionEngagementType, number[]>>(
+    // turn array of user.engagedModelVersions into object with `type` as key and array of modelVersionId as value
+    const engagedModelVersions = engagements.reduce<Record<EngagedModelVersionType, number[]>>(
       (acc, engagement) => {
         const { type, modelVersionId } = engagement;
         if (!acc[type]) acc[type] = [];
         acc[type].push(modelVersionId);
         return acc;
       },
-      {} as Record<ModelVersionEngagementType, number[]>
+      {} as Record<EngagedModelVersionType, number[]>
     );
+    engagedModelVersions.Downloaded = downloads.map((x) => x.modelVersionId);
 
     return engagedModelVersions;
   } catch (error) {
@@ -465,10 +621,10 @@ export const getUserListsHandler = async ({ input }: { input: GetByUsernameSchem
   try {
     const { username } = input;
 
-    const user = await getUserByUsername({ username, select: { createdAt: true } });
+    const user = await getUserByUsername({ username, select: { id: true, createdAt: true } });
     if (!user) throw throwNotFoundError(`No user with username ${username}`);
 
-    const [userFollowing, userFollowers, userHidden] = await Promise.all([
+    const [userFollowing, userFollowers, userHidden, userBlocked] = await Promise.all([
       getUserByUsername({
         username,
         select: {
@@ -499,6 +655,7 @@ export const getUserListsHandler = async ({ input }: { input: GetByUsernameSchem
           },
         },
       }),
+      BlockedUsers.getCached({ userId: user.id }),
     ]);
 
     return {
@@ -508,6 +665,8 @@ export const getUserListsHandler = async ({ input }: { input: GetByUsernameSchem
       followersCount: userFollowers?._count.engagedUsers ?? 0,
       hidden: userHidden?.engagingUsers.map(({ targetUser }) => targetUser) ?? [],
       hiddenCount: userHidden?._count.engagingUsers ?? 0,
+      blocked: userBlocked ?? [],
+      blockedCount: userBlocked?.length ?? 0,
     };
   } catch (error) {
     if (error instanceof TRPCError) throw error;
@@ -523,10 +682,14 @@ export const toggleFollowUserHandler = async ({
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
-    const { id: userId } = ctx.user;
+    const { ip, fingerprint, user } = ctx;
+    const { id: userId } = user;
     const result = await toggleFollowUser({ ...input, userId });
     if (result) {
-      await firstDailyFollowReward.apply({ followingId: input.targetUserId, userId });
+      await firstDailyFollowReward.apply(
+        { followingId: input.targetUserId, userId },
+        { ip, fingerprint }
+      );
       ctx.track
         .userEngagement({
           type: 'Follow',
@@ -616,13 +779,68 @@ export const toggleHideModelHandler = async ({
         modelId: input.modelId,
       });
     }
-    await redis.del(`user:${userId}:model-engagements`);
+    await redis.del(`${REDIS_KEYS.USER.BASE}:${userId}:${REDIS_SUB_KEYS.USER.MODEL_ENGAGEMENTS}`);
   } catch (error) {
     throw throwDbError(error);
   }
 };
 
-export const toggleFavoriteModelHandler = async ({
+export async function toggleFavoriteHandler({
+  input: { modelId, modelVersionId, setTo },
+  ctx,
+}: {
+  input: ToggleFavoriteInput;
+  ctx: DeepNonNullable<Context>;
+}) {
+  const { id: userId, muted } = ctx.user;
+  if (muted) return false;
+
+  // Toggle review (on/off)
+  const reviewResult = await toggleReview({
+    modelId,
+    modelVersionId,
+    userId,
+    setTo,
+  });
+
+  // If favoriting, also bookmark and notify
+  if (setTo) {
+    // Toggle notifications
+    await toggleModelEngagement({
+      modelId,
+      type: ModelEngagementType.Notify,
+      userId,
+      setTo,
+    });
+
+    // Toggle to bookmark collection
+    await toggleBookmarked({
+      type: 'Model',
+      entityId: modelId,
+      userId,
+      setTo,
+    });
+  } else {
+    // Need dbWrite to avoid propagation lag
+    const userModelReviews = await getUserResourceReview({ userId, modelId, tx: dbWrite });
+
+    // Remove it from bookmark collection if no reviews
+    if (!userModelReviews?.length)
+      // Toggle to bookmark collection
+      await toggleBookmarked({
+        type: 'Model',
+        entityId: modelId,
+        userId,
+        setTo,
+      });
+  }
+
+  await redis.del(`${REDIS_KEYS.USER.BASE}:${userId}:${REDIS_SUB_KEYS.USER.MODEL_ENGAGEMENTS}`);
+
+  return reviewResult;
+}
+
+export const toggleNotifyModelHandler = async ({
   input,
   ctx,
 }: {
@@ -631,10 +849,13 @@ export const toggleFavoriteModelHandler = async ({
 }) => {
   try {
     const { id: userId } = ctx.user;
-    const result = await toggleModelFavorite({ ...input, userId });
+    const result = input.type
+      ? await toggleModelEngagement({ modelId: input.modelId, type: input.type, userId })
+      : await toggleModelNotify({ ...input, userId });
+
     if (result) {
       await ctx.track.modelEngagement({
-        type: 'Favorite',
+        type: 'Notify',
         modelId: input.modelId,
       });
     } else {
@@ -643,7 +864,9 @@ export const toggleFavoriteModelHandler = async ({
         modelId: input.modelId,
       });
     }
-    await redis.del(`user:${userId}:model-engagements`);
+    await redis.del(`${REDIS_KEYS.USER.BASE}:${userId}:${REDIS_SUB_KEYS.USER.MODEL_ENGAGEMENTS}`);
+
+    return result;
   } catch (error) {
     throw throwDbError(error);
   }
@@ -675,6 +898,7 @@ export const getLeaderboardHandler = async ({ input }: { input: GetAllSchema }) 
             ratingCountMonth: true,
             downloadCountMonth: true,
             favoriteCountMonth: true,
+            thumbsUpCountMonth: true,
             uploadCountMonth: true,
             answerCountMonth: true,
           },
@@ -733,60 +957,6 @@ export const getUserTagsHandler = async ({
   }
 };
 
-export const toggleBlockedTagHandler = async ({
-  input,
-  ctx,
-}: {
-  input: ToggleBlockedTagSchema;
-  ctx: DeepNonNullable<Context>;
-}) => {
-  try {
-    const { id: userId } = ctx.user;
-    const isHidden = await toggleBlockedTag({ ...input, userId });
-    ctx.track.tagEngagement({
-      type: isHidden ? 'Hide' : 'Allow',
-      tagId: input.tagId,
-    });
-  } catch (error) {
-    throw throwDbError(error);
-  }
-};
-
-export const batchBlockTagsHandler = async ({
-  input,
-  ctx,
-}: {
-  input: BatchBlockTagsSchema;
-  ctx: DeepNonNullable<Context>;
-}) => {
-  try {
-    const { id: userId } = ctx.user;
-    const { tagIds } = input;
-    const currentBlockedTags = await getUserTags({ userId, type: 'Hide' });
-    const blockedTagIds = currentBlockedTags.map(({ tagId }) => tagId);
-    const tagsToRemove = blockedTagIds.filter((id) => !tagIds.includes(id));
-
-    const updatedUser = await updateUserById({
-      id: userId,
-      data: {
-        tagsEngaged: {
-          deleteMany: { userId, tagId: { in: tagsToRemove } },
-          upsert: tagIds.map((tagId) => ({
-            where: { userId_tagId: { userId, tagId } },
-            update: { type: 'Hide' },
-            create: { type: 'Hide', tagId },
-          })),
-        },
-      },
-    });
-    if (!updatedUser) throw throwNotFoundError(`No user with id ${userId}`);
-
-    return updatedUser;
-  } catch (error) {
-    throw throwDbError(error);
-  }
-};
-
 export const toggleMuteHandler = async ({
   input,
   ctx,
@@ -815,12 +985,18 @@ export const toggleBanHandler = async ({
   input,
   ctx,
 }: {
-  input: GetByIdInput;
+  input: ToggleBanUser;
   ctx: DeepNonNullable<Context>;
 }) => {
   if (!ctx.user.isModerator) throw throwAuthorizationError();
 
-  const updatedUser = await toggleBan(input);
+  if (input.type === 'contest') {
+    // Only ban the user from contests
+    const updatedUser = await toggleContestBan({ ...input, userId: ctx.user.id });
+    return updatedUser;
+  }
+
+  const updatedUser = await toggleBan({ ...input, userId: ctx.user.id, isModerator: true });
 
   await ctx.track.userActivity({
     type: updatedUser.bannedAt ? 'Banned' : 'Unbanned',
@@ -843,17 +1019,77 @@ export const getUserCosmeticsHandler = async ({
     const user = await getUserCosmetics({ equipped, userId });
     if (!user) throw throwNotFoundError(`No user with id ${userId}`);
 
+    const inUseCosmeticEntities = user.cosmetics
+      .map(({ equippedToId, equippedToType }) =>
+        equippedToId && equippedToType
+          ? { entityType: equippedToType, entityId: equippedToId }
+          : null
+      )
+      .filter(isDefined);
+    const coverImages = await getEntityCoverImage({ entities: inUseCosmeticEntities });
+
     const cosmetics = user.cosmetics.reduce(
-      (acc, { obtainedAt, cosmetic }) => {
+      (
+        acc,
+        {
+          obtainedAt,
+          equippedToId,
+          equippedToType,
+          claimKey,
+          cosmetic,
+          data: userData,
+          forId,
+          forType,
+        }
+      ) => {
         const { type, data, ...rest } = cosmetic;
+        const sharedData = {
+          ...rest,
+          type,
+          obtainedAt,
+          claimKey,
+          inUse: !!equippedToId,
+          entityImage: coverImages.find(
+            (x) => x.entityId === equippedToId && x.entityType === equippedToType
+          ),
+          forId,
+          forType,
+        };
+
         if (type === CosmeticType.Badge)
-          acc.badges.push({ ...rest, data: data as BadgeCosmetic['data'], obtainedAt });
+          acc.badges.push({ ...sharedData, data: data as BadgeCosmetic['data'] });
         else if (type === CosmeticType.NamePlate)
-          acc.nameplates.push({ ...rest, data: data as NamePlateCosmetic['data'], obtainedAt });
+          acc.nameplates.push({ ...sharedData, data: data as NamePlateCosmetic['data'] });
+        else if (type === CosmeticType.ProfileDecoration)
+          acc.profileDecorations.push({
+            ...sharedData,
+            data: data as ContentDecorationCosmetic['data'],
+          });
+        else if (type === CosmeticType.ContentDecoration) {
+          const contentDecorationData = data as ContentDecorationCosmetic['data'];
+          const uData = userData as ContentDecorationCosmetic['data'];
+          if (uData) {
+            contentDecorationData.lights = uData.lights;
+          }
+          acc.contentDecorations.push({
+            ...sharedData,
+            data: contentDecorationData,
+          });
+        } else if (type === CosmeticType.ProfileBackground)
+          acc.profileBackground.push({
+            ...sharedData,
+            data: data as ProfileBackgroundCosmetic['data'],
+          });
 
         return acc;
       },
-      { badges: [] as BadgeCosmetic[], nameplates: [] as NamePlateCosmetic[] }
+      {
+        badges: [] as WithClaimKey<BadgeCosmetic>[],
+        nameplates: [] as WithClaimKey<NamePlateCosmetic>[],
+        profileDecorations: [] as WithClaimKey<ContentDecorationCosmetic>[],
+        profileBackground: [] as WithClaimKey<ProfileBackgroundCosmetic>[],
+        contentDecorations: [] as WithClaimKey<ContentDecorationCosmetic>[],
+      }
     );
 
     return cosmetics;
@@ -872,7 +1108,14 @@ export const toggleArticleEngagementHandler = async ({
 }) => {
   try {
     const on = await toggleUserArticleEngagement({ ...input, userId: ctx.user.id });
-    if (on) await ctx.track.articleEngagement(input);
+    // Not awaiting here to avoid slowing down the response
+    ctx.track
+      .articleEngagement({
+        ...input,
+        type: on ? input.type : `Delete${input.type}`,
+      })
+      .catch(handleLogError);
+
     return on;
   } catch (error) {
     throw throwDbError(error);
@@ -910,21 +1153,25 @@ export const reportProhibitedRequestHandler = async ({
   input: ReportProhibitedRequestInput;
   ctx: DeepNonNullable<Context>;
 }) => {
-  await ctx.track.prohibitedRequest(input);
+  await ctx.track.prohibitedRequest({
+    prompt: input.prompt ?? '{error capturing prompt}',
+    negativePrompt: input.negativePrompt ?? '{error capturing negativePrompt}',
+    source: input.source,
+  });
   if (ctx.user.isModerator) return false;
+  if (!clickhouse) return false;
 
   try {
     const userId = ctx.user.id;
-    const countRes = await clickhouse?.query({
-      query: `
-        SELECT
-          COUNT(*) as count
-        FROM prohibitedRequests
-        WHERE userId = ${userId} AND time > subtractHours(now(), 24);
-      `,
-      format: 'JSONEachRow',
-    });
-    const count = ((await countRes?.json()) as [{ count: number }])?.[0]?.count ?? 0;
+    const count =
+      (
+        await clickhouse.$query<{ count: number }>`
+      SELECT
+        COUNT(*) as count
+      FROM prohibitedRequests
+      WHERE userId = ${userId} AND time > subtractHours(now(), 24);
+    `
+      )[0]?.count ?? 0;
     const limit =
       constants.imageGeneration.requestBlocking.muted -
       constants.imageGeneration.requestBlocking.notified;
@@ -993,3 +1240,182 @@ export const claimCosmeticHandler = async ({
     throw throwDbError(error);
   }
 };
+
+export const getUserPaymentMethodsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+  try {
+    let { customerId } = ctx.user;
+
+    if (!ctx.user.email) {
+      throw throwBadRequestError('User must have an email to get payment methods');
+    }
+
+    if (!customerId) {
+      customerId = await createCustomer({
+        ...ctx.user,
+        email: ctx.user.email as string,
+      });
+    }
+
+    const paymentMethods = getCustomerPaymentMethods(customerId);
+
+    return paymentMethods;
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export const deleteUserPaymentMethodHandler = async ({
+  input,
+  ctx,
+}: {
+  input: PaymentMethodDeleteInput;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  try {
+    return deleteCustomerPaymentMethod({
+      userId: ctx.user.id,
+      isModerator: !!ctx.user.isModerator,
+      ...input,
+    });
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+const defaultToggleableFeatures = toggleableFeatures.reduce(
+  (acc, feature) => ({ ...acc, [feature.key]: feature.default }),
+  {} as FeatureAccess
+);
+export const getUserFeatureFlagsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+  try {
+    const { id } = ctx.user;
+    const { features = {} } = await getUserSettings(id);
+
+    // filter toggleable features from user settings
+    const filteredUserFeatures = Object.keys(features).reduce(
+      (acc, key) =>
+        toggleableFeatures.some((x) => x.key === key) ? { ...acc, [key]: features[key] } : acc,
+      {} as FeatureAccess
+    );
+
+    return {
+      ...defaultToggleableFeatures,
+      ...filteredUserFeatures,
+    } as FeatureAccess;
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export const toggleUserFeatureFlagHandler = async ({
+  input,
+  ctx,
+}: {
+  input: ToggleFeatureInput;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  try {
+    const { id } = ctx.user;
+    const { features = {}, ...restSettings } = await getUserSettings(id);
+
+    const updatedFeatures: Partial<FeatureAccess> = {
+      ...features,
+      [input.feature]: isDefined(features[input.feature])
+        ? input.value ?? !features[input.feature]
+        : input.value ?? !defaultToggleableFeatures[input.feature],
+    };
+
+    await setUserSetting(id, { ...restSettings, features: updatedFeatures });
+
+    return updatedFeatures;
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export const getUserSettingsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+  try {
+    const { id } = ctx.user;
+    const settings = await getUserSettings(id);
+
+    // Limits it to the input type
+    return settings;
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export const setUserSettingHandler = async ({
+  input,
+  ctx,
+}: {
+  input: SetUserSettingsInput;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  try {
+    const { id } = ctx.user;
+    const { ...restSettings } = await getUserSettings(id);
+    const newSettings = { ...restSettings, ...input };
+
+    await setUserSetting(id, newSettings);
+    return newSettings;
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export const dismissAlertHandler = async ({
+  input,
+  ctx,
+}: {
+  input: { alertId: string };
+  ctx: DeepNonNullable<Context>;
+}) => {
+  try {
+    const { id } = ctx.user;
+    const { dismissedAlerts = [] } = await getUserSettings(id);
+    dismissedAlerts.push(input.alertId);
+
+    await setUserSetting(id, { dismissedAlerts });
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export const getUserBookmarkCollectionsHandler = async ({
+  ctx,
+}: {
+  ctx: DeepNonNullable<Context>;
+}) => {
+  return getUserBookmarkCollections({
+    userId: ctx.user.id,
+  });
+};
+
+export const getUserPurchasedRewardsHandler = async ({
+  ctx,
+}: {
+  ctx: DeepNonNullable<Context>;
+}) => {
+  try {
+    return getUserPurchasedRewards({
+      userId: ctx.user.id,
+    });
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export async function setLeaderboardEligibilityHandler({
+  ctx,
+  input,
+}: {
+  ctx: DeepNonNullable<Context>;
+  input: SetLeaderboardEligibilitySchema;
+}) {
+  await setLeaderboardEligibility(input);
+  await ctx.track.userActivity({
+    type: input.setTo ? 'ExcludedFromLeaderboard' : 'UnexcludedFromLeaderboard',
+    targetUserId: input.id,
+  });
+}

@@ -12,7 +12,7 @@ import {
   AspectRatio,
   Skeleton,
 } from '@mantine/core';
-import { Fragment, useMemo } from 'react';
+import { Fragment, useEffect, useMemo } from 'react';
 import {
   IconArrowRight,
   IconCategory,
@@ -21,7 +21,7 @@ import {
   IconLayoutList,
   IconPhoto,
 } from '@tabler/icons-react';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { ImageCard } from '~/components/Cards/ImageCard';
 import { ModelCard } from '~/components/Cards/ModelCard';
 import { HomeBlockWrapper } from '~/components/HomeBlocks/HomeBlockWrapper';
@@ -30,78 +30,18 @@ import { PostCard } from '~/components/Cards/PostCard';
 import { ArticleCard } from '~/components/Cards/ArticleCard';
 import { trpc } from '~/utils/trpc';
 import { shuffle } from '~/utils/array-helpers';
-import ReactMarkdown from 'react-markdown';
-import { useHomeBlockStyles } from '~/components/HomeBlocks/HomeBlock.Styles';
+import {
+  useHomeBlockStyles,
+  useHomeBlockGridStyles,
+} from '~/components/HomeBlocks/HomeBlock.Styles';
 import { HomeBlockMetaSchema } from '~/server/schema/home-block.schema';
 import { ReactionSettingsProvider } from '~/components/Reaction/ReactionSettingsProvider';
-import { CollectionMode } from '@prisma/client';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
+import { CollectionMode } from '~/shared/utils/prisma/enums';
 import { ImagesProvider } from '~/components/Image/Providers/ImagesProvider';
-import { isDefined } from '~/utils/type-guards';
-
-const useStyles = createStyles<string, { count: number; rows: number }>(
-  (theme, { count, rows }) => {
-    return {
-      grid: {
-        display: 'grid',
-        gridTemplateColumns: `repeat(auto-fill, minmax(320px, 1fr))`,
-        columnGap: theme.spacing.md,
-        gridTemplateRows: `repeat(${rows}, auto)`,
-        gridAutoRows: 0,
-        overflow: 'hidden',
-        marginTop: -theme.spacing.md,
-
-        '& > *': {
-          marginTop: theme.spacing.md,
-        },
-
-        [theme.fn.smallerThan('md')]: {
-          gridAutoFlow: 'column',
-          gridTemplateColumns: `repeat(${count / 2}, minmax(280px, 1fr) )`,
-          gridTemplateRows: `repeat(${rows}, auto)`,
-          scrollSnapType: 'x mandatory',
-          overflowX: 'auto',
-        },
-
-        [theme.fn.smallerThan('sm')]: {
-          gridAutoFlow: 'column',
-          gridTemplateColumns: `repeat(${count}, 280px)`,
-          gridTemplateRows: 'auto',
-          scrollSnapType: 'x mandatory',
-          overflowX: 'auto',
-          marginRight: -theme.spacing.md,
-          marginLeft: -theme.spacing.md,
-          paddingLeft: theme.spacing.md,
-
-          '& > *': {
-            scrollSnapAlign: 'center',
-          },
-        },
-      },
-
-      meta: {
-        display: 'none',
-        [theme.fn.smallerThan('md')]: {
-          display: 'block',
-        },
-      },
-
-      gridMeta: {
-        gridColumn: '1 / span 2',
-        display: 'flex',
-        flexDirection: 'column',
-
-        '& > *': {
-          flex: 1,
-        },
-
-        [theme.fn.smallerThan('md')]: {
-          display: 'none',
-        },
-      },
-    };
-  }
-);
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { contestCollectionReactionsHidden } from '~/components/Collections/collection.utils';
+import { CustomMarkdown } from '~/components/Markdown/CustomMarkdown';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 
 const icons = {
   model: IconCategory,
@@ -110,7 +50,11 @@ const icons = {
   article: IconFileText,
 };
 
-export const CollectionHomeBlock = ({ ...props }: Props) => {
+export const CollectionHomeBlock = ({ showAds, ...props }: Props) => {
+  const features = useFeatureFlags();
+  // No other easy way to hide the block if the feature is disabled
+  if (props.metadata.link?.includes('/articles') && !features.articles) return null;
+
   return (
     <HomeBlockWrapper py={32}>
       <CollectionHomeBlockContent {...props} />
@@ -120,50 +64,45 @@ export const CollectionHomeBlock = ({ ...props }: Props) => {
 
 const ITEMS_PER_ROW = 7;
 const CollectionHomeBlockContent = ({ homeBlockId, metadata }: Props) => {
-  const { data: homeBlock, isLoading } = trpc.homeBlock.getHomeBlock.useQuery({ id: homeBlockId });
+  const { data: homeBlock, isLoading } = trpc.homeBlock.getHomeBlock.useQuery(
+    { id: homeBlockId },
+    { trpc: { context: { skipBatch: true } } }
+  );
+
   const rows = metadata.collection?.rows ?? 2;
-  const { classes, cx } = useStyles({
-    count: homeBlock?.collection?.items.length ?? 0,
-    rows,
-  });
+
   const { classes: homeBlockClasses } = useHomeBlockStyles();
   const currentUser = useCurrentUser();
-  const {
-    models: hiddenModels,
-    images: hiddenImages,
-    users: hiddenUsers,
-    isLoading: loadingPreferences,
-  } = useHiddenPreferencesContext();
 
   const { collection } = homeBlock ?? {};
+
+  const shuffled = useMemo(() => {
+    if (!collection?.items) return [];
+    return shuffle(collection.items);
+  }, [collection?.items]);
+
+  const shuffledData = useMemo(() => shuffled.map((x) => x.data), [shuffled]);
+
+  // TODO - find a different way to return collections so that the type isn't set on the individual item
+  const type = shuffled[0]?.type ?? 'model';
+  const { loadingPreferences, items: filtered } = useApplyHiddenPreferences({
+    type: `${type}s`,
+    data: shuffledData,
+  });
+
   const items = useMemo(() => {
     const itemsToShow = ITEMS_PER_ROW * rows;
-    const usersShown = new Set();
-    const filteredItems = shuffle(collection?.items ?? []).filter((item) => {
-      if (loadingPreferences || !currentUser) return true;
+    return filtered.slice(0, itemsToShow);
+  }, [filtered, rows]);
 
-      // TODO: A lot of improvement can be done here like checking images within the model, etc.
-      switch (item.type) {
-        case 'model':
-          return !hiddenModels.get(item.data.id) && !hiddenUsers.get(item.data.user.id);
-        case 'image':
-          if (
-            hiddenImages.get(item.data.id) ||
-            hiddenUsers.get(item.data.user.id) ||
-            usersShown.has(item.data.user.id)
-          )
-            return false;
-          usersShown.add(item.data.user.id);
-          return true;
-        case 'post':
-        case 'article':
-        default:
-          return !hiddenUsers.get(item.data.user.id);
-      }
-    });
+  const { classes, cx } = useHomeBlockGridStyles({
+    count: items.length ?? 0,
+    rows,
+  });
 
-    return filteredItems.slice(0, itemsToShow);
-  }, [collection?.items, loadingPreferences, hiddenModels, hiddenImages, hiddenUsers, rows]);
+  // useEffect(() => console.log({ homeBlock, filtered, items }), [homeBlock, filtered, items]);
+
+  // useEffect(() => console.log('items'), [items]);
 
   if (!metadata.link) metadata.link = `/collections/${collection?.id ?? metadata.collection?.id}`;
   const itemType = collection?.items?.[0]?.type || 'model';
@@ -193,17 +132,13 @@ const CollectionHomeBlockContent = ({ homeBlockId, metadata }: Props) => {
                 </Text>
                 {metadata.description && (
                   <Text size="sm" mb="xs">
-                    <ReactMarkdown
-                      allowedElements={['a']}
-                      unwrapDisallowed
-                      className="markdown-content"
-                    >
+                    <CustomMarkdown allowedElements={['a']} unwrapDisallowed>
                       {metadata.description}
-                    </ReactMarkdown>
+                    </CustomMarkdown>
                   </Text>
                 )}
                 {metadata.link && (
-                  <Link href={metadata.link} passHref>
+                  <Link legacyBehavior href={metadata.link} passHref>
                     <Anchor size="sm">
                       <Group spacing={4}>
                         <Text inherit>{metadata.linkText ?? 'View All'} </Text>
@@ -217,7 +152,7 @@ const CollectionHomeBlockContent = ({ homeBlockId, metadata }: Props) => {
           )}
         </Group>
         {metadata.link && (
-          <Link href={metadata.link} passHref>
+          <Link legacyBehavior href={metadata.link} passHref>
             <Button
               className={homeBlockClasses.expandButton}
               component="a"
@@ -231,9 +166,9 @@ const CollectionHomeBlockContent = ({ homeBlockId, metadata }: Props) => {
       </Group>
       {metadata.description && (metadata.descriptionAlwaysVisible || !currentUser) && (
         <Text>
-          <ReactMarkdown allowedElements={['a']} unwrapDisallowed className="markdown-content">
+          <CustomMarkdown allowedElements={['a']} unwrapDisallowed>
             {metadata.description}
-          </ReactMarkdown>
+          </CustomMarkdown>
         </Text>
       )}
     </Stack>
@@ -253,14 +188,14 @@ const CollectionHomeBlockContent = ({ homeBlockId, metadata }: Props) => {
       </Group>
       {metadata.description && (
         <Text maw={520}>
-          <ReactMarkdown allowedElements={['a']} unwrapDisallowed className="markdown-content">
+          <CustomMarkdown allowedElements={['a']} unwrapDisallowed>
             {metadata.description}
-          </ReactMarkdown>
+          </CustomMarkdown>
         </Text>
       )}
       {metadata.link && (
         <div>
-          <Link href={metadata.link} passHref>
+          <Link legacyBehavior href={metadata.link} passHref>
             <Button
               size="md"
               component="a"
@@ -286,41 +221,42 @@ const CollectionHomeBlockContent = ({ homeBlockId, metadata }: Props) => {
       <Box mb="md" className={cx({ [classes.meta]: useGrid })}>
         {MetaDataTop}
       </Box>
-      <div className={classes.grid}>
-        <ImagesProvider
-          hideReactionCount={collection?.mode === CollectionMode.Contest}
-          images={items
-            .map((x) => {
-              if (x.type === 'image') return x.data;
-              return null;
-            })
-            .filter(isDefined)}
-        >
-          <ReactionSettingsProvider
-            settings={{ hideReactionCount: collection?.mode === CollectionMode.Contest }}
+      {isLoading || loadingPreferences ? (
+        <div className={classes.grid}>
+          {useGrid && <div className={classes.gridMeta}>{MetaDataGrid}</div>}
+          {Array.from({ length: ITEMS_PER_ROW * rows }).map((_, index) => (
+            <AspectRatio ratio={7 / 9} key={index} className="m-2">
+              <Skeleton width="100%" />
+            </AspectRatio>
+          ))}
+        </div>
+      ) : (
+        <div className={classes.grid}>
+          <ImagesProvider
+            hideReactionCount={collection?.mode === CollectionMode.Contest}
+            images={type === 'image' ? (items as any) : undefined}
           >
-            {useGrid && <div className={classes.gridMeta}>{MetaDataGrid}</div>}
-            {isLoading || loadingPreferences
-              ? Array.from({ length: ITEMS_PER_ROW * rows }).map((_, index) => (
-                  <AspectRatio ratio={7 / 9} key={index}>
-                    <Skeleton width="100%" />
-                  </AspectRatio>
-                ))
-              : items.map((item) => (
-                  <Fragment key={item.id}>
-                    {item.type === 'model' && (
-                      <ModelCard data={{ ...item.data, image: item.data.images[0] }} />
-                    )}
-                    {item.type === 'image' && <ImageCard data={item.data} />}
-                    {item.type === 'post' && <PostCard data={item.data} />}
-                    {item.type === 'article' && <ArticleCard data={item.data} />}
-                  </Fragment>
-                ))}
-          </ReactionSettingsProvider>
-        </ImagesProvider>
-      </div>
+            <ReactionSettingsProvider
+              settings={{
+                hideReactionCount: collection?.mode === CollectionMode.Contest,
+                hideReactions: collection && contestCollectionReactionsHidden(collection),
+              }}
+            >
+              {useGrid && <div className={classes.gridMeta}>{MetaDataGrid}</div>}
+              {items.map((item) => (
+                <div key={item.id} className="p-2">
+                  {type === 'model' && <ModelCard data={item as any} forceInView />}
+                  {type === 'image' && <ImageCard data={item as any} />}
+                  {type === 'post' && <PostCard data={item as any} />}
+                  {type === 'article' && <ArticleCard data={item as any} />}
+                </div>
+              ))}
+            </ReactionSettingsProvider>
+          </ImagesProvider>
+        </div>
+      )}
     </>
   );
 };
 
-type Props = { homeBlockId: number; metadata: HomeBlockMetaSchema };
+type Props = { homeBlockId: number; metadata: HomeBlockMetaSchema; showAds?: boolean };

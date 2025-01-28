@@ -1,8 +1,16 @@
+import { NotificationCategory } from '~/server/common/enums';
 import { createNotificationProcessor } from '~/server/notifications/base.notifications';
+import { EntityType } from '~/shared/utils/prisma/enums';
+
+const entityUrlMap: Partial<{ [k in EntityType]?: string }> = {
+  [EntityType.Image]: '/images',
+} as const;
 
 export const reportNotifications = createNotificationProcessor({
+  // Moveable
   'report-actioned': {
     displayName: 'Report actioned',
+    category: NotificationCategory.System,
     toggleable: false,
     prepareMessage: ({ details }) => ({
       message: `The ${
@@ -29,7 +37,7 @@ export const reportNotifications = createNotificationProcessor({
               END,
             'reportReason', r.reason,
             'createdAt', r."createdAt"
-          ) "details"
+          ) as "details"
         FROM "Report" r
         JOIN "User" u ON u.id = r."userId" OR u.id = ANY(r."alsoReportedBy")
         WHERE
@@ -38,20 +46,25 @@ export const reportNotifications = createNotificationProcessor({
           r."statusSetAt" > '${lastSent}' AND
           r.status = 'Actioned'
       )
-      INSERT INTO "Notification"("id", "userId", "type", "details")
       SELECT
-        REPLACE(gen_random_uuid()::text, '-', ''),
+        concat('report-actioned:', details->>'reportId') "key",
         "ownerId"    "userId",
         'report-actioned' "type",
         details
       FROM actioned r
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM "Notification" n
-        WHERE n."userId" = r."ownerId"
-            AND n.type IN ('report-actioned')
-            AND n.details->>'reportId' = r.details->>'reportId'
-      );
     `,
+  },
+  'entity-appeal-resolved': {
+    displayName: 'Entity appeal resolved',
+    category: NotificationCategory.Other,
+    toggleable: false,
+    prepareMessage: ({ details }) => ({
+      message: `Your appeal regarding your ${
+        details.entityType
+      } has been ${details.status.toLowerCase()}${
+        details.resolvedMessage ? `: ${details.resolvedMessage}.` : '.'
+      }`,
+      url: `${entityUrlMap[details.entityType as EntityType]}/${details.entityId}`,
+    }),
   },
 });

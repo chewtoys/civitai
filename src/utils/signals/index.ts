@@ -1,32 +1,31 @@
-import { Deferred, EventEmitter } from './utils';
-import type { WorkerIncomingMessage, WorkerOutgoingMessage } from './types';
 import SharedWorker from '@okikio/sharedworker';
 import { createStore } from 'zustand/vanilla';
+import type { WorkerIncomingMessage, WorkerOutgoingMessage } from './types';
+import { Deferred, EventEmitter } from './utils';
 
 // Debugging
 const logs: Record<string, boolean> = {};
-const logFn = (args: unknown) => console.log(args);
 
 type State = { available: boolean };
 type Store = State & { update: (fn: (args: State) => State) => void };
 
-export type SignalWorker = AsyncReturnType<typeof createSignalWorker>;
-export const createSignalWorker = async ({
-  token,
+export type SignalWorker = ReturnType<typeof createSignalWorker>;
+export const createSignalWorker = ({
   onConnected,
   onClosed,
   onError,
   onReconnected,
+  onReconnecting,
 }: {
-  token: string;
   onConnected?: () => void;
   onReconnected?: () => void;
+  onReconnecting?: () => void;
+  /** A closed connection will not recover on its own. */
   onClosed?: (message?: string) => void;
   onError?: (message?: string) => void;
 }) => {
   const deferred = new Deferred();
   const emitter = new EventEmitter();
-  const events: Record<string, boolean> = {};
   let pingDeferred: Deferred | undefined;
 
   const { getState, subscribe } = createStore<Store>((set) => ({
@@ -35,8 +34,8 @@ export const createSignalWorker = async ({
     update: (fn) => set((args) => ({ ...fn(args) })),
   }));
 
-  const worker = new SharedWorker(new URL('./worker.ts', import.meta.url), {
-    name: 'civitai-signals',
+  const worker = new SharedWorker(new URL('./worker.v1.2.ts', import.meta.url), {
+    name: 'civitai-signals:1.2.3',
     type: 'module',
   });
 
@@ -46,6 +45,7 @@ export const createSignalWorker = async ({
     else if (data.type === 'connection:closed') onClosed?.(data.message);
     else if (data.type === 'connection:error') onError?.(data.message);
     else if (data.type === 'connection:reconnected') onReconnected?.();
+    else if (data.type === 'connection:reconnecting') onReconnecting?.();
     else if (data.type === 'event:received') emitter.emit(data.target, data.payload);
     else if (data.type === 'pong') pingDeferred?.resolve();
   };
@@ -53,10 +53,7 @@ export const createSignalWorker = async ({
   const postMessage = (message: WorkerIncomingMessage) => worker.port.postMessage(message);
 
   const on = (target: string, cb: (data: unknown) => void) => {
-    if (!events[target]) {
-      events.target = true;
-      postMessage({ type: 'event:register', target });
-    }
+    postMessage({ type: 'event:register', target });
     emitter.on(target, cb);
   };
 
@@ -79,22 +76,33 @@ export const createSignalWorker = async ({
 
       await pingDeferred.promise
         .then(() => getState().update((state) => ({ ...state, available: true })))
-        .catch(() => getState().update((state) => ({ ...state, available: false })));
+        .catch(() => {
+          getState().update((state) => ({ ...state, available: false }));
+          onClosed?.('connection to shared worker lost');
+        });
       pingDeferred = undefined;
     }
   };
 
-  await deferred.promise;
-
   if (typeof window !== 'undefined') {
-    window.logSignal = (target) => {
+    window.logSignal = (target, selector) => {
+      function logFn(args: unknown) {
+        if (selector) {
+          const result = [args].find(selector);
+          if (result) console.log(result);
+        } else console.log(args);
+      }
+
       if (!logs[target]) {
         logs[target] = true;
         on(target, logFn);
-      } else {
-        delete logs[target];
-        off(target, logFn);
+        console.log(`begin logging: ${target}`);
       }
+    };
+
+    window.ping = () => {
+      window.logSignal('pong');
+      postMessage({ type: 'ping' });
     };
   }
 
@@ -109,12 +117,21 @@ export const createSignalWorker = async ({
   // ping-pong with worker to check for worker availability
   document.addEventListener('visibilitychange', ping);
 
-  postMessage({ type: 'connection:init', token });
+  async function init(token: string, userId: number) {
+    await deferred.promise;
+    postMessage({ type: 'connection:init', token, userId });
+  }
+
+  function send(target: string, args: Record<string, unknown>) {
+    postMessage({ type: 'send', target, args });
+  }
 
   return {
     on,
     off,
     close,
     subscribe,
+    init,
+    send,
   };
 };

@@ -26,7 +26,7 @@ import {
   HomeBlockMetaSchema,
   SetHomeBlocksOrderInputSchema,
 } from '~/server/schema/home-block.schema';
-import { CollectionType, HomeBlockType } from '@prisma/client';
+import { HomeBlockType } from '~/shared/utils/prisma/enums';
 import { GetByIdInput, UserPreferencesInput } from '~/server/schema/base.schema';
 import { TRPCError } from '@trpc/server';
 import { isDefined } from '~/utils/type-guards';
@@ -99,6 +99,7 @@ export const getHomeBlocksByIdHandler = async ({
       ...input,
       user: ctx.user,
     });
+    if (homeBlock?.type === 'Announcement') ctx.cache.skip = true;
 
     if (!homeBlock) {
       throw throwNotFoundError('Home block not found');
@@ -159,10 +160,19 @@ export const deleteUserHomeBlockHandler = async ({
   input: GetByIdInput;
   ctx: DeepNonNullable<Context>;
 }) => {
+  const { id: userId, isModerator } = ctx.user;
+
   try {
-    await deleteHomeBlockById({
+    const homeBlock = await getHomeBlockById({ ...input });
+    if (!homeBlock) throw throwNotFoundError(`No home block with id ${input.id}`);
+
+    if (!isModerator && homeBlock.userId !== userId) throw throwAuthorizationError();
+
+    const deleted = await deleteHomeBlockById({
       input: { ...input, userId: ctx.user.id, isModerator: ctx.user.isModerator },
     });
+
+    return deleted;
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     else throw throwDbError(error);

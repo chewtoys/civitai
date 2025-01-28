@@ -1,23 +1,27 @@
-import { GetResourceReviewPagedInput } from './../schema/resourceReview.schema';
+import { Context } from '~/server/createContext';
+import { dbRead } from '~/server/db/client';
+import { redis, REDIS_KEYS, REDIS_SUB_KEYS } from '~/server/redis/client';
 import { GetByIdInput } from '~/server/schema/base.schema';
+import { GetByUsernameSchema } from '~/server/schema/user.schema';
+import {
+  createResourceReview,
+  deleteResourceReview,
+  getUserRatingTotals,
+  toggleExcludeResourceReview,
+  updateResourceReview,
+  upsertResourceReview,
+} from '~/server/services/resourceReview.service';
+import {
+  throwAuthorizationError,
+  throwBadRequestError,
+  throwDbError,
+} from '~/server/utils/errorHandling';
 import {
   CreateResourceReviewInput,
   UpdateResourceReviewInput,
   UpsertResourceReviewInput,
 } from '../schema/resourceReview.schema';
-import { throwBadRequestError, throwDbError } from '~/server/utils/errorHandling';
-import {
-  deleteResourceReview,
-  upsertResourceReview,
-  updateResourceReview,
-  createResourceReview,
-  getPagedResourceReviews,
-  toggleExcludeResourceReview,
-  getUserRatingTotals,
-} from '~/server/services/resourceReview.service';
-import { Context } from '~/server/createContext';
-import { GetByUsernameSchema } from '~/server/schema/user.schema';
-import { dbRead } from '~/server/db/client';
+import { hasEntityAccess } from '../services/common.service';
 
 export const upsertResourceReviewHandler = async ({
   input,
@@ -27,6 +31,17 @@ export const upsertResourceReviewHandler = async ({
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
+    const [access] = await hasEntityAccess({
+      entityType: 'ModelVersion',
+      entityIds: [input.modelVersionId],
+      userId: ctx.user.id,
+      isModerator: ctx.user.isModerator,
+    });
+
+    if (!access?.hasAccess) {
+      throw throwAuthorizationError('You do not have access to this model version.');
+    }
+
     return await upsertResourceReview({ ...input, userId: ctx.user.id });
   } catch (error) {
     throw throwDbError(error);
@@ -41,14 +56,28 @@ export const createResourceReviewHandler = async ({
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
+    const [access] = await hasEntityAccess({
+      entityType: 'ModelVersion',
+      entityIds: [input.modelVersionId],
+      userId: ctx.user.id,
+      isModerator: ctx.user.isModerator,
+    });
+
+    if (!access?.hasAccess) {
+      throw throwAuthorizationError('You do not have access to this model version.');
+    }
+
     const result = await createResourceReview({ ...input, userId: ctx.user.id });
     await ctx.track.resourceReview({
       type: 'Create',
       modelId: result.modelId,
-      modelVersionId: result.modelVersion.id,
-      rating: result.rating,
-      nsfw: result.nsfw,
+      modelVersionId: result.modelVersionId,
+      rating: result.recommended ? 5 : 1,
+      nsfw: false,
     });
+    await redis.del(
+      `${REDIS_KEYS.USER.BASE}:${ctx.user.id}:${REDIS_SUB_KEYS.USER.MODEL_ENGAGEMENTS}`
+    );
     return result;
   } catch (error) {
     throw throwDbError(error);
@@ -71,7 +100,9 @@ export const updateResourceReviewHandler = async ({
       rating: result.rating,
       nsfw: result.nsfw,
     });
-
+    await redis.del(
+      `${REDIS_KEYS.USER.BASE}:${ctx.user.id}:${REDIS_SUB_KEYS.USER.MODEL_ENGAGEMENTS}`
+    );
     return result;
   } catch (error) {
     throw throwDbError(error);

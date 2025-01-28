@@ -2,16 +2,18 @@ import {
   ActionIcon,
   Box,
   Button,
+  createStyles,
   Group,
+  Loader,
   Menu,
   ScrollArea,
   ThemeIcon,
-  createStyles,
 } from '@mantine/core';
-import { NextLink } from '@mantine/next';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import {
   IconAlertTriangle,
   IconBan,
+  IconBolt,
   IconBrush,
   IconChevronLeft,
   IconChevronRight,
@@ -20,16 +22,16 @@ import {
   IconEdit,
   IconFileSettings,
   IconPhotoEdit,
+  IconPhotoPlus,
   IconTrash,
 } from '@tabler/icons-react';
-import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useRef, useState } from 'react';
 import { triggerRoutedDialog } from '~/components/Dialog/RoutedDialogProvider';
+import { useToggleCheckpointCoverageMutation } from '~/components/Model/model.utils';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { openContext } from '~/providers/CustomModalsProvider';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
-
 import { ModelById } from '~/types/router';
 
 const useStyles = createStyles((theme) => ({
@@ -46,7 +48,6 @@ const useStyles = createStyles((theme) => ({
   },
 
   leftArrow: {
-    display: 'none',
     position: 'absolute',
     left: 0,
     top: '50%',
@@ -58,13 +59,9 @@ const useStyles = createStyles((theme) => ({
       to: 'transparent',
       deg: 90,
     }),
-
-    [theme.fn.largerThan('md')]: {
-      display: 'block',
-    },
+    display: 'block',
   },
   rightArrow: {
-    display: 'none',
     position: 'absolute',
     right: 0,
     top: '50%',
@@ -76,10 +73,7 @@ const useStyles = createStyles((theme) => ({
       to: 'transparent',
       deg: 270,
     }),
-
-    [theme.fn.largerThan('md')]: {
-      display: 'block',
-    },
+    display: 'block',
   },
   viewport: {
     overflowX: 'scroll',
@@ -98,6 +92,7 @@ export function ModelVersionList({
   versions,
   selected,
   showExtraIcons,
+  showToggleCoverage,
   onVersionClick,
   onDeleteClick,
 }: Props) {
@@ -116,6 +111,18 @@ export function ModelVersionList({
 
   const scrollLeft = () => viewportRef.current?.scrollBy({ left: -200, behavior: 'smooth' });
   const scrollRight = () => viewportRef.current?.scrollBy({ left: 200, behavior: 'smooth' });
+
+  const { toggle, isLoading } = useToggleCheckpointCoverageMutation();
+  const handleToggleCoverage = async ({
+    modelId,
+    versionId,
+  }: {
+    modelId: number;
+    versionId: number;
+  }) => {
+    // Error is handled at the hook level
+    await toggle({ id: modelId, versionId }).catch(() => null);
+  };
 
   useEffect(() => {
     if (viewportRef.current) {
@@ -160,21 +167,53 @@ export function ModelVersionList({
       <Group spacing={4} noWrap>
         {versions.map((version) => {
           const active = selected === version.id;
+          const isTraining = !!version.trainingStatus;
           const missingFiles = !version.files.length;
           const missingPosts = !version.posts.length;
           const published = version.status === 'Published';
           const scheduled = version.status === 'Scheduled';
+          const isEarlyAccess =
+            version.earlyAccessEndsAt && new Date(version.earlyAccessEndsAt) > new Date();
           const hasProblem = missingFiles || missingPosts || (!published && !scheduled);
+          const earlyAccessButton = (
+            <ThemeIcon
+              key={`early-access-${version.id}`}
+              radius="sm"
+              size="sm"
+              color="yellow.7"
+              style={{
+                width: 20,
+                height: 26,
+                borderTopLeftRadius: 0,
+                borderBottomLeftRadius: 0,
+                ...(showExtraIcons
+                  ? {
+                      borderTopRightRadius: 0,
+                      borderBottomRightRadius: 0,
+                    }
+                  : {}),
+              }}
+            >
+              <IconBolt style={{ fill: theme.colors.dark[9] }} color="dark.9" size={16} />
+            </ThemeIcon>
+          );
 
           const versionButton = (
             <Button
               key={version.id}
               miw={40}
               ta="center"
+              className="relative"
               variant={active ? 'filled' : theme.colorScheme === 'dark' ? 'filled' : 'light'}
               color={active ? 'blue' : 'gray'}
               onClick={() => {
                 if (showExtraIcons) {
+                  if (!published && isTraining) {
+                    return router.push(
+                      `/models/${version.modelId}/model-versions/${version.id}/wizard?step=1`
+                    );
+                  }
+
                   if (missingFiles)
                     return router.push(
                       `/models/${version.modelId}/model-versions/${version.id}/wizard?step=2`
@@ -201,6 +240,14 @@ export function ModelVersionList({
                 ) : undefined
               }
               compact
+              style={
+                isEarlyAccess
+                  ? {
+                      borderTopRightRadius: 0,
+                      borderBottomRightRadius: 0,
+                    }
+                  : undefined
+              }
             >
               <Group spacing={8} noWrap>
                 {features.imageGeneration && version.canGenerate && (
@@ -220,11 +267,17 @@ export function ModelVersionList({
             </Button>
           );
 
-          if (!showExtraIcons) return versionButton;
+          if (!showExtraIcons)
+            return (
+              <Group key={version.id} spacing={0} noWrap>
+                {versionButton} {isEarlyAccess && earlyAccessButton}
+              </Group>
+            );
 
           return (
             <Button.Group key={version.id}>
               {versionButton}
+              {isEarlyAccess && earlyAccessButton}
               <Menu withinPortal>
                 <Menu.Target>
                   <Button
@@ -270,7 +323,7 @@ export function ModelVersionList({
                   )}
 
                   <Menu.Item
-                    component={NextLink}
+                    component={Link}
                     href={`/models/${version.modelId}/model-versions/${version.id}/edit`}
                     icon={<IconEdit size={14} stroke={1.5} />}
                   >
@@ -290,15 +343,43 @@ export function ModelVersionList({
                   >
                     Manage files
                   </Menu.Item>
-                  {version.posts.length > 0 && (
+                  {version.posts.length > 0 ? (
                     <Menu.Item
-                      component={NextLink}
+                      component={Link}
                       icon={<IconPhotoEdit size={14} stroke={1.5} />}
                       onClick={(e) => e.stopPropagation()}
                       href={`/posts/${version.posts[0].id}/edit`}
                     >
                       Manage images
                     </Menu.Item>
+                  ) : (
+                    <Menu.Item
+                      component={Link}
+                      icon={<IconPhotoPlus size={14} stroke={1.5} />}
+                      onClick={(e) => e.stopPropagation()}
+                      href={`/models/${version.modelId}/model-versions/${version.id}/wizard?step=3`}
+                    >
+                      Add images
+                    </Menu.Item>
+                  )}
+                  {currentUser?.isModerator && showToggleCoverage && (
+                    <>
+                      <Menu.Divider />
+                      <Menu.Label>Moderation zone</Menu.Label>
+                      <Menu.Item
+                        disabled={isLoading}
+                        icon={isLoading ? <Loader size="xs" /> : undefined}
+                        onClick={() =>
+                          handleToggleCoverage({
+                            modelId: version.modelId,
+                            versionId: version.id,
+                          })
+                        }
+                        closeMenuOnClick={false}
+                      >
+                        {version.canGenerate ? 'Remove from generation' : 'Add to generation'}
+                      </Menu.Item>
+                    </>
                   )}
                 </Menu.Dropdown>
               </Menu>
@@ -331,4 +412,5 @@ type Props = {
   onDeleteClick: (versionId: number) => void;
   selected?: number;
   showExtraIcons?: boolean;
+  showToggleCoverage?: boolean;
 };

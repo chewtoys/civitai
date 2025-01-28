@@ -1,12 +1,34 @@
-import { Table, Group, Text, LoadingOverlay, Card, Title, Stack } from '@mantine/core';
+import {
+  Table,
+  Group,
+  Text,
+  LoadingOverlay,
+  Card,
+  Title,
+  Stack,
+  Button,
+  Alert,
+} from '@mantine/core';
 import { BuiltInProviderType } from 'next-auth/providers';
 import { getProviders, signIn } from 'next-auth/react';
+import { useRouter } from 'next/router';
+import { useEffect, useState } from 'react';
 import { SocialLabel } from '~/components/Social/SocialLabel';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { trpc } from '~/utils/trpc';
 
-export function AccountsCard({ providers }: { providers: AsyncReturnType<typeof getProviders> }) {
+type NextAuthProviders = AsyncReturnType<typeof getProviders>;
+
+export function AccountsCard() {
   const utils = trpc.useContext();
+  const currentUser = useCurrentUser();
+  const { error } = useRouter().query;
   const { data: accounts = [] } = trpc.account.getAll.useQuery();
+
+  const [providers, setProviders] = useState<NextAuthProviders | null>(null);
+  useEffect(() => {
+    if (!providers) getProviders().then((providers) => setProviders(providers));
+  }, []);
 
   const { mutate: deleteAccount, isLoading: deletingAccount } = trpc.account.delete.useMutation({
     onSuccess: async () => {
@@ -15,9 +37,10 @@ export function AccountsCard({ providers }: { providers: AsyncReturnType<typeof 
   });
 
   if (!providers) return null;
+  const canRemoveAccounts = accounts.length > 1 || currentUser?.emailVerified;
 
   return (
-    <Card withBorder>
+    <Card withBorder id="accounts">
       <Stack>
         <Stack spacing={0}>
           <Title order={2}>Connected Accounts</Title>
@@ -25,6 +48,19 @@ export function AccountsCard({ providers }: { providers: AsyncReturnType<typeof 
             Connect multiple accounts to your user and sign in with any of them
           </Text>
         </Stack>
+        {error && (
+          <Alert color="yellow">
+            <Stack spacing={4}>
+              <Text color="yellow" weight={500}>
+                Account not linked
+              </Text>
+              <Text size="sm" lh={1.2}>
+                {`That account is already connected to another Civitai account. If you want to link it to this account, switch accounts and remove it from the other Civitai account.`}
+              </Text>
+            </Stack>
+          </Alert>
+        )}
+
         <div style={{ position: 'relative' }}>
           <LoadingOverlay visible={deletingAccount} />
           <Table striped withBorder>
@@ -45,11 +81,15 @@ export function AccountsCard({ providers }: { providers: AsyncReturnType<typeof 
                             <Text
                               variant="link"
                               style={{ cursor: 'pointer' }}
-                              onClick={() => signIn(provider.id, { callbackUrl: '/user/account' })}
+                              onClick={() =>
+                                signIn(provider.id, {
+                                  callbackUrl: '/user/account?connect=true#accounts',
+                                })
+                              }
                             >
                               Connect
                             </Text>
-                          ) : accounts.length > 1 ? (
+                          ) : canRemoveAccounts ? (
                             <Text
                               variant="link"
                               color="red"

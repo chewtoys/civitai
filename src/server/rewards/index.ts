@@ -7,3 +7,6 @@ export { refereeCreatedReward } from './active/refereeCreated.reward';
 export { userReferredReward } from './active/userReferred.reward';
 export { reportAcceptedReward } from './passive/reportAccepted.reward';
 export { firstDailyFollowReward } from './active/firstDailyFollow.reward';
+export { dailyBoostReward } from './active/dailyBoost.reward';
+export { generatorFeedbackReward } from './active/generatorFeedback.reward';
+// export { adWatchedReward } from './active/adWatched.reward';

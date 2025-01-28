@@ -2,31 +2,34 @@ import { TRPCError } from '@trpc/server';
 
 import {
   deleteUserCommentHandler,
-  getCommentCommentsHandler,
   getCommentCommentsCountHandler,
+  getCommentCommentsHandler,
   getCommentHandler,
   getCommentReactionsHandler,
   getCommentsInfiniteHandler,
   setTosViolationHandler,
+  toggleHideCommentHandler,
   toggleLockHandler,
   upsertCommentHandler,
-  toggleHideCommentHandler,
 } from '~/server/controllers/comment.controller';
-import { getCommentCountByModel } from '~/server/services/comment.service';
 import { toggleReactionHandler } from '~/server/controllers/reaction.controller';
 import { dbRead } from '~/server/db/client';
+import { rateLimit } from '~/server/middleware.trpc';
 import { getByIdSchema } from '~/server/schema/base.schema';
 import {
+  commentRateLimits,
   CommentUpsertInput,
   commentUpsertInput,
   getAllCommentsSchema,
   getCommentCountByModelSchema,
   getCommentReactionsSchema,
+  toggleReactionInput,
 } from '~/server/schema/comment.schema';
-import { toggleReactionInput } from '~/server/schema/comment.schema';
+import { getCommentCountByModel } from '~/server/services/comment.service';
 import {
   guardedProcedure,
   middleware,
+  moderatorProcedure,
   protectedProcedure,
   publicProcedure,
   router,
@@ -97,6 +100,7 @@ export const commentRouter = router({
     .input(commentUpsertInput)
     .use(isOwnerOrModerator)
     .use(isLocked)
+    .use(rateLimit(commentRateLimits))
     .mutation(upsertCommentHandler),
   delete: protectedProcedure
     .input(getByIdSchema)
@@ -113,5 +117,5 @@ export const commentRouter = router({
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(toggleLockHandler),
-  setTosViolation: protectedProcedure.input(getByIdSchema).mutation(setTosViolationHandler),
+  setTosViolation: moderatorProcedure.input(getByIdSchema).mutation(setTosViolationHandler),
 });

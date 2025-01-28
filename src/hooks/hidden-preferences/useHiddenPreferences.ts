@@ -1,12 +1,26 @@
+import { useMemo } from 'react';
 import { trpc } from '~/utils/trpc';
 
-export const useHiddenPreferences = () => {
-  const { data = { model: [], image: [], tag: [], user: [] }, isLoading } =
-    trpc.hiddenPreferences.getHidden.useQuery();
-  return { data, isLoading: isLoading };
+export const useQueryHiddenPreferences = () => {
+  const { data, ...rest } = trpc.hiddenPreferences.getHidden.useQuery(undefined, {
+    trpc: { context: { skipBatch: true } },
+  });
+  const _data = useMemo(
+    () =>
+      data ?? {
+        hiddenModels: [],
+        hiddenImages: [],
+        hiddenTags: [],
+        hiddenUsers: [],
+        blockedUsers: [],
+        blockedByUsers: [],
+      },
+    [data]
+  );
+  return { data: _data, ...rest };
 };
 
 export const useHiddenPreferencesData = () => {
-  const { data } = useHiddenPreferences();
+  const { data } = useQueryHiddenPreferences();
   return data;
 };

@@ -7,10 +7,11 @@ import {
   ThemeIcon,
   createStyles,
 } from '@mantine/core';
-import { ScanResultCode } from '@prisma/client';
+import { ScanResultCode } from '~/shared/utils/prisma/enums';
 import { IconShieldCheck, IconShieldOff, IconShieldX } from '@tabler/icons-react';
-import ReactMarkdown from 'react-markdown';
+import { CustomMarkdown } from '~/components/Markdown/CustomMarkdown';
 import dayjs from 'dayjs';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 type VerifiedFile = {
   virusScanResult: ScanResultCode;
@@ -81,10 +82,10 @@ export function VerifiedText({ file, iconOnly }: Props) {
               </Text>
               <Text pb={5}>{defaultMessage}</Text>
               {virusScanMessage && (
-                <ReactMarkdown className="popover-markdown">{virusScanMessage}</ReactMarkdown>
+                <CustomMarkdown className="popover-markdown">{virusScanMessage}</CustomMarkdown>
               )}
               {pickleScanMessage && (
-                <ReactMarkdown className="popover-markdown">{pickleScanMessage}</ReactMarkdown>
+                <CustomMarkdown className="popover-markdown">{pickleScanMessage}</CustomMarkdown>
               )}
               <Text
                 component="a"
@@ -107,7 +108,7 @@ export function VerifiedText({ file, iconOnly }: Props) {
 
 const useStyles = createStyles((theme) => ({
   hideSm: {
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       display: 'none',
     },
   },

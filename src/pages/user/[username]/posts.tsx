@@ -1,6 +1,6 @@
-import { Box, Group, Stack, Tabs } from '@mantine/core';
-import { MetricTimeframe } from '@prisma/client';
-import React, { useMemo, useState } from 'react';
+import { Box, Group, Stack } from '@mantine/core';
+import { MetricTimeframe } from '~/shared/utils/prisma/enums';
+import React, { useState } from 'react';
 
 import { NotFound } from '~/components/AppLayout/NotFound';
 import { SortFilter } from '~/components/Filters';
@@ -15,25 +15,28 @@ import { postgresSlugify } from '~/utils/string-helpers';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { FeedContentToggle } from '~/components/FeedContentToggle/FeedContentToggle';
 import { PostFiltersDropdown } from '~/components/Post/Infinite/PostFiltersDropdown';
-import { createServerSideProps } from '~/server/utils/server-side-helpers';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { UserProfileLayout } from '~/components/Profile/old/OldProfileLayout';
+import { Page } from '~/components/AppLayout/Page';
+import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { dbRead } from '~/server/db/client';
 
 export const getServerSideProps = createServerSideProps({
-  useSession: true,
-  resolver: async ({ features, ctx }) => {
-    const { username } = ctx.query;
-    // TODO: Make the Post page for the new profile. Disable this for now...
-    // if (features?.profileOverhaul)
-    //   return { redirect: { destination: `/user/${username}/profile/images`, permanent: false } };
+  resolver: async ({ ctx }) => {
+    const username = ctx.query.username as string;
+    const user = await dbRead.user.findUnique({ where: { username }, select: { bannedAt: true } });
+
+    if (user?.bannedAt)
+      return {
+        redirect: { destination: `/user/${username}`, permanent: true },
+      };
   },
 });
 
-export default function UserPostsPage() {
+function UserPostsPage() {
   const currentUser = useCurrentUser();
   const {
     replace,
-    query: { followed = undefined, section: querySection, ...query },
+    query: { followed = false, section: querySection, ...query },
   } = usePostQueryParams();
   // const { replace, section: querySection, ...queryFilters } = usePostQueryParams();
   const period = query.period ?? MetricTimeframe.AllTime;
@@ -47,29 +50,17 @@ export default function UserPostsPage() {
     selfView ? querySection ?? 'published' : 'published'
   );
   const viewingDraft = section === 'draft';
-  const features = useFeatureFlags();
-
-  const Wrapper = useMemo(
-    () =>
-      ({ children }: { children: React.ReactNode }) =>
-        features.profileOverhaul ? (
-          <Box mt="md">{children}</Box>
-        ) : (
-          <Tabs.Panel value="/posts">{children}</Tabs.Panel>
-        ),
-    [features.profileOverhaul]
-  );
 
   if (!query.username) return <NotFound />;
 
   return (
-    <Wrapper>
+    <Box mt="md">
       <MasonryProvider
         columnWidth={constants.cardSizes.image}
         maxColumnCount={7}
         maxSingleColumnWidth={450}
       >
-        <MasonryContainer fluid>
+        <MasonryContainer p={0}>
           <Stack spacing="xs">
             <Group spacing={8} position="apart">
               {selfView && (
@@ -82,7 +73,7 @@ export default function UserPostsPage() {
                   }}
                 />
               )}
-              <Group spacing={8} noWrap>
+              <Group spacing={8} ml="auto" noWrap>
                 <SortFilter
                   type="posts"
                   variant="button"
@@ -90,19 +81,21 @@ export default function UserPostsPage() {
                   onChange={(x) => replace({ sort: x as PostSort })}
                 />
                 <PostFiltersDropdown
-                  query={{ ...query, followed }}
+                  query={{ ...query, period, followed }}
                   onChange={(filters) => replace(filters)}
+                  size="sm"
+                  compact
                 />
               </Group>
             </Group>
             <PostsInfinite
-              filters={{ ...query, followed, period, sort, draftOnly: viewingDraft }}
+              filters={{ ...query, followed, period, sort, draftOnly: viewingDraft, pending: true }}
             />
           </Stack>
         </MasonryContainer>
       </MasonryProvider>
-    </Wrapper>
+    </Box>
   );
 }
 
-UserPostsPage.getLayout = UserProfileLayout;
+export default Page(UserPostsPage, { getLayout: UserProfileLayout });

@@ -1,50 +1,73 @@
+import { TRPCError } from '@trpc/server';
+import { constants } from '~/server/common/constants';
 import { Context } from '~/server/createContext';
+import { logToAxiom } from '~/server/logging/client';
+import { collectedContentReward } from '~/server/rewards';
+import { GetByIdInput, UserPreferencesInput } from '~/server/schema/base.schema';
+import {
+  AddCollectionItemInput,
+  AddSimpleImagePostInput,
+  BulkSaveCollectionItemsInput,
+  CollectionMetadataSchema,
+  EnableCollectionYoutubeSupportInput,
+  FollowCollectionInputSchema,
+  GetAllCollectionItemsSchema,
+  GetAllCollectionsInfiniteSchema,
+  GetAllUserCollectionsInputSchema,
+  GetCollectionPermissionDetails,
+  GetUserCollectionItemsByItemSchema,
+  RemoveCollectionItemInput,
+  SetCollectionItemNsfwLevelInput,
+  SetItemScoreInput,
+  UpdateCollectionCoverImageInput,
+  UpdateCollectionItemsStatusInput,
+  UpsertCollectionInput,
+} from '~/server/schema/collection.schema';
+import { ImageMetaProps } from '~/server/schema/image.schema';
+import { imageSelect } from '~/server/selectors/image.selector';
+import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
+import {
+  addContributorToCollection,
+  bulkSaveItems,
+  checkUserOwnsCollectionAndItem,
+  deleteCollectionById,
+  enableCollectionYoutubeSupport,
+  getAllCollections,
+  getCollectionById,
+  getCollectionCoverImages,
+  getCollectionItemById,
+  getCollectionItemCount,
+  getCollectionItemsByCollectionId,
+  getContributorCount,
+  getUserCollectionItemsByItem,
+  getUserCollectionPermissionsById,
+  getUserCollectionsWithPermissions,
+  removeCollectionItem,
+  removeContributorFromCollection,
+  saveItemInCollections,
+  setCollectionItemNsfwLevel,
+  setItemScore,
+  updateCollectionCoverImage,
+  updateCollectionItemsStatus,
+  upsertCollection,
+} from '~/server/services/collection.service';
+import { setModelShowcaseCollection } from '~/server/services/model.service';
+import { addPostImage, createPost } from '~/server/services/post.service';
 import {
   throwAuthorizationError,
   throwDbError,
   throwNotFoundError,
 } from '~/server/utils/errorHandling';
-import {
-  BulkSaveCollectionItemsInput,
-  AddCollectionItemInput,
-  FollowCollectionInputSchema,
-  GetAllCollectionItemsSchema,
-  GetAllUserCollectionsInputSchema,
-  GetUserCollectionItemsByItemSchema,
-  UpdateCollectionItemsStatusInput,
-  UpsertCollectionInput,
-  AddSimpleImagePostInput,
-  GetAllCollectionsInfiniteSchema,
-  UpdateCollectionCoverImageInput,
-} from '~/server/schema/collection.schema';
-import {
-  saveItemInCollections,
-  getUserCollectionsWithPermissions,
-  upsertCollection,
-  deleteCollectionById,
-  getUserCollectionPermissionsById,
-  getCollectionById,
-  addContributorToCollection,
-  removeContributorFromCollection,
-  getUserCollectionItemsByItem,
-  getCollectionItemsByCollectionId,
-  updateCollectionItemsStatus,
-  bulkSaveItems,
-  getAllCollections,
-  CollectionItemExpanded,
-  updateCollectionCoverImage,
-  getCollectionCoverImages,
-} from '~/server/services/collection.service';
-import { TRPCError } from '@trpc/server';
-import { GetByIdInput, UserPreferencesInput } from '~/server/schema/base.schema';
+import { updateEntityMetric } from '~/server/utils/metric-helpers';
 import { DEFAULT_PAGE_SIZE } from '~/server/utils/pagination-helpers';
-import { addPostImage, createPost } from '~/server/services/post.service';
-import { CollectionItemStatus, CollectionReadConfiguration } from '@prisma/client';
-import { constants } from '~/server/common/constants';
-import { imageSelect } from '~/server/selectors/image.selector';
-import { ImageMetaProps } from '~/server/schema/image.schema';
+import {
+  CollectionContributorPermission,
+  CollectionItemStatus,
+  CollectionMode,
+  CollectionReadConfiguration,
+} from '~/shared/utils/prisma/enums';
 import { isDefined } from '~/utils/type-guards';
-import { collectedContentReward } from '~/server/rewards';
+import { dbRead } from '../db/client';
 
 export const getAllCollectionsInfiniteHandler = async ({
   input,
@@ -65,13 +88,12 @@ export const getAllCollectionsInfiniteHandler = async ({
         read: true,
         type: true,
         userId: true,
+        user: { select: userWithCosmeticsSelect },
+        nsfwLevel: true,
         image: { select: imageSelect },
-        _count: {
-          select: {
-            items: { where: { status: CollectionItemStatus.ACCEPTED } },
-            contributors: true,
-          },
-        },
+        mode: true,
+        createdAt: true,
+        metadata: true,
       },
       user: ctx.user,
     });
@@ -89,12 +111,32 @@ export const getAllCollectionsInfiniteHandler = async ({
       imagesPerCollection: 10, // Some fallbacks
     });
 
+    // Get Item Counts
+    const collectionIds = items.map((item) => item.id);
+    const collectionItemCounts = Object.fromEntries(
+      (
+        await getCollectionItemCount({
+          collectionIds,
+          status: CollectionItemStatus.ACCEPTED,
+        })
+      ).map((c) => [c.id, Number(c.count)])
+    );
+
+    // Get Contributor Counts
+    const contributorCounts = Object.fromEntries(
+      (await getContributorCount({ collectionIds })).map((c) => [c.id, Number(c.count)])
+    );
+
     return {
       nextCursor,
       items: items.map((item) => {
         const collectionImageItems = collectionImages.filter((ci) => ci.id === item.id);
         return {
           ...item,
+          _count: {
+            items: collectionItemCounts[item.id] ?? 0,
+            contributors: contributorCounts[item.id] ?? 0,
+          },
           image: item.image
             ? {
                 ...item.image,
@@ -104,6 +146,7 @@ export const getAllCollectionsInfiniteHandler = async ({
             : null,
           images: collectionImageItems.map((ci) => ci.image).filter(isDefined) ?? [],
           srcs: collectionImageItems.map((ci) => ci.src).filter(isDefined) ?? [],
+          metadata: (item.metadata ?? {}) as CollectionMetadataSchema,
         };
       }),
     };
@@ -126,15 +169,6 @@ export const getAllUserCollectionsHandler = async ({
       input: {
         ...input,
         userId: user.id,
-      },
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        image: true,
-        read: true,
-        items: { select: { modelId: true, imageId: true, articleId: true, postId: true } },
-        userId: true,
       },
     });
 
@@ -184,7 +218,7 @@ export const saveItemHandler = async ({
   ctx: DeepNonNullable<Context>;
   input: AddCollectionItemInput;
 }) => {
-  const { user } = ctx;
+  const { user, ip, fingerprint } = ctx;
   try {
     const status = await saveItemInCollections({
       input: { ...input, userId: user.id, isModerator: user.isModerator },
@@ -197,15 +231,55 @@ export const saveItemHandler = async ({
 
       if (entityId) {
         await collectedContentReward.apply(
-          {
-            collectorId: user.id,
-            entityType: input.type,
-            entityId,
-          },
-          ctx.ip
+          { collectorId: user.id, entityType: input.type, entityId },
+          { ip, fingerprint }
         );
       }
     }
+
+    // nb: this will count in review / rejected additions
+    if (input.type === 'Image' && !!input.imageId) {
+      await updateEntityMetric({
+        ctx,
+        entityType: 'Image',
+        entityId: input.imageId,
+        metricType: 'Collection',
+        amount: status === 'added' ? 1 : -1,
+      });
+    }
+
+    // Remove collection from model showcase if removed
+    if (input.type === 'Model' && status === 'removed' && input.modelId) {
+      // letting this run in the background to avoid blocking the response
+      setModelShowcaseCollection({
+        id: input.modelId,
+        collectionId: null,
+        userId: user.id,
+        isModerator: user.isModerator,
+      }).catch((error) =>
+        logToAxiom({
+          name: 'remove-model-showcase-collection',
+          type: 'error',
+          message: error.message,
+        })
+      );
+    }
+
+    // Check ownership if only one collection is being modified
+    const [itemId] = [input.articleId, input.modelId, input.postId, input.imageId].filter(
+      isDefined
+    );
+    if (input.collections.length === 1) {
+      const [collection] = input.collections;
+      const isOwner = await checkUserOwnsCollectionAndItem({
+        itemId,
+        userId: user.id,
+        collectionId: collection.collectionId,
+      });
+      return { status, isOwner };
+    }
+
+    return { status };
   } catch (error) {
     throw throwDbError(error);
   }
@@ -226,7 +300,19 @@ export const bulkSaveItemsHandler = async ({
       isModerator,
     });
 
-    return await bulkSaveItems({ input: { ...input, userId }, permissions });
+    const resp = await bulkSaveItems({ input: { ...input, userId, isModerator }, permissions });
+
+    for (const imgId of resp.imageIds) {
+      await updateEntityMetric({
+        ctx,
+        entityType: 'Image',
+        entityId: imgId,
+        metricType: 'Collection',
+        amount: 1,
+      });
+    }
+
+    return { count: resp.count };
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     throw throwDbError(error);
@@ -243,9 +329,20 @@ export const upsertCollectionHandler = async ({
   const { user } = ctx;
 
   try {
-    const collection = await upsertCollection({ input: { ...input, userId: user.id } });
+    const collection = await upsertCollection({
+      input: { ...input, userId: user.id, isModerator: user.isModerator },
+    });
 
-    return collection;
+    const [itemId] = [input.articleId, input.modelId, input.postId, input.imageId].filter(
+      isDefined
+    );
+    const isOwner = await checkUserOwnsCollectionAndItem({
+      itemId,
+      userId: user.id,
+      collectionId: collection.id,
+    });
+
+    return { ...collection, isOwner };
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     throw throwDbError(error);
@@ -416,6 +513,7 @@ export const addSimpleImagePostHandler = async ({
       userId,
       isModerator,
     });
+
     if (!(permissions.write || permissions.writeReview))
       throw throwAuthorizationError('You do not have permission to add items to this collection.');
 
@@ -431,15 +529,202 @@ export const addSimpleImagePostHandler = async ({
         addPostImage({
           ...image,
           postId: post.id,
-          userId,
           index,
+          user: ctx.user,
         })
       )
     );
+
     const imageIds = postImages.map((image) => image.id);
-    await bulkSaveItems({ input: { collectionId, imageIds, userId }, permissions });
+
+    await bulkSaveItems({ input: { collectionId, imageIds, userId, isModerator }, permissions });
+
+    return {
+      post,
+      permissions,
+    };
   } catch (error) {
     if (error instanceof TRPCError) throw error;
     else throw throwDbError(error);
   }
+};
+
+export const getPermissionDetailsHandler = async ({
+  input: { ids },
+  ctx,
+}: {
+  input: GetCollectionPermissionDetails;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  if (ids.length === 0) return [];
+
+  const collections = await dbRead.collection.findMany({
+    where: { id: { in: ids } },
+    select: {
+      id: true,
+      name: true,
+      metadata: true,
+      mode: true,
+      tags: {
+        select: {
+          filterableOnly: true,
+          tag: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  // Get permissions for each of these
+  const permissions = await Promise.all(
+    collections.map((c) =>
+      getUserCollectionPermissionsById({
+        id: c.id,
+        userId: ctx.user.id,
+        isModerator: ctx.user.isModerator,
+      })
+    )
+  );
+
+  return collections.map((c) => ({
+    ...c,
+    tags: c.tags.map((t) => ({
+      ...t.tag,
+      filterableOnly: t.filterableOnly,
+    })),
+    metadata: (c.metadata ?? {}) as CollectionMetadataSchema,
+    permissions: permissions.find((p) => p.collectionId === c.id),
+  }));
+};
+
+export const removeCollectionItemHandler = async ({
+  input,
+  ctx,
+}: {
+  input: RemoveCollectionItemInput;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  const { user } = ctx;
+  try {
+    return await removeCollectionItem({
+      ...input,
+      userId: user.id,
+      isModerator: user.isModerator,
+    });
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export const setItemScoreHandler = async ({
+  input,
+  ctx,
+}: {
+  input: SetItemScoreInput;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  const { user } = ctx;
+  try {
+    const collectionItem = await getCollectionItemById({
+      id: input.collectionItemId,
+    });
+    const permissions = await getUserCollectionPermissionsById({
+      id: collectionItem.collectionId,
+      userId: user.id,
+      isModerator: user.isModerator,
+    });
+
+    if (!permissions.manage)
+      throw throwAuthorizationError('You do not have permission to manage this collection.');
+
+    return await setItemScore({ ...input, userId: user.id });
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export const setCollectionItemNsfwLevelHandler = async ({
+  input,
+  ctx,
+}: {
+  input: SetCollectionItemNsfwLevelInput;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  const { user } = ctx;
+  try {
+    const collectionItem = await getCollectionItemById({
+      id: input.collectionItemId,
+    });
+
+    const permissions = await getUserCollectionPermissionsById({
+      id: collectionItem.collectionId,
+      userId: user.id,
+      isModerator: user.isModerator,
+    });
+
+    if (!permissions.manage)
+      throw throwAuthorizationError('You do not have permission to manage this collection.');
+
+    return await setCollectionItemNsfwLevel({ ...input });
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+export const enableCollectionYoutubeSupportHandler = async ({
+  input,
+  ctx,
+}: {
+  input: EnableCollectionYoutubeSupportInput;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  const { user } = ctx;
+  try {
+    return await enableCollectionYoutubeSupport({ ...input, userId: user.id });
+  } catch (error) {
+    throw throwDbError(error);
+  }
+};
+
+export const joinCollectionAsManagerHandler = async ({
+  input,
+  ctx,
+}: {
+  input: GetByIdInput;
+  ctx: DeepNonNullable<Context>;
+}) => {
+  const collection = await getCollectionById({ input });
+  if (!collection) {
+    throw throwNotFoundError('Collection not found');
+  }
+
+  if (ctx.user.id === collection.userId) {
+    return true;
+  }
+
+  if (!collection.metadata.inviteUrlEnabled) {
+    throw throwAuthorizationError('You cannot join this collection via URL');
+  }
+
+  if (collection.mode !== CollectionMode.Contest) {
+    throw throwAuthorizationError('This collection is not a contest');
+  }
+
+  await addContributorToCollection({
+    targetUserId: ctx.user.id,
+    // We'll do this as a system action on the meantime.
+    // In the future, invites might be a thing.
+    userId: collection.userId, // Collection owner
+    collectionId: collection.id,
+    permissions: [
+      CollectionContributorPermission.ADD,
+      CollectionContributorPermission.MANAGE,
+      CollectionContributorPermission.VIEW,
+    ],
+  });
+
+  return true;
 };

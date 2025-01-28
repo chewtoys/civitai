@@ -1,50 +1,82 @@
-import { Button, Divider, Input, InputWrapperProps, Stack, Text } from '@mantine/core';
+import { Button, ButtonProps, Divider, Input, InputWrapperProps, Stack, Text } from '@mantine/core';
 import { IconPlus } from '@tabler/icons-react';
 import React, { forwardRef, useEffect } from 'react';
+import { openResourceSelectModal } from '~/components/Dialog/dialog-registry';
 import { ResourceSelectCard } from '~/components/ImageGeneration/GenerationForm/ResourceSelectCard';
-import { openResourceSelectModal } from '~/components/ImageGeneration/GenerationForm/ResourceSelectModal';
-import { ResourceSelectOptions } from './resource-select.types';
 import { withController } from '~/libs/form/hoc/withController';
-import { Generation } from '~/server/services/generation/generation.types';
 import { getDisplayName } from '~/utils/string-helpers';
+import { ResourceSelectOptions, ResourceSelectSource } from './resource-select.types';
+import { GenerationResource } from '~/server/services/generation/generation.service';
 
 type ResourceSelectMultipleProps = {
   limit?: number;
-  value?: Generation.Resource[];
-  onChange?: (value?: Generation.Resource[]) => void;
+  value?: GenerationResource[];
+  onChange?: (value?: GenerationResource[]) => void;
   buttonLabel: React.ReactNode;
+  modalTitle?: React.ReactNode;
+  buttonProps?: Omit<ButtonProps, 'onClick'>;
   options?: ResourceSelectOptions;
-} & Omit<InputWrapperProps, 'children'>;
+  modalOpened?: boolean;
+  onCloseModal?: () => void;
+  hideButton?: boolean;
+  selectSource?: ResourceSelectSource;
+} & Omit<InputWrapperProps, 'children' | 'onChange'>;
 
-const ResourceSelectMultiple = forwardRef<HTMLDivElement, ResourceSelectMultipleProps>(
-  ({ limit, value = [], onChange, buttonLabel, options = {}, ...inputWrapperProps }, ref) => {
+export const ResourceSelectMultiple = forwardRef<HTMLDivElement, ResourceSelectMultipleProps>(
+  (
+    {
+      limit,
+      value = [],
+      onChange,
+      buttonLabel,
+      modalTitle,
+      buttonProps,
+      options = {},
+      modalOpened,
+      onCloseModal,
+      hideButton = false,
+      selectSource = 'generation',
+      ...inputWrapperProps
+    },
+    ref
+  ) => {
     // const { types } = options;
     const types = options.resources?.map((x) => x.type);
 
     // _types used to set up groups
-    const _types = types ?? [...new Set(value?.map((x) => x.modelType))];
-    const _values = types ? [...value].filter((x) => types.includes(x.modelType)) : value;
+    const _types = types ?? [...new Set(value?.map((x) => x.model.type))];
+    const _values = types ? [...value].filter((x) => types.includes(x.model.type)) : value;
     const groups = _types
       .map((type) => ({
         type,
         label: getDisplayName(type),
-        resources: _values.filter((x) => x.modelType === type),
+        resources: _values.filter((x) => x.model.type === type),
       }))
       .filter((x) => !!x.resources.length);
-    const canAdd = !limit || limit >= _values.length;
+    const canAdd = !limit || _values.length < limit;
 
-    const handleAdd = (resource: Generation.Resource) => {
+    const handleAdd = (resource: GenerationResource) => {
       if (!canAdd) return;
-      onChange?.([..._values, resource]);
+      if (
+        selectSource === 'generation' &&
+        resource &&
+        !resource.canGenerate &&
+        resource.substitute?.canGenerate
+      ) {
+        onChange?.([..._values, { ...resource, ...resource.substitute }]);
+      } else {
+        onChange?.([..._values, resource]);
+      }
+      onCloseModal?.();
     };
 
     const handleRemove = (id: number) => {
       const filtered = [..._values.filter((x) => x.id !== id)];
-      const emitValue = !!filtered.length ? filtered : undefined;
-      onChange?.(emitValue);
+      // const emitValue = !!filtered.length ? filtered : undefined;
+      onChange?.(filtered);
     };
 
-    const handleUpdate = (resource: Generation.Resource) => {
+    const handleUpdate = (resource: GenerationResource) => {
       const index = _values.findIndex((x) => x.id === resource.id);
       if (index > -1) {
         const emitValue = [..._values];
@@ -58,6 +90,20 @@ const ResourceSelectMultiple = forwardRef<HTMLDivElement, ResourceSelectMultiple
       if (_values.length !== value.length) onChange?.(_values.length ? _values : undefined);
     }, [value]); //eslint-disable-line
 
+    const handleOpenModal = () => {
+      openResourceSelectModal({
+        title: modalTitle ?? buttonLabel,
+        onSelect: handleAdd,
+        options,
+        onClose: onCloseModal,
+        selectSource,
+      });
+    };
+
+    useEffect(() => {
+      if (modalOpened) handleOpenModal();
+    }, [modalOpened]);
+
     // Made with copilot :^) -Manuel
     const sortedGroups = [...groups].sort((a, b) => {
       const aIndex = types?.indexOf(a.type);
@@ -67,8 +113,8 @@ const ResourceSelectMultiple = forwardRef<HTMLDivElement, ResourceSelectMultiple
     });
 
     return (
-      <Input.Wrapper {...inputWrapperProps} ref={ref}>
-        <Stack spacing="md">
+      <Input.Wrapper {...inputWrapperProps} descriptionProps={{ mb: 8 }} ref={ref}>
+        <Stack spacing="md" mb={inputWrapperProps.error ? 5 : undefined}>
           {sortedGroups.map((group, index) => {
             return (
               <React.Fragment key={group.type}>
@@ -86,6 +132,7 @@ const ResourceSelectMultiple = forwardRef<HTMLDivElement, ResourceSelectMultiple
                       <ResourceSelectCard
                         key={resource.id}
                         resource={resource}
+                        selectSource={selectSource}
                         onUpdate={handleUpdate}
                         onRemove={handleRemove}
                       />
@@ -95,20 +142,20 @@ const ResourceSelectMultiple = forwardRef<HTMLDivElement, ResourceSelectMultiple
               </React.Fragment>
             );
           })}
-          {canAdd && (
+          {canAdd && !hideButton && (
             <Button
               variant="light"
               leftIcon={<IconPlus size={18} />}
-              onClick={() =>
-                openResourceSelectModal({
-                  title: buttonLabel,
-                  onSelect: handleAdd,
-                  options,
-                })
-              }
+              onClick={handleOpenModal}
+              {...buttonProps}
             >
               {buttonLabel}
             </Button>
+          )}
+          {hideButton && !_values.length && (
+            <Text color="dimmed" size="sm">
+              No resources selected
+            </Text>
           )}
         </Stack>
       </Input.Wrapper>

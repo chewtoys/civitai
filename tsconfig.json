@@ -1,8 +1,12 @@
 {
   "compilerOptions": {
-    "target": "ES6",
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "types": ["offscreencanvas"],
+    "target": "ES2018",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    // "types": ["offscreencanvas"],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -16,21 +20,36 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
-    "noUncheckedIndexedAccess": false,
+    "noUncheckedIndexedAccess": false, // TODO swap to true
     "baseUrl": "src",
     "paths": {
-      "~/*": ["./*"]
+      "~/*": [
+        "./*"
+      ]
     },
-    "typeRoots": ["./types"],
-    "noErrorTruncation": true
+    "typeRoots": [
+      "./types"
+    ],
+    "noErrorTruncation": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
   },
   "include": [
     // "next-env.d.ts",
     // "**/*.ts",
     // "**/*.tsx",
     // "**/*.cjs",
-    "**/*.mjs",
+    // "**/*.mjs",
+    "scripts",
     "src"
+    // ".next/types/**/*.ts"
+    ,
+    ".next/types/**/*.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules"
+  ]
 }

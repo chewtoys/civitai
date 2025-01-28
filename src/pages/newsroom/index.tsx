@@ -5,9 +5,11 @@ import { FeaturedArticle } from '~/components/Newsroom/FeaturedArticle';
 import { MediaKit } from '~/components/Newsroom/MediaKit';
 import { News } from '~/components/Newsroom/News';
 import { PressMentions } from '~/components/Newsroom/PressMentions';
+import { Meta } from '~/components/Meta/Meta';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { trpc } from '~/utils/trpc';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 export const getServerSideProps = createServerSideProps({
   useSSG: true,
@@ -20,16 +22,25 @@ export const getServerSideProps = createServerSideProps({
 
 export default function CivitaiNewsroom() {
   const { classes } = useStyles();
-  const { data } = trpc.article.getCivitaiNews.useQuery();
-  const news = data?.news ?? [];
-  const updates = data?.updates ?? [];
+  const { data } = trpc.article.getCivitaiNews.useQuery(undefined, {
+    trpc: { context: { skipBatch: true } },
+  });
+  const news = useMemo(
+    () => data?.articles.filter((x) => x.type === 'news') ?? [],
+    [data?.articles]
+  );
+  const updates = useMemo(
+    () => data?.articles.filter((x) => x.type === 'updates') ?? [],
+    [data?.articles]
+  );
   const pressMentions = data?.pressMentions ?? [];
-  const featuredArticle = useMemo(() => data?.news.find((article) => article.featured), [data]);
+  const featuredArticle = useMemo(() => news.find((article) => article.featured), [news]);
   const features = useFeatureFlags();
   if (!features.newsroom) return <NotFound />;
 
   return (
     <>
+      <Meta title="Civitai Newsroom" description="The latest news and updates from Civitai" />
       <div className={classes.hero}>
         <Container size="md">
           <Stack align="center" spacing={0}>
@@ -59,7 +70,7 @@ export default function CivitaiNewsroom() {
             tabsList: {
               gap: theme.spacing.sm,
               width: '100%',
-              [theme.fn.largerThan('md')]: {
+              [containerQuery.largerThan('md')]: {
                 gap: theme.spacing.md,
                 width: 'auto',
               },
@@ -84,7 +95,7 @@ export default function CivitaiNewsroom() {
                 color: theme.white,
                 fontWeight: 500,
               },
-              [theme.fn.largerThan('md')]: {
+              [containerQuery.largerThan('md')]: {
                 width: 200,
                 padding: `${theme.spacing.md}px 0`,
               },
@@ -131,26 +142,26 @@ const useStyles = createStyles((theme) => ({
     marginBottom: theme.spacing.xl * 2,
     padding: `${theme.spacing.xl}px 0 ${theme.spacing.xl * 2}px`,
     containerType: 'inline-size',
-    [theme.fn.largerThan('md')]: {
+    [containerQuery.largerThan('md')]: {
       padding: `${theme.spacing.xl}px 0 ${theme.spacing.xl * 3}px`,
     },
   },
   heroTitle: {
     fontSize: '2rem',
     fontWeight: 500,
-    [theme.fn.largerThan('md')]: {
+    [containerQuery.largerThan('md')]: {
       fontSize: '4rem',
     },
   },
   heroText: {
     fontSize: theme.fontSizes.md,
-    [theme.fn.largerThan('md')]: {
+    [containerQuery.largerThan('md')]: {
       fontSize: theme.fontSizes.lg,
     },
   },
   heroArticle: {
     marginTop: theme.spacing.lg,
-    [theme.fn.largerThan('md')]: {
+    [containerQuery.largerThan('md')]: {
       marginTop: theme.spacing.xl * 2,
     },
   },

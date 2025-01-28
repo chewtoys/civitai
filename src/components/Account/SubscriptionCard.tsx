@@ -1,62 +1,23 @@
-import { Button, Card, Stack, Center, Loader, Title, Text, Group, Code } from '@mantine/core';
-import { IconRotateClockwise, IconSettings } from '@tabler/icons-react';
-import { upperFirst } from 'lodash-es';
-import {
-  DescriptionTable,
-  Props as DescriptionTableProps,
-} from '~/components/DescriptionTable/DescriptionTable';
-import { ManageSubscriptionButton } from '~/components/Stripe/ManageSubscriptionButton';
-import { SubscribeButton } from '~/components/Stripe/SubscribeButton';
-import { trpc } from '~/utils/trpc';
+import { Button, Card, Stack, Center, Loader, Title, Text, Group, Box } from '@mantine/core';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { IconSettings } from '@tabler/icons-react';
+import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
+import { getPlanDetails } from '~/components/Subscriptions/PlanCard';
+import { useActiveSubscription } from '~/components/Stripe/memberships.util';
+import { shortenPlanInterval } from '~/components/Stripe/stripe.utils';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import { formatDate } from '~/utils/date-helpers';
+import { getStripeCurrencyDisplay } from '~/utils/string-helpers';
+import { CancelMembershipAction } from '~/components/Subscriptions/CancelMembershipAction';
 
 export function SubscriptionCard() {
-  const { data, isLoading } = trpc.stripe.getUserSubscription.useQuery();
-
-  const details: DescriptionTableProps['items'] = [];
-  if (data) {
-    const { status, price, product } = data;
-    const displayStatus = data.canceledAt ? 'canceled' : status;
-    details.push({
-      label: 'Plan',
-      value: product.name,
-    });
-    details.push({
-      label: 'Status',
-      value: (
-        <Group align="flex-end" position="apart">
-          <Text>{upperFirst(displayStatus)}</Text>
-          <Text size="xs" color="dimmed">
-            Since {(data.canceledAt ?? data.createdAt).toLocaleDateString()}
-          </Text>
-        </Group>
-      ),
-    });
-    if (displayStatus === 'active') {
-      details.push({
-        label: 'Price',
-        value: (
-          <Group align="flex-end" position="apart">
-            <Text>
-              {'$' +
-                price.unitAmount / 100 +
-                ' ' +
-                price.currency.toUpperCase() +
-                ' per ' +
-                price.interval}
-            </Text>
-            <Text size="xs" color="dimmed">
-              Paid {data.currentPeriodStart.toLocaleDateString()}
-            </Text>
-          </Group>
-        ),
-      });
-    }
-
-    details.push({
-      label: data.cancelAtPeriodEnd ? 'Ends' : 'Renews',
-      value: new Date(data.currentPeriodEnd).toLocaleDateString(),
-    });
-  }
+  const { subscription, subscriptionLoading } = useActiveSubscription();
+  const features = useFeatureFlags();
+  const price = subscription?.price;
+  const product = subscription?.product;
+  const { image } = subscription
+    ? getPlanDetails(subscription?.product, features)
+    : { image: null };
 
   return (
     <Card withBorder>
@@ -65,26 +26,55 @@ export function SubscriptionCard() {
           <Title id="manage-subscription" order={2}>
             Membership
           </Title>
-          {data?.canceledAt ? (
-            <SubscribeButton priceId={data?.price.id}>
-              <Button compact variant="outline" rightIcon={<IconRotateClockwise size={16} />}>
-                Resume
-              </Button>
-            </SubscribeButton>
-          ) : (
-            <ManageSubscriptionButton>
-              <Button compact variant="outline" rightIcon={<IconSettings size={16} />}>
-                Manage
-              </Button>
-            </ManageSubscriptionButton>
-          )}
+          <Button
+            compact
+            radius="xl"
+            color="gray"
+            rightIcon={<IconSettings size={16} />}
+            component={Link}
+            href="/user/membership"
+          >
+            Manage
+          </Button>
         </Group>
-        {isLoading ? (
+        {subscriptionLoading ? (
           <Center p="xl">
             <Loader />
           </Center>
-        ) : data ? (
-          <DescriptionTable items={details} />
+        ) : subscription ? (
+          <>
+            <Group position="apart">
+              <Group noWrap>
+                {image && (
+                  <Center>
+                    <Box w={40}>
+                      <EdgeMedia src={image} />
+                    </Box>
+                  </Center>
+                )}
+                {product && <Text>{product.name}</Text>}
+              </Group>
+              <Stack spacing={0}>
+                {price && (
+                  <Text>
+                    {getStripeCurrencyDisplay(price.unitAmount, price.currency) +
+                      ' ' +
+                      price.currency.toUpperCase() +
+                      '/' +
+                      shortenPlanInterval(price.interval)}
+                  </Text>
+                )}
+                <Text size="sm" color="dimmed">
+                  {subscription.cancelAtPeriodEnd ? 'Ends' : 'Renews'}{' '}
+                  {formatDate(subscription.currentPeriodEnd)}
+                </Text>
+              </Stack>
+            </Group>
+            <CancelMembershipAction
+              variant="button"
+              buttonProps={{ color: 'red', variant: 'outline', fullWidth: true }}
+            />
+          </>
         ) : null}
       </Stack>
     </Card>

@@ -6,20 +6,18 @@ import {
   Code,
   Container,
   Drawer,
-  Grid,
   Group,
   Loader,
   MantineSize,
   NavLink,
   Popover,
-  ScrollArea,
   Stack,
   Text,
   Title,
   createStyles,
   SegmentedControl,
-  HoverCard,
   SegmentedControlProps,
+  Alert,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { IconInfoCircle, IconLayoutSidebarLeftExpand } from '@tabler/icons-react';
@@ -29,16 +27,18 @@ import { useMemo, useState } from 'react';
 import { z } from 'zod';
 
 import { Countdown } from '~/components/Countdown/Countdown';
-import { ScrollToTopFab } from '~/components/FloatingActionButton/ScrollToTopFab';
 import { CreatorList } from '~/components/Leaderboard/CreatorList';
 import { Meta } from '~/components/Meta/Meta';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { trpc } from '~/utils/trpc';
 import { numericString, stringDate } from '~/utils/zod-helpers';
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
 import { removeEmpty } from '~/utils/object-helpers';
 import { constants } from '~/server/common/constants';
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { ScrollArea } from '~/components/ScrollArea/ScrollArea';
 
 const leaderboardQuerySchema = z.object({
   id: z.string().default('overall'),
@@ -60,10 +60,13 @@ export default function Leaderboard() {
   const { id, date, position, board } = leaderboardQuerySchema.parse(query);
   const currentUser = useCurrentUser();
   const { classes } = useStyles();
+  const isDisabled = id === 'images-rater';
+  // const isDisabled = false;
 
   const [drawerOpen, { close, toggle }] = useDisclosure();
 
   const { data: leaderboards = [] } = trpc.leaderboard.getLeaderboards.useQuery(undefined, {
+    trpc: { context: { skipBatch: true } },
     onSuccess: (data) => {
       if (selectedLeaderboard?.id !== id) setSelectedLeaderboard(data.find((x) => x.id === id));
     },
@@ -72,7 +75,8 @@ export default function Leaderboard() {
     trpc.leaderboard.getLeaderboard.useQuery(
       { id, date },
       {
-        enabled: board === 'season',
+        enabled: board === 'season' && !isDisabled,
+        trpc: { context: { skipBatch: true } },
       }
     );
   const { data: leaderboardLegend = [], isLoading: loadingLeaderboardLegend } =
@@ -80,6 +84,7 @@ export default function Leaderboard() {
       { id, date },
       {
         enabled: board === 'legend',
+        trpc: { context: { skipBatch: true } },
       }
     );
   const { data: leaderboardPositionsRaw = [], isLoading: loadingLeaderboardPositions } =
@@ -87,6 +92,7 @@ export default function Leaderboard() {
       { date, userId: currentUser?.id, top: 1000 },
       {
         enabled: !!currentUser,
+        trpc: { context: { skipBatch: true } },
       }
     );
   const leaderboardPositions = useMemo(() => {
@@ -99,6 +105,7 @@ export default function Leaderboard() {
   const [selectedLeaderboard, setSelectedLeaderboard] = useState(
     leaderboards.find((x) => x.id === id)
   );
+  const hasLegends = !selectedLeaderboard?.title.includes('Donors');
   const [selectedPosition, setSelectedPosition] = useState<number | null>(null);
   const leaderboardResults = board === 'season' ? leaderboardSeason : leaderboardLegend;
   const loadingLeaderboardResults =
@@ -106,7 +113,8 @@ export default function Leaderboard() {
 
   if (
     (selectedLeaderboard && selectedLeaderboard.id !== id) ||
-    (selectedPosition && selectedPosition !== position)
+    (selectedPosition && selectedPosition !== position) ||
+    (!hasLegends && board === 'legend')
   ) {
     const shallow = selectedLeaderboard?.id === id && selectedPosition !== position;
 
@@ -115,7 +123,7 @@ export default function Leaderboard() {
         pathname: `/leaderboard/${selectedLeaderboard?.id}`,
         query: removeEmpty({
           position: selectedPosition ? String(selectedPosition) : undefined,
-          board: board === 'season' ? undefined : board,
+          board: board === 'season' || (!hasLegends && board === 'legend') ? undefined : board,
         }),
       },
       undefined,
@@ -170,18 +178,18 @@ export default function Leaderboard() {
         ]}
       />
       <Container size="lg">
-        <Grid gutter="xl">
-          <Grid.Col xs={12} sm={4} className={classes.sidebar}>
+        <ContainerGrid gutter="xl">
+          <ContainerGrid.Col xs={12} sm={4} className={classes.sidebar}>
             <Box maw={300} w="100%">
               {navLinks()}
             </Box>
-          </Grid.Col>
+          </ContainerGrid.Col>
 
-          <Grid.Col xs={12} sm={8} display="flex" sx={{ justifyContent: 'center' }}>
+          <ContainerGrid.Col xs={12} sm={8} display="flex" sx={{ justifyContent: 'center' }}>
             <Stack spacing={0} maw={600} w="100%">
               <Group spacing={8} noWrap>
                 <Title className={classes.title}>{selectedLeaderboard?.title}</Title>
-                <LegendsToggle className={classes.legendsToggleSm} />
+                {hasLegends && <LegendsToggle className={classes.legendsToggleSm} />}
                 <ActionIcon
                   className={classes.drawerButton}
                   size="md"
@@ -191,7 +199,7 @@ export default function Leaderboard() {
                   <IconLayoutSidebarLeftExpand />
                 </ActionIcon>
               </Group>
-              <LegendsToggle className={classes.legendsToggle} />
+              {hasLegends && <LegendsToggle className={classes.legendsToggle} />}
               <Group spacing={5}>
                 <Text className={classes.slogan} color="dimmed" size="lg">
                   {selectedLeaderboard?.description}
@@ -232,17 +240,26 @@ Bronze - Top 100: ${constants.leaderboard.legendScoring.bronze * 100} points per
                   </Popover.Dropdown>
                 </Popover>
               </Group>
-              <Text color="dimmed" size="xs" mb="lg">
-                As of{' '}
-                {leaderboardResults[0]
-                  ? dayjs(leaderboardResults[0].date).format('MMMM D, YYYY h:mma')
-                  : 'loading..'}
-                . Refreshes in:{' '}
-                <Text span>
-                  <Countdown endTime={endTime} />
+              {isDisabled ? (
+                <Alert color="yellow" my="sm" py={6} px={12}>
+                  <Text lh={1.3} size="sm">
+                    This leaderboard is having some issues and is temporarily disabled. It will be
+                    back soon.
+                  </Text>
+                </Alert>
+              ) : (
+                <Text color="dimmed" size="xs" mb="lg">
+                  As of{' '}
+                  {leaderboardResults[0]
+                    ? dayjs(leaderboardResults[0].date).format('MMMM D, YYYY h:mma')
+                    : 'loading...'}
+                  . Refreshes in:{' '}
+                  <Text span>
+                    <Countdown endTime={endTime} />
+                  </Text>
                 </Text>
-              </Text>
-              {loadingLeaderboardResults ? (
+              )}
+              {isDisabled ? null : loadingLeaderboardResults ? (
                 <Center p="xl">
                   <Loader size="xl" />
                 </Center>
@@ -250,8 +267,8 @@ Bronze - Top 100: ${constants.leaderboard.legendScoring.bronze * 100} points per
                 <CreatorList data={leaderboardResults} />
               ) : null}
             </Stack>
-          </Grid.Col>
-        </Grid>
+          </ContainerGrid.Col>
+        </ContainerGrid>
       </Container>
       <Drawer
         opened={drawerOpen}
@@ -264,9 +281,8 @@ Bronze - Top 100: ${constants.leaderboard.legendScoring.bronze * 100} points per
         }
         classNames={{ header: classes.drawerHeader }}
       >
-        <ScrollArea.Autosize maxHeight={'calc(100vh - 48px)'}>{navLinks('md')}</ScrollArea.Autosize>
+        <ScrollArea>{navLinks('md')}</ScrollArea>
       </Drawer>
-      <ScrollToTopFab transition="slide-up" />
     </>
   );
 }
@@ -364,12 +380,12 @@ const UserPosition = ({
 
 const useStyles = createStyles((theme) => ({
   title: {
-    [`@media (max-width: ${theme.breakpoints.xs}px)`]: {
+    [containerQuery.smallerThan('xs')]: {
       fontSize: 28,
     },
   },
   slogan: {
-    [`@media (max-width: ${theme.breakpoints.xs}px)`]: {
+    [containerQuery.smallerThan('xs')]: {
       fontSize: theme.fontSizes.sm,
     },
   },
@@ -381,14 +397,14 @@ const useStyles = createStyles((theme) => ({
   },
   sidebar: {
     display: 'block',
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       display: 'none',
     },
   },
 
   drawerButton: {
     display: 'none',
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       marginLeft: 'auto',
       display: 'block',
     },
@@ -401,7 +417,7 @@ const useStyles = createStyles((theme) => ({
   },
 
   legendsToggleSm: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       display: 'none',
     },
   },
@@ -410,7 +426,7 @@ const useStyles = createStyles((theme) => ({
     width: '100%',
     marginTop: theme.spacing.xs,
     marginBottom: theme.spacing.xs,
-    [theme.fn.largerThan('sm')]: {
+    [containerQuery.largerThan('sm')]: {
       display: 'none',
     },
   },

@@ -1,13 +1,25 @@
-import { ImageMetaProps } from '~/server/schema/image.schema';
-import { SDResource, createMetadataProcessor } from '~/utils/metadata/base.metadata';
 import { unescape } from 'lodash-es';
+import { ImageMetaProps } from '~/server/schema/image.schema';
+import { decodeBigEndianUTF16 } from '~/utils/encoding-helpers';
+import { createMetadataProcessor, SDResource } from '~/utils/metadata/base.metadata';
+import { parseAIR } from '~/utils/string-helpers';
+
+type CivitaiResource = {
+  weight?: number;
+  air?: string;
+  modelVersionId?: number;
+  type?: string;
+  versionName?: string;
+  modelName?: string;
+};
 
 // #region [helpers]
 const hashesRegex = /, Hashes:\s*({[^}]+})/;
-const civitaiResources = /, Civitai resources:\s*(\[[^\]]+\])/;
+const civitaiResources = /, Civitai resources:\s*(\[\{.*?\}\])/;
+const civitaiMetadata = /, Civitai metadata:\s*(\{.*?\})/;
 const badExtensionKeys = ['Resources: ', 'Hashed prompt: ', 'Hashed Negative prompt: '];
-const stripKeys = ['Template: ', 'Negative Template: '] as const;
-const automaticExtraNetsRegex = /<(lora|hypernet):([a-zA-Z0-9_\.]+):([0-9.]+)>/g;
+const templateKeys = ['Template: ', 'Negative Template: '] as const;
+const automaticExtraNetsRegex = /<(lora|hypernet):([a-zA-Z0-9_\.\-]+):([0-9.]+)>/g;
 const automaticNameHash = /([a-zA-Z0-9_\.]+)\(([a-zA-Z0-9]+)\)/;
 const automaticSDKeyMap = new Map<string, string>([
   ['Seed', 'seed'],
@@ -17,7 +29,7 @@ const automaticSDKeyMap = new Map<string, string>([
   ['Clip skip', 'clipSkip'],
 ]);
 const getSDKey = (key: string) => automaticSDKeyMap.get(key.trim()) ?? key.trim();
-const decoder = new TextDecoder('utf-8');
+
 const automaticSDEncodeMap = new Map<keyof ImageMetaProps, string>(
   Array.from(automaticSDKeyMap, (a) => a.reverse()) as Iterable<readonly [string, string]>
 );
@@ -32,26 +44,60 @@ const excludedKeys = [
   'models',
   'controlNets',
   'denoise',
+  'other',
+  'external',
 ];
+function isPartialDate(date: string) {
+  return date.length === 14 && date[11] === 'T';
+}
+function parseDetailsLine(line: string | undefined): Record<string, any> {
+  const result: Record<string, any> = {};
+  if (!line) return result;
+  let currentKey = '';
+  let currentValue = '';
+  let insideQuotes = false;
+  let insideDate = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (insideQuotes) {
+        result[currentKey] = parseDetailsLine(currentValue.trim());
+        currentKey = '';
+      }
+      insideQuotes = !insideQuotes;
+    } else if (char === ':' && !insideQuotes && !insideDate) {
+      if (isPartialDate(currentValue)) insideDate = true;
+      else {
+        currentKey = getSDKey(currentValue.trim());
+        currentValue = '';
+      }
+    } else if (char === ',' && !insideQuotes) {
+      if (insideDate) insideDate = false;
+      if (currentKey) result[currentKey] = currentValue.trim();
+      currentKey = '';
+      currentValue = '';
+    } else {
+      currentValue += char;
+    }
+  }
+  if (currentKey) result[currentKey] = currentValue.trim();
+
+  return result;
+}
 // #endregion
 
 export const automaticMetadataProcessor = createMetadataProcessor({
   canParse(exif) {
     let generationDetails = null;
-    if (exif?.userComment) {
-      const p = document.createElement('p');
-      generationDetails = decoder.decode(exif.userComment);
-      // Any annoying hack to deal with weirdness in the meta
-      p.innerHTML = generationDetails;
-      p.remove();
-      generationDetails = p.innerHTML;
-    } else if (exif?.parameters) {
+    if (exif?.parameters) {
       generationDetails = exif.parameters;
+    } else if (exif?.userComment) {
+      generationDetails = decodeBigEndianUTF16(exif.userComment);
     }
 
     if (generationDetails) {
-      generationDetails = generationDetails.replace('UNICODE', '').replace(/�/g, '');
-      generationDetails = unescape(generationDetails);
       exif.generationDetails = generationDetails;
       return generationDetails.includes('Steps: ');
     }
@@ -60,13 +106,26 @@ export const automaticMetadataProcessor = createMetadataProcessor({
   parse(exif) {
     const metadata: ImageMetaProps = {};
     const generationDetails = exif.generationDetails as string;
-    if (!generationDetails) return metadata;
-    const metaLines = generationDetails.split('\n').filter((line) => {
-      // filter out empty lines and any lines that start with a key we want to strip
-      return line.trim() !== '' && !stripKeys.some((key) => line.startsWith(key));
-    });
 
-    let detailsLine = metaLines.find((line) => line.startsWith('Steps: '));
+    if (!generationDetails) return metadata;
+    const metaLines = generationDetails.split('\n').filter((line) => line.trim() !== '');
+
+    // Remove templates
+    for (const key of templateKeys) {
+      const templateLineIndex = metaLines.findIndex((line) => line.startsWith(key));
+      if (templateLineIndex === -1) continue;
+      metaLines.splice(templateLineIndex, 1);
+
+      // Remove all lines until we hit a new key `[\w\s]+: `
+      while (
+        templateLineIndex < metaLines.length &&
+        !/[\w\s]+: /.test(metaLines[templateLineIndex])
+      ) {
+        metaLines.splice(templateLineIndex, 1);
+      }
+    }
+
+    let detailsLine = metaLines.find((line) => line.startsWith('Steps: '))?.replace(/\,\s*$/, '');
     // Strip it from the meta lines
     if (detailsLine) metaLines.splice(metaLines.indexOf(detailsLine), 1);
     // Remove meta keys I wish I hadn't made... :(
@@ -86,21 +145,32 @@ export const automaticMetadataProcessor = createMetadataProcessor({
     const civitaiResourcesMatch = detailsLine?.match(civitaiResources)?.[1];
     if (civitaiResourcesMatch && detailsLine) {
       metadata.civitaiResources = JSON.parse(civitaiResourcesMatch);
+      for (const resource of metadata.civitaiResources as CivitaiResource[]) {
+        delete resource.modelName;
+        delete resource.versionName;
+        if (!resource.air) continue;
+        const { version, type } = parseAIR(resource.air);
+        resource.modelVersionId = version;
+        resource.type = type;
+        delete resource.air;
+      }
       detailsLine = detailsLine.replace(civitaiResources, '');
     }
 
+    // Extract Civitai Metadata
+    const civitaiMetadataMatch = detailsLine?.match(civitaiMetadata)?.[1];
+    if (civitaiMetadataMatch && detailsLine) {
+      const data = JSON.parse(civitaiMetadataMatch) as Record<string, any>;
+      if (Object.keys(data).length !== 0) metadata.extra = data;
+      detailsLine = detailsLine.replace(civitaiMetadata, '');
+    }
+
     // Extract fine details
-    let currentKey = '';
-    const parts = detailsLine?.split(':') ?? [];
-    for (const part of parts) {
-      const priorValueEnd = part.lastIndexOf(',');
-      if (metadata[currentKey]) continue;
-      if (parts[parts.length - 1] === part) {
-        metadata[currentKey] = part.trim().replace(',', '');
-      } else if (priorValueEnd !== -1) {
-        metadata[currentKey] = part.slice(0, priorValueEnd).trim();
-        currentKey = getSDKey(part.slice(priorValueEnd + 1));
-      } else currentKey = getSDKey(part);
+    const details = parseDetailsLine(detailsLine);
+    for (const [k, v] of Object.entries(details)) {
+      const key = automaticSDKeyMap.get(k) ?? k;
+      if (excludedKeys.includes(key)) continue;
+      metadata[key] = v;
     }
 
     // Extract prompts
@@ -119,6 +189,26 @@ export const automaticMetadataProcessor = createMetadataProcessor({
       weight: parseFloat(weight),
     }));
 
+    // Extract Lora hashes
+    if (metadata['Lora hashes']) {
+      if (!metadata.hashes) metadata.hashes = {};
+      for (const [name, hash] of Object.entries(metadata['Lora hashes'])) {
+        metadata.hashes[`lora:${name}`] = hash;
+        const resource = resources.find((r) => r.name === name);
+        if (resource) resource.hash = hash;
+        else resources.push({ type: 'lora', name, hash });
+      }
+      delete metadata['Lora hashes'];
+    }
+
+    // Extract VAE
+    if (metadata['VAE hash']) {
+      if (!metadata.hashes) metadata.hashes = {};
+      metadata.hashes['vae'] = metadata['VAE hash'] as string;
+      delete metadata['VAE hash'];
+    }
+
+    // Extract Model hash
     if (metadata['Model'] && metadata['Model hash']) {
       if (!metadata.hashes) metadata.hashes = {};
       if (!metadata.hashes['model']) metadata.hashes['model'] = metadata['Model hash'] as string;
@@ -130,6 +220,7 @@ export const automaticMetadataProcessor = createMetadataProcessor({
       });
     }
 
+    // Extract hypernetwork details
     if (metadata['Hypernet'] && metadata['Hypernet strength'])
       resources.push({
         type: 'hypernet',

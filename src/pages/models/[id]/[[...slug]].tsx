@@ -1,141 +1,187 @@
 import {
   ActionIcon,
   Alert,
+  Anchor,
   Badge,
+  Box,
   Button,
+  Center,
   Container,
   createStyles,
   Divider,
   Group,
+  Loader,
   Menu,
-  Rating,
+  Paper,
   Stack,
   Text,
   ThemeIcon,
   Title,
-  Paper,
-  Center,
-  Box,
-  Loader,
+  Tooltip,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { closeAllModals, openConfirmModal } from '@mantine/modals';
-import { NextLink } from '@mantine/next';
-import { CollectionType, ModelModifier, ModelStatus } from '@prisma/client';
 import {
+  IconArchive,
+  IconArrowsLeftRight,
   IconBan,
+  IconBolt,
+  IconBookmark,
+  IconBrush,
+  IconCircleMinus,
   IconClock,
   IconDotsVertical,
   IconDownload,
   IconEdit,
   IconExclamationMark,
   IconFlag,
-  IconHeart,
-  IconMessage,
-  IconPlus,
-  IconRecycle,
-  IconTagOff,
-  IconTrash,
+  IconInfoCircle,
   IconLock,
   IconLockOff,
+  IconMessage,
   IconMessageCircleOff,
-  IconArrowsLeftRight,
-  IconArchive,
-  IconCircleMinus,
-  IconReload,
-  IconPlaylistAdd,
-  IconInfoCircle,
-  IconBolt,
+  IconPlus,
   IconRadar2,
+  IconRecycle,
+  IconReload,
+  IconRepeat,
+  IconTagOff,
+  IconTrash,
 } from '@tabler/icons-react';
 import { truncate } from 'lodash-es';
 import { InferGetServerSidePropsType } from 'next';
-import Link from 'next/link';
 import { useRouter } from 'next/router';
 import React, { useEffect, useRef, useState } from 'react';
-
 import { getEdgeUrl } from '~/client-utils/cf-images-utils';
-import { Announcements } from '~/components/Announcements/Announcements';
-import { NotFound } from '~/components/AppLayout/NotFound';
-import { Collection } from '~/components/Collection/Collection';
-import { PeriodFilter, SortFilter } from '~/components/Filters';
-import { HideModelButton } from '~/components/HideModelButton/HideModelButton';
-import { HideUserButton } from '~/components/HideUserButton/HideUserButton';
-import { IconBadge } from '~/components/IconBadge/IconBadge';
-import ImagesAsPostsInfinite from '~/components/Image/AsPosts/ImagesAsPostsInfinite';
-import { ImageCategories } from '~/components/Image/Infinite/ImageCategories';
-// import { ImageFiltersDropdown } from '~/components/Image/Infinite/ImageFiltersDropdown';
-import { JoinPopover } from '~/components/JoinPopover/JoinPopover';
-import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
-import { Meta } from '~/components/Meta/Meta';
-import { ReorderVersionsModal } from '~/components/Modals/ReorderVersionsModal';
-import { ModelDiscussionV2 } from '~/components/Model/ModelDiscussion/ModelDiscussionV2';
-import { ModelVersionList } from '~/components/Model/ModelVersionList/ModelVersionList';
-import { ModelVersionDetails } from '~/components/Model/ModelVersions/ModelVersionDetails';
-import { PageLoader } from '~/components/PageLoader/PageLoader';
-import { SensitiveShield } from '~/components/SensitiveShield/SensitiveShield';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { openContext } from '~/providers/CustomModalsProvider';
-import { ReportEntity } from '~/server/schema/report.schema';
-import { getDefaultModelVersion } from '~/server/services/model-version.service';
-import { createServerSideProps } from '~/server/utils/server-side-helpers';
-import { ModelById } from '~/types/router';
-import { formatDate, isFutureDate } from '~/utils/date-helpers';
-import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
-import { abbreviateNumber } from '~/utils/number-helpers';
-import { scrollToTop } from '~/utils/scroll-utils';
-import { getDisplayName, removeTags, splitUppercase, slugit } from '~/utils/string-helpers';
-import { trpc } from '~/utils/trpc';
-import { isNumber } from '~/utils/type-guards';
-import { QS } from '~/utils/qs';
-import useIsClient from '~/hooks/useIsClient';
-import { ImageSort } from '~/server/common/enums';
-import { useQueryImages } from '~/components/Image/image.utils';
-import { CAROUSEL_LIMIT } from '~/server/common/constants';
-import { ToggleLockModel } from '~/components/Model/Actions/ToggleLockModel';
-import { unpublishReasons } from '~/server/common/moderation-helpers';
-import { ButtonTooltip } from '~/components/CivitaiWrapped/ButtonTooltip';
-import { parseBrowsingMode } from '~/server/createContext';
-import { ModelMeta } from '~/server/schema/model.schema';
+import { RenderAdUnitOutstream } from '~/components/Ads/AdUnitOutstream';
 import { AlertWithIcon } from '~/components/AlertWithIcon/AlertWithIcon';
-import { TrackView } from '~/components/TrackView/TrackView';
+import { NotFound } from '~/components/AppLayout/NotFound';
 import { AssociatedModels } from '~/components/AssociatedModels/AssociatedModels';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
-import { ResourceReviewSummary } from '~/components/ResourceReview/Summary/ResourceReviewSummary';
-import { AddToCollectionMenuItem } from '~/components/MenuItems/AddToCollectionMenuItem';
-import { env } from '~/env/client.mjs';
 import {
   InteractiveTipBuzzButton,
   useBuzzTippingStore,
 } from '~/components/Buzz/InteractiveTipBuzzButton';
-import { AddToShowcaseMenuItem } from '~/components/Profile/AddToShowcaseMenuItem';
+import { ButtonTooltip } from '~/components/CivitaiWrapped/ButtonTooltip';
+import { Collection } from '~/components/Collection/Collection';
+import {
+  openMigrateModelToCollectionModal,
+  openReportModal,
+} from '~/components/Dialog/dialog-registry';
 import { triggerRoutedDialog } from '~/components/Dialog/RoutedDialogProvider';
+import { HideModelButton } from '~/components/HideModelButton/HideModelButton';
+import { HideUserButton } from '~/components/HideUserButton/HideUserButton';
+import { IconBadge } from '~/components/IconBadge/IconBadge';
+import ImagesAsPostsInfinite from '~/components/Image/AsPosts/ImagesAsPostsInfinite';
+import { useQueryImages } from '~/components/Image/image.utils';
+import { InfoPopover } from '~/components/InfoPopover/InfoPopover';
+// import { ImageFiltersDropdown } from '~/components/Image/Infinite/ImageFiltersDropdown';
+import { JoinPopover } from '~/components/JoinPopover/JoinPopover';
+import { LoginRedirect } from '~/components/LoginRedirect/LoginRedirect';
+import { AddToCollectionMenuItem } from '~/components/MenuItems/AddToCollectionMenuItem';
+import { ToggleSearchableMenuItem } from '~/components/MenuItems/ToggleSearchableMenuItem';
+import { Meta } from '~/components/Meta/Meta';
+import { ReorderVersionsModal } from '~/components/Modals/ReorderVersionsModal';
+import { ToggleLockModel } from '~/components/Model/Actions/ToggleLockModel';
+import { ToggleModelNotification } from '~/components/Model/Actions/ToggleModelNotification';
+import { HowToButton } from '~/components/Model/HowToUseModel/HowToUseModel';
+import { ModelDiscussionV2 } from '~/components/Model/ModelDiscussion/ModelDiscussionV2';
+import { ModelVersionList } from '~/components/Model/ModelVersionList/ModelVersionList';
+import { useModelVersionPermission } from '~/components/Model/ModelVersions/model-version.utils';
+import { ModelVersionDetails } from '~/components/Model/ModelVersions/ModelVersionDetails';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { PageLoader } from '~/components/PageLoader/PageLoader';
+import { AddToShowcaseMenuItem } from '~/components/Profile/AddToShowcaseMenuItem';
+import { useToggleFavoriteMutation } from '~/components/ResourceReview/resourceReview.utils';
+import { GenerateButton } from '~/components/RunStrategy/GenerateButton';
+import { SensitiveShield } from '~/components/SensitiveShield/SensitiveShield';
+import { ThumbsUpIcon } from '~/components/ThumbsIcon/ThumbsIcon';
+import { TrackView } from '~/components/TrackView/TrackView';
+import { env } from '~/env/client';
+import { useHiddenPreferencesData } from '~/hooks/hidden-preferences';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
+import useIsClient from '~/hooks/useIsClient';
+import { openContext } from '~/providers/CustomModalsProvider';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import { CAROUSEL_LIMIT } from '~/server/common/constants';
+import { ImageSort } from '~/server/common/enums';
+import { unpublishReasons } from '~/server/common/moderation-helpers';
+import { ModelMeta } from '~/server/schema/model.schema';
+import { ReportEntity } from '~/server/schema/report.schema';
+import { getDefaultModelVersion } from '~/server/services/model-version.service';
+import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { getIsSafeBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
+import {
+  Availability,
+  CollectionType,
+  ModelModifier,
+  ModelStatus,
+  ModelType,
+} from '~/shared/utils/prisma/enums';
+import { ModelById } from '~/types/router';
+import { formatDate, isFutureDate } from '~/utils/date-helpers';
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
+import { abbreviateNumber } from '~/utils/number-helpers';
+import {
+  getBaseModelEcosystemName,
+  getDisplayName,
+  removeTags,
+  slugit,
+  splitUppercase,
+} from '~/utils/string-helpers';
+import { trpc } from '~/utils/trpc';
+import { isNumber } from '~/utils/type-guards';
 
 export const getServerSideProps = createServerSideProps({
   useSSG: true,
   useSession: true,
-  resolver: async ({ ssg, ctx, session = null }) => {
-    const params = (ctx.params ?? {}) as { id: string; slug: string[] };
-    const query = ctx.query as { modelVersionId: string };
+  resolver: async ({ ssg, ctx, session }) => {
+    const params = (ctx.params ?? {}) as {
+      id: string;
+      slug: string[];
+    };
+    const query = ctx.query as {
+      modelVersionId: string;
+    };
     const id = Number(params.id);
+    const modelVersionId = query.modelVersionId ? Number(query.modelVersionId) : undefined;
+    if (!isNumber(id)) return { notFound: true };
+    const version = await getDefaultModelVersion({ modelId: id, modelVersionId }).catch(() => null);
+    const modelVersionIdParsed = modelVersionId ?? version?.id;
+
+    if (!modelVersionIdParsed && !session?.user?.isModerator) {
+      return { notFound: true };
+    }
+
     if (ssg) {
-      const modelVersionId = query.modelVersionId ? Number(query.modelVersionId) : undefined;
-      if (!isNumber(id)) return { notFound: true };
+      // if (version)
+      //   await ssg.image.getInfinite.prefetchInfinite({
+      //     modelVersionId: version.id,
+      //     prioritizedUserIds: [version.model.userId],
+      //     period: 'AllTime',
+      //     sort: ImageSort.MostReactions,
+      //     limit: CAROUSEL_LIMIT,
+      //     pending: true,
+      //   });
+      await ssg.hiddenPreferences.getHidden.prefetch();
 
-      const version = await getDefaultModelVersion({ modelId: id, modelVersionId }).catch(
-        () => null
-      );
-      if (version)
-        await ssg.image.getInfinite.prefetchInfinite({
-          modelVersionId: version.id,
-          prioritizedUserIds: [version.model.userId],
-          period: 'AllTime',
-          sort: ImageSort.MostReactions,
-          limit: CAROUSEL_LIMIT,
-          browsingMode: parseBrowsingMode(ctx.req.cookies, session),
+      if (modelVersionIdParsed) {
+        await ssg.common.getEntityAccess.prefetch({
+          entityId: modelVersionIdParsed as number,
+          entityType: 'ModelVersion',
         });
-
+        // await ssg.common.getEntityClubRequirement.prefetch({
+        //   entityId: modelVersionIdParsed as number,
+        //   entityType: 'ModelVersion',
+        // });
+        // await ssg.generation.checkResourcesCoverage.prefetch({ id: modelVersionIdParsed });
+      }
       await ssg.model.getById.prefetch({ id });
+      await ssg.model.getCollectionShowcase.prefetch({ id });
+      if (session) {
+        await ssg.user.getEngagedModelVersions.prefetch({ id });
+        await ssg.resourceReview.getUserResourceReview.prefetch({ modelId: id });
+      }
     }
 
     return {
@@ -153,13 +199,15 @@ export default function ModelDetailsV2({
 
   const router = useRouter();
   const { classes, theme } = useStyles();
-  const queryUtils = trpc.useContext();
+  const queryUtils = trpc.useUtils();
   const isClient = useIsClient();
   const features = useFeatureFlags();
 
   const [opened, { toggle }] = useDisclosure();
   const discussionSectionRef = useRef<HTMLDivElement | null>(null);
   const gallerySectionRef = useRef<HTMLDivElement | null>(null);
+
+  const { blockedUsers } = useHiddenPreferencesData();
 
   const { data: model, isLoading: loadingModel } = trpc.model.getById.useQuery(
     { id },
@@ -171,17 +219,19 @@ export default function ModelDetailsV2({
     }
   );
 
-  const { data: { Favorite: favoriteModels = [] } = { Favorite: [] } } =
+  const view = router.query.view;
+  const rawVersionId = router.query.modelVersionId;
+  const modelVersionId = Number(
+    (Array.isArray(rawVersionId) ? rawVersionId[0] : rawVersionId) ?? model?.modelVersions[0]?.id
+  );
+
+  const { data: { Recommended: reviewedModels = [] } = { Recommended: [] } } =
     trpc.user.getEngagedModels.useQuery(undefined, {
       enabled: !!currentUser,
       cacheTime: Infinity,
       staleTime: Infinity,
     });
-
-  const rawVersionId = router.query.modelVersionId;
-  const modelVersionId = Number(
-    (Array.isArray(rawVersionId) ? rawVersionId[0] : rawVersionId) ?? model?.modelVersions[0]?.id
-  );
+  const isFavorite = model && reviewedModels.includes(model.id);
 
   const isModerator = currentUser?.isModerator ?? false;
   const isCreator = model?.user.id === currentUser?.id;
@@ -194,8 +244,15 @@ export default function ModelDetailsV2({
     publishedVersions[0] ??
     null;
   const [selectedVersion, setSelectedVersion] = useState<ModelVersionDetail | null>(latestVersion);
+  const selectedEcosystemName = getBaseModelEcosystemName(selectedVersion?.baseModel);
   const tippedAmount = useBuzzTippingStore({ entityType: 'Model', entityId: model?.id ?? -1 });
 
+  const { canDownload: hasDownloadPermissions, canGenerate: hasGeneratePermissions } =
+    useModelVersionPermission({ modelVersionId: selectedVersion?.id });
+
+  const latestGenerationVersion = publishedVersions.find((version) => version.canGenerate);
+
+  // TODO change this to just grab one image, since that's all it's used for
   const { images: versionImages, isLoading: loadingImages } = useQueryImages(
     {
       modelVersionId: latestVersion?.id,
@@ -203,6 +260,7 @@ export default function ModelDetailsV2({
       period: 'AllTime',
       sort: ImageSort.MostReactions,
       limit: CAROUSEL_LIMIT,
+      pending: true,
     },
     {
       enabled: !!latestVersion,
@@ -213,8 +271,7 @@ export default function ModelDetailsV2({
     async onSuccess(_, { permanently }) {
       await queryUtils.model.getAll.invalidate();
       if (!permanently) await queryUtils.model.getById.invalidate({ id });
-      if (!isModerator || permanently)
-        await router.replace(features.alternateHome ? '/models' : '/');
+      if (!isModerator || permanently) await router.replace('/models');
 
       showSuccessNotification({
         title: 'Successfully deleted the model',
@@ -226,7 +283,7 @@ export default function ModelDetailsV2({
       showErrorNotification({
         error: new Error(error.message),
         title: 'Could not delete model',
-        reason: 'An unexpected error occurred, please try again',
+        reason: error.message ?? 'An unexpected error occurred, please try again',
       });
     },
   });
@@ -258,6 +315,14 @@ export default function ModelDetailsV2({
       showErrorNotification({ error: new Error(error.message) });
     },
   });
+  const publishModelMutation = trpc.model.publish.useMutation({
+    async onSuccess() {
+      await queryUtils.model.getById.invalidate({ id });
+    },
+    onError(error) {
+      showErrorNotification({ error: new Error(error.message) });
+    },
+  });
   const restoreModelMutation = trpc.model.restore.useMutation({
     async onSuccess() {
       await queryUtils.model.getById.invalidate({ id });
@@ -267,47 +332,6 @@ export default function ModelDetailsV2({
       showErrorNotification({ error: new Error(error.message) });
     },
   });
-  const toggleFavoriteModelMutation = trpc.user.toggleFavoriteModel.useMutation({
-    async onMutate({ modelId }) {
-      await queryUtils.user.getEngagedModels.cancel();
-
-      const previousEngaged = queryUtils.user.getEngagedModels.getData() ?? {
-        Favorite: [],
-        Hide: [],
-      };
-      const previousModel = queryUtils.model.getById.getData({ id: modelId });
-      const shouldRemove = previousEngaged.Favorite?.find((id) => id === modelId);
-      // Update the favorite count
-      queryUtils.model.getById.setData({ id: modelId }, (model) => {
-        if (model?.rank) model.rank.favoriteCountAllTime += shouldRemove ? -1 : 1;
-        return model;
-      });
-      // Remove from favorites list
-      queryUtils.user.getEngagedModels.setData(
-        undefined,
-        ({ Favorite = [], ...old } = { Favorite: [], Hide: [] }) => {
-          if (shouldRemove) return { Favorite: Favorite.filter((id) => id !== modelId), ...old };
-          return { Favorite: [...Favorite, modelId], ...old };
-        }
-      );
-
-      return { previousEngaged, previousModel };
-    },
-    async onSuccess() {
-      await queryUtils.model.getAll.invalidate({ favorites: true });
-    },
-    onError(_error, _variables, context) {
-      queryUtils.user.getEngagedModels.setData(undefined, context?.previousEngaged);
-      if (context?.previousModel?.id)
-        queryUtils.model.getById.setData(
-          { id: context?.previousModel?.id },
-          context?.previousModel
-        );
-    },
-  });
-  const handleToggleFavorite = () => {
-    toggleFavoriteModelMutation.mutate({ modelId: id });
-  };
 
   const handleCollect = () => {
     openContext('addToCollection', {
@@ -341,7 +365,7 @@ export default function ModelDetailsV2({
       showErrorNotification({
         error: new Error(error.message),
         title: 'Unable to delete version',
-        reason: 'An unexpected error occurred, please try again',
+        reason: error.message ?? 'An unexpected error occurred, please try again',
       });
       if (context?.previousData?.id)
         queryUtils.model.getById.setData({ id: context?.previousData?.id }, context?.previousData);
@@ -393,17 +417,49 @@ export default function ModelDetailsV2({
     rescanModelMutation.mutate({ id });
   };
 
+  const favoriteMutation = useToggleFavoriteMutation();
+  const handleToggleFavorite = ({ versionId, setTo }: { versionId?: number; setTo: boolean }) => {
+    if (!model) return;
+    favoriteMutation.mutate({
+      modelId: model.id,
+      modelVersionId: versionId,
+      setTo,
+    });
+  };
+
+  const handlePublishModel = () => {
+    if (model && model.status === ModelStatus.Unpublished && isCreator)
+      openConfirmModal({
+        centered: true,
+        closeOnConfirm: false,
+        title: 'Republish model',
+        children:
+          'This model and all of its versions will be publicly available. Are you sure you want to republish this model?',
+        labels: { confirm: 'Yes, republish', cancel: 'No, go back' },
+        onConfirm: () => {
+          publishModelMutation.mutate(
+            {
+              id: model.id,
+              versionIds: model?.modelVersions.map((v) => v.id),
+            },
+            { onSuccess: () => closeAllModals() }
+          );
+        },
+      });
+  };
+
   useEffect(() => {
     // Change the selected modelVersion based on querystring param
+    if (loadingModel) return;
     const queryVersion = publishedVersions.find((v) => v.id === modelVersionId);
     const hasSelected = publishedVersions.some((v) => v.id === selectedVersion?.id);
-    if (!hasSelected) setSelectedVersion(publishedVersions[0] ?? null);
+    if (!hasSelected) setSelectedVersion(queryVersion ?? publishedVersions[0] ?? null);
     if (selectedVersion && queryVersion !== selectedVersion) {
       router.replace(`/models/${id}?modelVersionId=${selectedVersion.id}`, undefined, {
         shallow: true,
       });
     }
-  }, [publishedVersions, selectedVersion, modelVersionId]);
+  }, [id, publishedVersions, selectedVersion, modelVersionId, loadingModel]);
 
   if (loadingModel) return <PageLoader />;
 
@@ -416,6 +472,9 @@ export default function ModelDetailsV2({
     !isModerator &&
     // Check if published or has any model versions
     (model.status !== ModelStatus.Published || !model.modelVersions.length);
+
+  const isBlocked = blockedUsers.find((u) => u.id === model?.user.id);
+
   if (modelDeleted && !isOwner && !isModerator)
     return (
       <Center p="xl">
@@ -424,21 +483,21 @@ export default function ModelDetailsV2({
         </Alert>
       </Center>
     );
-  if (modelDoesntExist || (modelDeleted && !isModerator) || modelNotVisible) return <NotFound />;
 
-  const userNotBlurringNsfw = currentUser?.blurNsfw !== false;
-  const nsfw = userNotBlurringNsfw && model.nsfw === true;
+  if (modelDoesntExist || ((modelDeleted || modelNotVisible || isBlocked) && !isModerator)) {
+    return <NotFound />;
+  }
+
+  const image = versionImages.find((image) => getIsSafeBrowsingLevel(image.nsfwLevel));
+  const imageUrl = image ? getEdgeUrl(image.url, { width: 1200 }) : undefined;
   const metaSchema = {
     '@context': 'https://schema.org',
     '@type': 'SoftwareApplication',
     applicationCategory: 'Multimedia',
-    applicationSubCategory: 'Stable Diffusion Model',
+    applicationSubCategory: `${selectedEcosystemName} Model`,
     description: model.description,
     name: model.name,
-    image:
-      nsfw || versionImages[0]?.url == null
-        ? undefined
-        : getEdgeUrl(versionImages[0].url, { width: 1200 }),
+    image: imageUrl,
     author: model.user.username,
     datePublished: model.publishedAt,
     aggregateRating: {
@@ -448,565 +507,652 @@ export default function ModelDetailsV2({
     },
   };
 
-  const meta = (
-    <Meta
-      title={`${model.name}${
-        selectedVersion ? ' - ' + selectedVersion.name : ''
-      } | Stable Diffusion ${getDisplayName(model.type)} | Civitai`}
-      description={truncate(removeTags(model.description ?? ''), { length: 150 })}
-      image={
-        nsfw || versionImages[0]?.url == null
-          ? undefined
-          : getEdgeUrl(versionImages[0].url, { width: 1200 })
-      }
-      links={[
-        {
-          href: `${env.NEXT_PUBLIC_BASE_URL}/models/${model.id}/${slugit(model.name)}`,
-          rel: 'canonical',
-        },
-      ]}
-      schema={metaSchema}
-      deIndex={model.status !== ModelStatus.Published ? 'noindex' : undefined}
-    />
-  );
-
-  if (model.nsfw && !currentUser)
-    return (
-      <>
-        {meta}
-        <SensitiveShield />
-      </>
-    );
-
-  const isFavorite = !!favoriteModels.find((modelId) => modelId === id);
   const published = model.status === ModelStatus.Published;
   const inaccurate = model.modelVersions.some((version) => version.inaccurate);
   const isMuted = currentUser?.muted ?? false;
   const onlyEarlyAccess = model.modelVersions.every((version) => version.earlyAccessDeadline);
   const canDiscuss =
-    !isMuted && (!onlyEarlyAccess || currentUser?.isMember || currentUser?.isModerator);
+    !isMuted &&
+    (!onlyEarlyAccess ||
+      hasDownloadPermissions ||
+      hasGeneratePermissions ||
+      currentUser?.isModerator);
   const versionCount = model.modelVersions.length;
   const inEarlyAccess = model.earlyAccessDeadline && isFutureDate(model.earlyAccessDeadline);
+  const versionIsEarlyAccess =
+    selectedVersion &&
+    !!selectedVersion.earlyAccessDeadline &&
+    isFutureDate(selectedVersion.earlyAccessDeadline);
   const category = model.tagsOnModels.find(({ tag }) => !!tag.isCategory)?.tag;
   const tags = model.tagsOnModels.filter(({ tag }) => !tag.isCategory).map((tag) => tag.tag);
-  const canLoadBelowTheFold = isClient && !loadingModel && !loadingImages;
+  const basicView = view === 'basic' && isModerator;
+  const canLoadBelowTheFold = isClient && !loadingModel && !loadingImages && !basicView;
   const unpublishedReason = model.meta?.unpublishedReason ?? 'other';
   const unpublishedMessage =
     unpublishedReason !== 'other'
       ? unpublishReasons[unpublishedReason]?.notificationMessage
-      : `Removal reason: ${model.meta?.customMessage}.` ?? '';
+      : `Removal reason: ${model.meta?.customMessage}.`;
 
   return (
     <>
-      {meta}
-      <TrackView entityId={model.id} entityType="Model" type="ModelView" />
-      <Container size="xl">
-        <Stack spacing="xl">
-          <Announcements sx={{ marginBottom: 5 }} />
-          <Stack spacing="xs">
-            <Stack spacing={4}>
-              <Group align="center" sx={{ justifyContent: 'space-between' }} noWrap>
-                <Group className={classes.titleWrapper} align="center">
-                  <Title className={classes.title} order={1}>
-                    {model?.name}
-                  </Title>
-                  <LoginRedirect reason="favorite-model">
-                    <IconBadge
-                      radius="sm"
-                      color={isFavorite ? 'red' : 'gray'}
-                      size="lg"
-                      icon={
-                        <IconHeart
-                          size={18}
-                          color={isFavorite ? theme.colors.red[6] : undefined}
-                          style={{ fill: isFavorite ? theme.colors.red[6] : undefined }}
-                        />
-                      }
-                      sx={{ cursor: 'pointer' }}
-                      onClick={handleToggleFavorite}
+      <Meta
+        title={`${model.name}${
+          selectedVersion ? ' - ' + selectedVersion.name : ''
+        } | ${selectedEcosystemName} ${getDisplayName(model.type)} | Civitai`}
+        description={truncate(removeTags(model.description ?? ''), { length: 150 })}
+        images={versionImages}
+        links={[
+          {
+            href: `${env.NEXT_PUBLIC_BASE_URL}/models/${model.id}/${slugit(model.name)}`,
+            rel: 'canonical',
+          },
+          {
+            href: `${env.NEXT_PUBLIC_BASE_URL}/models/${model.id}`,
+            rel: 'alternate',
+          },
+        ]}
+        schema={metaSchema}
+        deIndex={
+          model.status !== ModelStatus.Published || model.availability === Availability.Unsearchable
+        }
+      />
+      <SensitiveShield nsfw={model.nsfw} contentNsfwLevel={model.nsfwLevel}>
+        <TrackView entityId={model.id} entityType="Model" type="ModelView" />
+        {!model.nsfw && <RenderAdUnitOutstream minContainerWidth={2800} />}
+        <Container size="xl">
+          <Stack spacing="xl">
+            <Stack spacing="xs">
+              <Stack spacing={4}>
+                <Group align="flex-start" sx={{ justifyContent: 'space-between' }} noWrap>
+                  <Group className={classes.titleWrapper} align="center">
+                    <Title className={classes.title} order={1} lineClamp={2}>
+                      {model?.name}
+                    </Title>
+                    <Tooltip
+                      label={`${(
+                        model.rank?.thumbsUpCountAllTime ?? 0
+                      ).toLocaleString()} unique positive reviews`}
+                      withinPortal
                     >
+                      <div>
+                        <LoginRedirect reason="favorite-model">
+                          <IconBadge
+                            radius="sm"
+                            color={isFavorite ? 'green' : 'gray'}
+                            size="lg"
+                            icon={
+                              <ThumbsUpIcon
+                                size={18}
+                                color={isFavorite ? 'green' : undefined}
+                                filled={isFavorite}
+                              />
+                            }
+                            sx={{ cursor: 'pointer' }}
+                            onClick={() => handleToggleFavorite({ setTo: !isFavorite })}
+                          >
+                            <Text className={classes.modelBadgeText}>
+                              {abbreviateNumber(model.rank?.thumbsUpCountAllTime ?? 0)}
+                            </Text>
+                          </IconBadge>
+                        </LoginRedirect>
+                      </div>
+                    </Tooltip>
+                    <IconBadge radius="sm" size="lg" icon={<IconDownload size={18} />}>
                       <Text className={classes.modelBadgeText}>
-                        {abbreviateNumber(model.rank?.favoriteCountAllTime ?? 0)}
+                        {abbreviateNumber(model.rank?.downloadCountAllTime ?? 0)}
                       </Text>
                     </IconBadge>
-                  </LoginRedirect>
-                  <IconBadge radius="sm" size="lg" icon={<IconDownload size={18} />}>
-                    <Text className={classes.modelBadgeText}>
-                      {abbreviateNumber(model.rank?.downloadCountAllTime ?? 0)}
-                    </Text>
-                  </IconBadge>
-                  {features.collections && (
-                    <LoginRedirect reason="add-to-collection">
+                    {model.canGenerate && latestGenerationVersion && (
+                      <GenerateButton
+                        modelVersionId={latestGenerationVersion.id}
+                        data-activity="create:model-stat"
+                      >
+                        <IconBadge radius="sm" size="lg" icon={<IconBrush size={18} />}>
+                          <Text className={classes.modelBadgeText}>
+                            {abbreviateNumber(model.rank?.generationCountAllTime ?? 0)}
+                          </Text>
+                        </IconBadge>
+                      </GenerateButton>
+                    )}
+                    {features.collections && (
+                      <LoginRedirect reason="add-to-collection">
+                        <IconBadge
+                          radius="sm"
+                          size="lg"
+                          icon={<IconBookmark size={18} />}
+                          sx={{ cursor: 'pointer' }}
+                          onClick={handleCollect}
+                        >
+                          <Text className={classes.modelBadgeText}>
+                            {abbreviateNumber(model.rank?.collectedCountAllTime ?? 0)}
+                          </Text>
+                        </IconBadge>
+                      </LoginRedirect>
+                    )}
+                    <InteractiveTipBuzzButton
+                      toUserId={model.user.id}
+                      entityId={model.id}
+                      entityType="Model"
+                    >
                       <IconBadge
                         radius="sm"
                         size="lg"
-                        icon={<IconPlaylistAdd size={18} />}
-                        sx={{ cursor: 'pointer' }}
-                        onClick={handleCollect}
+                        icon={
+                          <IconBolt
+                            size={18}
+                            color="yellow.7"
+                            style={{ fill: theme.colors.yellow[7] }}
+                          />
+                        }
                       >
                         <Text className={classes.modelBadgeText}>
-                          {abbreviateNumber(model.rank?.collectedCountAllTime ?? 0)}
+                          {abbreviateNumber(
+                            (model.rank?.tippedAmountCountAllTime ?? 0) + tippedAmount
+                          )}
                         </Text>
                       </IconBadge>
-                    </LoginRedirect>
-                  )}
-                  <InteractiveTipBuzzButton
-                    toUserId={model.user.id}
-                    entityId={model.id}
-                    entityType="Model"
-                  >
-                    <IconBadge
-                      radius="sm"
-                      size="lg"
-                      icon={
-                        <IconBolt
-                          size={18}
-                          color="yellow.7"
-                          style={{ fill: theme.colors.yellow[7] }}
-                        />
-                      }
-                    >
-                      <Text className={classes.modelBadgeText}>
-                        {abbreviateNumber(
-                          (model.rank?.tippedAmountCountAllTime ?? 0) + tippedAmount
-                        )}
-                      </Text>
-                    </IconBadge>
-                  </InteractiveTipBuzzButton>
-
-                  {!model.locked && (
-                    <ResourceReviewSummary modelId={model.id}>
-                      <ResourceReviewSummary.Simple
-                        rating={model.rank?.ratingAllTime}
-                        count={model.rank?.ratingCountAllTime}
-                        onClick={() => {
-                          if (!gallerySectionRef.current) return;
-                          scrollToTop(gallerySectionRef.current);
-                        }}
-                      />
-                    </ResourceReviewSummary>
-                  )}
-                  {inEarlyAccess && (
-                    <IconBadge radius="sm" color="green" size="lg" icon={<IconClock size={18} />}>
-                      Early Access
-                    </IconBadge>
-                  )}
-                </Group>
-
-                <Menu position="bottom-end" transition="pop-top-right" withinPortal>
-                  <Menu.Target>
-                    <ActionIcon variant="outline">
-                      <IconDotsVertical size={16} />
-                    </ActionIcon>
-                  </Menu.Target>
-                  <Menu.Dropdown>
-                    {currentUser && isCreator && published && (
-                      <Menu.Item
-                        icon={<IconBan size={14} stroke={1.5} />}
-                        color="yellow"
-                        onClick={() => unpublishModelMutation.mutate({ id })}
-                        disabled={unpublishModelMutation.isLoading}
-                      >
-                        Unpublish
-                      </Menu.Item>
-                    )}
-                    {currentUser && isModerator && modelDeleted && (
-                      <Menu.Item
-                        icon={<IconRecycle size={14} stroke={1.5} />}
-                        color="green"
-                        onClick={() => restoreModelMutation.mutate({ id })}
-                        disabled={restoreModelMutation.isLoading}
-                      >
-                        Restore
-                      </Menu.Item>
-                    )}
-                    {currentUser && isModerator && (
-                      <>
-                        {env.NEXT_PUBLIC_MODEL_LOOKUP_URL && (
-                          <Menu.Item
-                            component="a"
-                            target="_blank"
-                            icon={<IconInfoCircle size={14} stroke={1.5} />}
-                            href={`${env.NEXT_PUBLIC_MODEL_LOOKUP_URL}${model.id}`}
-                          >
-                            Lookup Model
-                          </Menu.Item>
-                        )}
-                        {published && (
-                          <Menu.Item
-                            color="yellow"
-                            icon={<IconBan size={14} stroke={1.5} />}
-                            onClick={() => openContext('unpublishModel', { modelId: model.id })}
-                          >
-                            Unpublish as Violation
-                          </Menu.Item>
-                        )}
-                        <Menu.Item
-                          color={theme.colors.red[6]}
-                          icon={<IconTrash size={14} stroke={1.5} />}
-                          onClick={() => handleDeleteModel({ permanently: true })}
-                        >
-                          Permanently Delete Model
-                        </Menu.Item>
-                      </>
-                    )}
-                    {currentUser && isOwner && !modelDeleted && (
-                      <>
-                        <Menu.Item
-                          color={theme.colors.red[6]}
-                          icon={<IconTrash size={14} stroke={1.5} />}
-                          onClick={() => handleDeleteModel()}
-                        >
-                          Delete Model
-                        </Menu.Item>
-                        <Menu.Item
-                          icon={<IconEdit size={14} stroke={1.5} />}
-                          component={NextLink}
-                          href={`/models/${model.id}/edit`}
-                        >
-                          Edit Model
-                        </Menu.Item>
-                        {!model.mode ? (
-                          <>
-                            <Menu.Item
-                              icon={<IconArchive size={14} stroke={1.5} />}
-                              onClick={() => handleChangeMode(ModelModifier.Archived)}
-                            >
-                              Archive
-                            </Menu.Item>
-                            {isModerator && (
-                              <Menu.Item
-                                icon={<IconCircleMinus size={14} stroke={1.5} />}
-                                onClick={() => handleChangeMode(ModelModifier.TakenDown)}
-                              >
-                                Take Down
-                              </Menu.Item>
-                            )}
-                          </>
-                        ) : model.mode === ModelModifier.Archived ||
-                          (isModerator && model.mode === ModelModifier.TakenDown) ? (
-                          <Menu.Item
-                            icon={<IconReload size={14} stroke={1.5} />}
-                            onClick={() => handleChangeMode(null)}
-                          >
-                            Bring Back
-                          </Menu.Item>
-                        ) : null}
-                      </>
-                    )}
-                    {features.collections && (
-                      <AddToCollectionMenuItem
-                        onClick={() =>
-                          openContext('addToCollection', {
-                            modelId: model.id,
-                            type: CollectionType.Model,
-                          })
+                    </InteractiveTipBuzzButton>
+                    {inEarlyAccess && (
+                      <Tooltip
+                        label={
+                          <Text>
+                            Early Access helps creators monetize,{' '}
+                            <Anchor href="/articles/6341">learn more here</Anchor>
+                          </Text>
                         }
-                      />
-                    )}
-                    {isOwner && (
-                      <AddToShowcaseMenuItem
-                        key="add-to-showcase"
-                        entityType="Model"
-                        entityId={model.id}
-                      />
-                    )}
-                    {(!currentUser || !isOwner || isModerator) && (
-                      <LoginRedirect reason="report-model">
-                        <Menu.Item
-                          icon={<IconFlag size={14} stroke={1.5} />}
-                          onClick={() =>
-                            openContext('report', {
-                              entityType: ReportEntity.Model,
-                              entityId: model.id,
-                            })
-                          }
-                        >
-                          Report
-                        </Menu.Item>
-                      </LoginRedirect>
-                    )}
-                    {isModerator && (
-                      <Menu.Item
-                        icon={
-                          rescanModelMutation.isLoading ? (
-                            <Loader size={14} />
-                          ) : (
-                            <IconRadar2 size={14} stroke={1.5} />
-                          )
-                        }
-                        onClick={() => handleRescanModel()}
                       >
-                        Rescan Files
-                      </Menu.Item>
-                    )}
-                    {currentUser && (
-                      <>
-                        <HideUserButton as="menu-item" userId={model.user.id} />
-                        <HideModelButton as="menu-item" modelId={model.id} />
-                        <Menu.Item
-                          icon={<IconTagOff size={14} stroke={1.5} />}
-                          onClick={() => openContext('blockModelTags', { modelId: model.id })}
-                        >
-                          Hide content with these tags
-                        </Menu.Item>
-                      </>
-                    )}
-                    {isOwner && (
-                      <ToggleLockModel modelId={model.id} locked={model.locked}>
-                        {({ onClick }) => (
-                          <Menu.Item
-                            icon={
-                              model.locked ? (
-                                <IconLockOff size={14} stroke={1.5} />
-                              ) : (
-                                <IconLock size={14} stroke={1.5} />
-                              )
-                            }
-                            onClick={onClick}
-                          >
-                            {model.locked ? 'Unlock' : 'Lock'} model discussion
-                          </Menu.Item>
-                        )}
-                      </ToggleLockModel>
-                    )}
-                  </Menu.Dropdown>
-                </Menu>
-              </Group>
-              <Group spacing={4}>
-                <Text size="xs" color="dimmed">
-                  Updated: {formatDate(model.updatedAt)}
-                </Text>
-                {category && (
-                  <>
-                    <Divider orientation="vertical" />
-                    <Link href={`/tag/${encodeURIComponent(category.name.toLowerCase())}`} passHref>
-                      <Badge component="a" size="sm" color="blue" sx={{ cursor: 'pointer' }}>
-                        {category.name}
-                      </Badge>
-                    </Link>
-                  </>
-                )}
-
-                {tags.length > 0 && <Divider orientation="vertical" />}
-                <Collection
-                  items={tags}
-                  renderItem={(tag) => (
-                    <Link href={`/tag/${encodeURIComponent(tag.name.toLowerCase())}`} passHref>
-                      <Badge
-                        component="a"
-                        size="sm"
-                        color="gray"
-                        variant={theme.colorScheme === 'dark' ? 'filled' : undefined}
-                        sx={{ cursor: 'pointer' }}
-                      >
-                        {tag.name}
-                      </Badge>
-                    </Link>
-                  )}
-                />
-              </Group>
-            </Stack>
-            {(model.status === ModelStatus.Unpublished || modelDeleted) && (
-              <Alert color="red">
-                <Group spacing="xs" noWrap align="flex-start">
-                  <ThemeIcon color="red">
-                    <IconExclamationMark />
-                  </ThemeIcon>
-                  <Text size="md">
-                    This model has been {modelDeleted ? 'deleted' : 'unpublished'} and is not
-                    visible to the community.
-                  </Text>
-                </Group>
-              </Alert>
-            )}
-            {model.status === ModelStatus.UnpublishedViolation && !model.meta?.needsReview && (
-              <Alert color="red">
-                <Group spacing="xs" noWrap align="flex-start">
-                  <ThemeIcon color="red">
-                    <IconExclamationMark />
-                  </ThemeIcon>
-                  <Text size="sm" mt={-3}>
-                    This model has been unpublished due to a violation of our{' '}
-                    <Text component="a" variant="link" href="/content/tos" target="_blank">
-                      guidelines
-                    </Text>{' '}
-                    and is not visible to the community.{' '}
-                    {unpublishedReason && unpublishedMessage ? unpublishedMessage : null} If you
-                    adjust your model to comply with our guidelines, you can request a review from
-                    one of our moderators.
-                  </Text>
-                </Group>
-              </Alert>
-            )}
-            {model.status === ModelStatus.UnpublishedViolation && model.meta?.needsReview && (
-              <Alert color="yellow">
-                <Group spacing="xs" noWrap>
-                  <ThemeIcon color="yellow">
-                    <IconExclamationMark />
-                  </ThemeIcon>
-                  <Text size="md">
-                    This model is currently being reviewed by our moderators. It will be visible to
-                    the community once it has been approved.
-                  </Text>
-                </Group>
-              </Alert>
-            )}
-            {inaccurate && (
-              <Alert color="yellow">
-                <Group spacing="xs" noWrap align="flex-start">
-                  <ThemeIcon color="yellow">
-                    <IconExclamationMark />
-                  </ThemeIcon>
-                  <Text size="md">
-                    The images on this {splitUppercase(model.type).toLowerCase()} are inaccurate.
-                    Please submit reviews with images so that we can improve this page.
-                  </Text>
-                </Group>
-              </Alert>
-            )}
-            {(model.mode === ModelModifier.TakenDown || model.mode === ModelModifier.Archived) && (
-              <AlertWithIcon color="blue" icon={<IconExclamationMark />} size="md">
-                {model.mode === ModelModifier.Archived
-                  ? 'This model has been archived and is not available for download. You can still share your creations with the community.'
-                  : 'The visual assets associated with this model have been taken down. You can still download the resource, but you will not be able to share your creations.'}
-              </AlertWithIcon>
-            )}
-          </Stack>
-          <Group spacing={4} noWrap>
-            {isOwner ? (
-              <>
-                <ButtonTooltip label="Add Version">
-                  <Link href={`/models/${model.id}/model-versions/create`}>
-                    <ActionIcon variant="light" color="blue">
-                      <IconPlus size={14} />
-                    </ActionIcon>
-                  </Link>
-                </ButtonTooltip>
-
-                {versionCount > 1 && (
-                  <ButtonTooltip label="Rearrange Versions">
-                    <ActionIcon onClick={toggle}>
-                      <IconArrowsLeftRight size={14} />
-                    </ActionIcon>
-                  </ButtonTooltip>
-                )}
-              </>
-            ) : null}
-            <ModelVersionList
-              versions={model.modelVersions}
-              selected={selectedVersion?.id}
-              onVersionClick={(version) => {
-                if (version.id !== selectedVersion?.id) {
-                  setSelectedVersion(version);
-                  // router.replace(`/models/${model.id}?modelVersionId=${version.id}`, undefined, {
-                  //   shallow: true,
-                  // });
-                }
-              }}
-              onDeleteClick={handleDeleteVersion}
-              showExtraIcons={isOwner || isModerator}
-            />
-          </Group>
-          {!!selectedVersion && (
-            <ModelVersionDetails
-              model={model}
-              version={selectedVersion}
-              user={currentUser}
-              isFavorite={isFavorite}
-              onFavoriteClick={handleToggleFavorite}
-              onBrowseClick={() => {
-                if (!gallerySectionRef.current) return;
-                scrollToTop(gallerySectionRef.current);
-              }}
-            />
-          )}
-        </Stack>
-        {versionCount > 1 ? (
-          <ReorderVersionsModal modelId={model.id} opened={opened} onClose={toggle} />
-        ) : null}
-      </Container>
-      {canLoadBelowTheFold && (isOwner || model.hasSuggestedResources) && (
-        <AssociatedModels
-          fromId={model.id}
-          type="Suggested"
-          label="Suggested Resources"
-          ownerId={model.user.id}
-        />
-      )}
-      {canLoadBelowTheFold &&
-        (!model.locked ? (
-          <Container size="xl" my="xl">
-            <Stack spacing="md">
-              <Group ref={discussionSectionRef} sx={{ justifyContent: 'space-between' }}>
-                <Group spacing="xs">
-                  <Title order={2}>Discussion</Title>
-                  {canDiscuss ? (
-                    <>
-                      <LoginRedirect reason="create-comment">
-                        <Button
-                          leftIcon={<IconMessage size={16} />}
-                          variant="outline"
-                          onClick={() => triggerRoutedDialog({ name: 'commentEdit', state: {} })}
-                          size="xs"
-                        >
-                          Add Comment
-                        </Button>
-                      </LoginRedirect>
-                    </>
-                  ) : (
-                    !isMuted && (
-                      <JoinPopover message="You must be a Supporter Tier member to join this discussion">
-                        <Button
-                          leftIcon={<IconClock size={16} />}
-                          variant="outline"
-                          size="xs"
+                        <IconBadge
+                          radius="sm"
                           color="green"
+                          size="lg"
+                          icon={<IconClock size={18} />}
                         >
                           Early Access
-                        </Button>
-                      </JoinPopover>
-                    )
-                  )}
+                        </IconBadge>
+                      </Tooltip>
+                    )}
+                  </Group>
+
+                  <Group spacing={8} noWrap>
+                    <HowToButton
+                      size={30}
+                      stroke={1.5}
+                      href="https://education.civitai.com/civitais-guide-to-resource-types/#models"
+                      tooltip="What is this?"
+                    />
+                    <ToggleModelNotification
+                      className={classes.headerButton}
+                      modelId={model.id}
+                      userId={model.user.id}
+                    />
+                    <Menu position="bottom-end" transition="pop-top-right" withinPortal>
+                      <Menu.Target>
+                        <ActionIcon className={classes.headerButton} variant="light">
+                          <IconDotsVertical />
+                        </ActionIcon>
+                      </Menu.Target>
+                      <Menu.Dropdown>
+                        {currentUser && isCreator && published && (
+                          <Menu.Item
+                            icon={<IconBan size={14} stroke={1.5} />}
+                            color="yellow"
+                            onClick={() => unpublishModelMutation.mutate({ id })}
+                            disabled={unpublishModelMutation.isLoading}
+                          >
+                            Unpublish
+                          </Menu.Item>
+                        )}
+                        {currentUser && isCreator && model.status === ModelStatus.Unpublished && (
+                          <Menu.Item
+                            icon={<IconRepeat size={14} stroke={1.5} />}
+                            color="green"
+                            onClick={handlePublishModel}
+                            disabled={publishModelMutation.isLoading}
+                          >
+                            Republish
+                          </Menu.Item>
+                        )}
+                        {currentUser && isModerator && modelDeleted && (
+                          <Menu.Item
+                            icon={<IconRecycle size={14} stroke={1.5} />}
+                            color="green"
+                            onClick={() => restoreModelMutation.mutate({ id })}
+                            disabled={restoreModelMutation.isLoading}
+                          >
+                            Restore
+                          </Menu.Item>
+                        )}
+                        {currentUser && isModerator && (
+                          <>
+                            {env.NEXT_PUBLIC_MODEL_LOOKUP_URL && (
+                              <Menu.Item
+                                component="a"
+                                target="_blank"
+                                icon={<IconInfoCircle size={14} stroke={1.5} />}
+                                href={`${env.NEXT_PUBLIC_MODEL_LOOKUP_URL}${model.id}`}
+                              >
+                                Lookup Model
+                              </Menu.Item>
+                            )}
+                            {published && (
+                              <Menu.Item
+                                color="yellow"
+                                icon={<IconBan size={14} stroke={1.5} />}
+                                onClick={() => openContext('unpublishModel', { modelId: model.id })}
+                              >
+                                Unpublish as Violation
+                              </Menu.Item>
+                            )}
+                            <Menu.Item
+                              color={theme.colors.red[6]}
+                              icon={<IconTrash size={14} stroke={1.5} />}
+                              onClick={() => handleDeleteModel({ permanently: true })}
+                            >
+                              Permanently Delete Model
+                            </Menu.Item>
+                          </>
+                        )}
+                        {currentUser && isOwner && !modelDeleted && (
+                          <>
+                            <Menu.Item
+                              color={theme.colors.red[6]}
+                              icon={<IconTrash size={14} stroke={1.5} />}
+                              onClick={() => handleDeleteModel()}
+                            >
+                              Delete Model
+                            </Menu.Item>
+                            <Menu.Item
+                              icon={<IconEdit size={14} stroke={1.5} />}
+                              component={Link}
+                              href={`/models/${model.id}/edit`}
+                            >
+                              Edit Model
+                            </Menu.Item>
+                            {!model.mode ? (
+                              <>
+                                <Menu.Item
+                                  icon={<IconArchive size={14} stroke={1.5} />}
+                                  onClick={() => handleChangeMode(ModelModifier.Archived)}
+                                >
+                                  Archive
+                                </Menu.Item>
+                                {isModerator && (
+                                  <Menu.Item
+                                    icon={<IconCircleMinus size={14} stroke={1.5} />}
+                                    onClick={() => handleChangeMode(ModelModifier.TakenDown)}
+                                  >
+                                    Take Down
+                                  </Menu.Item>
+                                )}
+                              </>
+                            ) : model.mode === ModelModifier.Archived ||
+                              (isModerator && model.mode === ModelModifier.TakenDown) ? (
+                              <Menu.Item
+                                icon={<IconReload size={14} stroke={1.5} />}
+                                onClick={() => handleChangeMode(null)}
+                              >
+                                Bring Back
+                              </Menu.Item>
+                            ) : null}
+                          </>
+                        )}
+                        {features.collections && (
+                          <AddToCollectionMenuItem
+                            onClick={() =>
+                              openContext('addToCollection', {
+                                modelId: model.id,
+                                type: CollectionType.Model,
+                              })
+                            }
+                          />
+                        )}
+                        {isOwner && (
+                          <AddToShowcaseMenuItem
+                            key="add-to-showcase"
+                            entityType="Model"
+                            entityId={model.id}
+                          />
+                        )}
+                        {(!currentUser || !isOwner || isModerator) && (
+                          <LoginRedirect reason="report-model">
+                            <Menu.Item
+                              icon={<IconFlag size={14} stroke={1.5} />}
+                              onClick={() =>
+                                openReportModal({
+                                  entityType: ReportEntity.Model,
+                                  entityId: model.id,
+                                })
+                              }
+                            >
+                              Report
+                            </Menu.Item>
+                          </LoginRedirect>
+                        )}
+                        {isModerator && (
+                          <Menu.Item
+                            icon={
+                              rescanModelMutation.isLoading ? (
+                                <Loader size={14} />
+                              ) : (
+                                <IconRadar2 size={14} stroke={1.5} />
+                              )
+                            }
+                            onClick={() => handleRescanModel()}
+                          >
+                            Rescan Files
+                          </Menu.Item>
+                        )}
+                        {currentUser && (
+                          <>
+                            <Menu.Label>Moderation</Menu.Label>
+                            <HideUserButton as="menu-item" userId={model.user.id} />
+                            <HideModelButton as="menu-item" modelId={model.id} />
+                            <Menu.Item
+                              icon={<IconTagOff size={14} stroke={1.5} />}
+                              onClick={() => openContext('blockModelTags', { modelId: model.id })}
+                            >
+                              Hide content with these tags
+                            </Menu.Item>
+                            {isModerator && (
+                              <>
+                                <ToggleLockModel modelId={model.id} locked={model.locked}>
+                                  {({ onClick }) => (
+                                    <Menu.Item
+                                      icon={
+                                        model.locked ? (
+                                          <IconLockOff size={14} stroke={1.5} />
+                                        ) : (
+                                          <IconLock size={14} stroke={1.5} />
+                                        )
+                                      }
+                                      onClick={onClick}
+                                    >
+                                      {model.locked ? 'Unlock' : 'Lock'} model discussion
+                                    </Menu.Item>
+                                  )}
+                                </ToggleLockModel>
+                                <ToggleSearchableMenuItem
+                                  entityType="Model"
+                                  entityId={model.id}
+                                  key="toggle-searchable-menu-item"
+                                />
+                              </>
+                            )}
+                          </>
+                        )}
+                        {published && (isOwner || isModerator) && (
+                          <>
+                            <Menu.Label>Advanced</Menu.Label>
+                            <Menu.Item
+                              onClick={() =>
+                                openMigrateModelToCollectionModal({ modelId: model.id })
+                              }
+                            >
+                              Migrate to Collection
+                            </Menu.Item>
+                          </>
+                        )}
+                      </Menu.Dropdown>
+                    </Menu>
+                  </Group>
                 </Group>
-              </Group>
-              <ModelDiscussionV2 modelId={model.id} />
+                <Group spacing={4}>
+                  <Text size="xs" color="dimmed">
+                    Updated: {formatDate(model.updatedAt)}
+                  </Text>
+                  {category && (
+                    <>
+                      <Divider orientation="vertical" />
+                      <Link
+                        href={`/tag/${encodeURIComponent(category.name.toLowerCase())}`}
+                        legacyBehavior
+                        passHref
+                      >
+                        <Badge component="a" size="sm" color="blue" sx={{ cursor: 'pointer' }}>
+                          {category.name}
+                        </Badge>
+                      </Link>
+                    </>
+                  )}
+
+                  {tags.length > 0 && <Divider orientation="vertical" />}
+                  <Collection
+                    items={tags}
+                    renderItem={(tag) => (
+                      <Link
+                        legacyBehavior
+                        href={`/tag/${encodeURIComponent(tag.name.toLowerCase())}`}
+                        passHref
+                      >
+                        <Badge
+                          component="a"
+                          size="sm"
+                          color="gray"
+                          variant={theme.colorScheme === 'dark' ? 'filled' : undefined}
+                          sx={{ cursor: 'pointer' }}
+                        >
+                          {tag.name}
+                        </Badge>
+                      </Link>
+                    )}
+                  />
+                </Group>
+              </Stack>
+              {(model.status === ModelStatus.Unpublished || modelDeleted) && (
+                <Alert color="red">
+                  <Group spacing="xs" noWrap align="flex-start">
+                    <ThemeIcon color="red">
+                      <IconExclamationMark />
+                    </ThemeIcon>
+                    <Text size="md">
+                      This model has been {modelDeleted ? 'deleted' : 'unpublished'} and is not
+                      visible to the community.
+                    </Text>
+                  </Group>
+                </Alert>
+              )}
+              {model.status === ModelStatus.UnpublishedViolation && !model.meta?.needsReview && (
+                <Alert color="red">
+                  <Group spacing="xs" noWrap align="flex-start">
+                    <ThemeIcon color="red">
+                      <IconExclamationMark />
+                    </ThemeIcon>
+                    <Text size="sm" mt={-3}>
+                      This model has been unpublished due to a violation of our{' '}
+                      <Text component="a" variant="link" href="/content/tos" target="_blank">
+                        guidelines
+                      </Text>{' '}
+                      and is not visible to the community.{' '}
+                      {unpublishedReason && unpublishedMessage ? unpublishedMessage : null} If you
+                      adjust your model to comply with our guidelines, you can request a review from
+                      one of our moderators.
+                    </Text>
+                  </Group>
+                </Alert>
+              )}
+              {model.status === ModelStatus.UnpublishedViolation && model.meta?.needsReview && (
+                <Alert color="yellow">
+                  <Group spacing="xs" noWrap>
+                    <ThemeIcon color="yellow">
+                      <IconExclamationMark />
+                    </ThemeIcon>
+                    <Text size="md">
+                      This model is currently being reviewed by our moderators. It will be visible
+                      to the community once it has been approved.
+                    </Text>
+                  </Group>
+                </Alert>
+              )}
+              {inaccurate && (
+                <Alert color="yellow">
+                  <Group spacing="xs" noWrap align="flex-start">
+                    <ThemeIcon color="yellow">
+                      <IconExclamationMark />
+                    </ThemeIcon>
+                    <Text size="md">
+                      The images on this {splitUppercase(model.type).toLowerCase()} are inaccurate.
+                      Please submit reviews with images so that we can improve this page.
+                    </Text>
+                  </Group>
+                </Alert>
+              )}
+              {(model.mode === ModelModifier.TakenDown ||
+                model.mode === ModelModifier.Archived) && (
+                <AlertWithIcon color="blue" icon={<IconExclamationMark />} size="md">
+                  {model.mode === ModelModifier.Archived
+                    ? 'This model has been archived and is not available for download. You can still share your creations with the community.'
+                    : 'The visual assets associated with this model have been taken down. You can still download the resource, but you will not be able to share your creations.'}
+                </AlertWithIcon>
+              )}
             </Stack>
-          </Container>
-        ) : (
-          <Paper p="lg" withBorder bg={`rgba(0,0,0,0.1)`}>
-            <Center>
-              <Group spacing="xs">
-                <ThemeIcon color="gray" size="xl" radius="xl">
-                  <IconMessageCircleOff />
-                </ThemeIcon>
-                <Text size="lg" color="dimmed">
-                  Discussion is turned off for this model.
-                </Text>
+            <Group spacing={4} noWrap>
+              {isOwner ? (
+                <>
+                  <ButtonTooltip label="Add Version">
+                    <Link href={`/models/${model.id}/model-versions/create`}>
+                      <ActionIcon variant="light" color="blue">
+                        <IconPlus size={14} />
+                      </ActionIcon>
+                    </Link>
+                  </ButtonTooltip>
+
+                  {versionCount > 1 && (
+                    <ButtonTooltip label="Rearrange Versions">
+                      <ActionIcon onClick={toggle}>
+                        <IconArrowsLeftRight size={14} />
+                      </ActionIcon>
+                    </ButtonTooltip>
+                  )}
+                </>
+              ) : null}
+              <ModelVersionList
+                versions={model.modelVersions}
+                selected={selectedVersion?.id}
+                onVersionClick={(version) => {
+                  if (version.id !== selectedVersion?.id) {
+                    setSelectedVersion(version);
+                    // router.replace(`/models/${model.id}?modelVersionId=${version.id}`, undefined, {
+                    //   shallow: true,
+                    // });
+                  }
+                }}
+                onDeleteClick={handleDeleteVersion}
+                showExtraIcons={isOwner || isModerator}
+                showToggleCoverage={model.type === ModelType.Checkpoint}
+              />
+            </Group>
+            {!!selectedVersion && (
+              <ModelVersionDetails
+                model={model}
+                version={selectedVersion}
+                onFavoriteClick={handleToggleFavorite}
+                onBrowseClick={() => {
+                  gallerySectionRef.current?.scrollIntoView({ behavior: 'smooth' });
+                }}
+              />
+            )}
+          </Stack>
+          {versionCount > 1 ? (
+            <ReorderVersionsModal modelId={model.id} opened={opened} onClose={toggle} />
+          ) : null}
+        </Container>
+        {canLoadBelowTheFold && (isOwner || model.hasSuggestedResources) && (
+          <AssociatedModels
+            fromId={model.id}
+            type="Suggested"
+            versionId={selectedVersion?.id}
+            label={
+              <Group spacing={8} noWrap>
+                Suggested Resources{' '}
+                <InfoPopover>
+                  <Text size="sm" weight={400}>
+                    These are resources suggested by the creator of this model. They may be related
+                    to this model or created by the same user.
+                  </Text>
+                </InfoPopover>
               </Group>
-            </Center>
-          </Paper>
-        ))}
-      {canLoadBelowTheFold && !model.locked && model.mode !== ModelModifier.TakenDown && (
-        <Box ref={gallerySectionRef} id="gallery" mt="md">
-          <ImagesAsPostsInfinite
-            modelId={model.id}
-            selectedVersionId={selectedVersion?.id}
-            modelVersions={model.modelVersions}
-            generationOptions={{
-              generationModelId: selectedVersion?.meta.picFinderModelId,
-              includeEditingActions: isOwner,
-            }}
+            }
+            ownerId={model.user.id}
           />
-        </Box>
-      )}
+        )}
+        {canLoadBelowTheFold &&
+          (!model.locked ? (
+            <Container size="xl" my="xl">
+              <Stack spacing="md">
+                <Group ref={discussionSectionRef} sx={{ justifyContent: 'space-between' }}>
+                  <Group spacing="xs">
+                    <Title order={2}>Discussion</Title>
+                    {canDiscuss ? (
+                      <>
+                        <LoginRedirect reason="create-comment">
+                          <Button
+                            leftIcon={<IconMessage size={16} />}
+                            variant="outline"
+                            onClick={() => triggerRoutedDialog({ name: 'commentEdit', state: {} })}
+                            size="xs"
+                          >
+                            Add Comment
+                          </Button>
+                        </LoginRedirect>
+                      </>
+                    ) : (
+                      !isMuted &&
+                      onlyEarlyAccess && (
+                        <JoinPopover message="You must be a Civitai Member to join this discussion">
+                          <Button
+                            leftIcon={<IconClock size={16} />}
+                            variant="outline"
+                            size="xs"
+                            color="green"
+                          >
+                            Early Access
+                          </Button>
+                        </JoinPopover>
+                      )
+                    )}
+                  </Group>
+                </Group>
+                <ModelDiscussionV2 modelId={model.id} />
+              </Stack>
+            </Container>
+          ) : (
+            <Paper p="lg" withBorder bg={`rgba(0, 0, 0, 0.1)`}>
+              <Center>
+                <Group spacing="xs">
+                  <ThemeIcon color="gray" size="xl" radius="xl">
+                    <IconMessageCircleOff />
+                  </ThemeIcon>
+                  <Text size="lg" color="dimmed">
+                    Discussion is turned off for this model.
+                  </Text>
+                </Group>
+              </Center>
+            </Paper>
+          ))}
+        {canLoadBelowTheFold && !model.locked && model.mode !== ModelModifier.TakenDown && (
+          <Box ref={gallerySectionRef} id="gallery" mt="md">
+            <ImagesAsPostsInfinite
+              model={model}
+              selectedVersionId={selectedVersion?.id}
+              modelVersions={model.modelVersions}
+              showModerationOptions={isOwner}
+              showPOIWarning={model.poi}
+              generationOptions={{
+                generationModelId: selectedVersion?.meta.picFinderModelId,
+                includeEditingActions: isOwner,
+              }}
+              canReview={!versionIsEarlyAccess || currentUser?.isMember || currentUser?.isModerator}
+            />
+          </Box>
+        )}
+      </SensitiveShield>
     </>
   );
 }
 
 const useStyles = createStyles((theme) => ({
   actions: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       width: '100%',
     },
   },
@@ -1014,48 +1160,48 @@ const useStyles = createStyles((theme) => ({
   titleWrapper: {
     gap: theme.spacing.xs,
 
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       gap: theme.spacing.xs * 0.4,
     },
   },
 
   title: {
     wordBreak: 'break-word',
-    [theme.fn.smallerThan('md')]: {
-      fontSize: theme.fontSizes.xs * 2.4, // 24px
+    [containerQuery.smallerThan('md')]: {
+      fontSize: 24,
       width: '100%',
       paddingBottom: 0,
     },
   },
 
   engagementBar: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       display: 'none',
     },
   },
 
   mobileCarousel: {
     display: 'none',
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       display: 'block',
     },
   },
   desktopCarousel: {
     display: 'block',
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       display: 'none',
     },
   },
 
   modelBadgeText: {
     fontSize: theme.fontSizes.md,
-    [theme.fn.smallerThan('md')]: {
+    [containerQuery.smallerThan('md')]: {
       fontSize: theme.fontSizes.sm,
     },
   },
 
   discussionActionButton: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       width: '100%',
     },
   },
@@ -1066,9 +1212,29 @@ const useStyles = createStyles((theme) => ({
       width: 24,
       height: 24,
 
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         minWidth: 16,
         minHeight: 16,
+      },
+    },
+  },
+
+  headerButton: {
+    width: 32,
+    height: 32,
+
+    ['> svg']: {
+      width: 16,
+      height: 16,
+    },
+
+    [containerQuery.largerThan('md')]: {
+      width: 44,
+      height: 44,
+
+      ['> svg']: {
+        width: 20,
+        height: 20,
       },
     },
   },

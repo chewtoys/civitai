@@ -7,89 +7,45 @@ import {
   Divider,
   Loader,
   useMantineTheme,
+  Title,
 } from '@mantine/core';
-import { Currency } from '@prisma/client';
-import React, { useState } from 'react';
+import { Currency } from '~/shared/utils/prisma/enums';
+import React, { useEffect, useMemo, useState } from 'react';
 
 import { createContextModal } from '~/components/Modals/utils/createContextModal';
 import { Elements, PaymentElement } from '@stripe/react-stripe-js';
-import { StripeElementsOptions, StripePaymentElementOptions } from '@stripe/stripe-js';
+import type { StripeElementsOptions, StripePaymentElementOptions } from '@stripe/stripe-js';
 import { useStripePromise } from '~/providers/StripeProvider';
 import { useStripeTransaction } from '~/components/Buzz/useStripeTransaction';
 import { formatPriceForDisplay } from '~/utils/number-helpers';
-import { trpc } from '~/utils/trpc';
 import { PaymentIntentMetadataSchema } from '~/server/schema/stripe.schema';
 import { useTrackEvent } from '../TrackView/track.utils';
 import { closeAllModals } from '@mantine/modals';
+import { usePaymentIntent, useUserPaymentMethods } from '~/components/Stripe/stripe.utils';
+import { PaymentMethodItem } from '~/components/Account/PaymentMethodsCard';
+import { RecaptchaNotice } from '../Recaptcha/RecaptchaWidget';
+import { AlertWithIcon } from '../AlertWithIcon/AlertWithIcon';
+import { IconAlertCircle } from '@tabler/icons-react';
 
-type Props = {
-  successMessage?: React.ReactNode;
-  message?: React.ReactNode;
-  unitAmount: number;
-  currency?: Currency;
-  onSuccess?: (stripePaymentIntentId: string) => Promise<void>;
-  metadata: PaymentIntentMetadataSchema;
-  paymentMethodTypes?: string[];
-};
+const Error = ({ error, onClose }: { error: string; onClose: () => void }) => (
+  <Stack>
+    <Title order={3}>Whoops!</Title>
+    <AlertWithIcon
+      icon={<IconAlertCircle />}
+      color="red"
+      iconColor="red"
+      title="Sorry, it looks like there was an error"
+    >
+      {error}
+    </AlertWithIcon>
 
-const { openModal, Modal } = createContextModal<Props>({
-  name: 'stripeTransaction',
-  withCloseButton: false,
-  size: 'lg',
-  radius: 'lg',
-  closeOnEscape: false,
-  closeOnClickOutside: false,
-  zIndex: 400,
-  Element: ({
-    context,
-    props: { unitAmount, currency = Currency.USD, metadata, paymentMethodTypes, ...props },
-  }) => {
-    const theme = useMantineTheme();
-    const stripePromise = useStripePromise();
+    <RecaptchaNotice />
 
-    const { data, isLoading, isFetching } = trpc.stripe.getPaymentIntent.useQuery(
-      { unitAmount, currency, metadata, paymentMethodTypes },
-      { enabled: !!unitAmount && !!currency, refetchOnMount: 'always', cacheTime: 0 }
-    );
-
-    const clientSecret = data?.clientSecret;
-
-    if (isLoading || isFetching) {
-      return (
-        <Center>
-          <Loader variant="bars" />
-        </Center>
-      );
-    }
-
-    if (!clientSecret) {
-      throw new Error('Failed to create client secret');
-    }
-
-    const options: StripeElementsOptions = {
-      clientSecret,
-      appearance: { theme: theme.colorScheme === 'dark' ? 'night' : 'stripe' },
-    };
-
-    const handleClose = () => {
-      context.close();
-    };
-
-    return (
-      <Elements stripe={stripePromise} key={clientSecret} options={options}>
-        <StripeTransactionModal
-          clientSecret={clientSecret}
-          key={clientSecret}
-          onClose={handleClose}
-          unitAmount={unitAmount}
-          currency={currency}
-          metadata={metadata}
-          {...props}
-        />
-      </Elements>
-    );
-  },
-});
+    <Center>
+      <Button onClick={onClose}>Close this window</Button>
+    </Center>
+  </Stack>
+);
 
 const StripeTransactionModal = ({
   unitAmount,
@@ -100,8 +56,26 @@ const StripeTransactionModal = ({
   metadata,
   clientSecret,
   successMessage,
-}: Props & { clientSecret: string; onClose: () => void }) => {
+  paymentMethodTypes = [],
+  setupFuturePayment,
+  setupFuturePaymentToggle,
+}: Props & { clientSecret: string; onClose: () => void; paymentMethodTypes?: string[] }) => {
+  const { userPaymentMethods, isLoading: isLoadingPaymentMethods } = useUserPaymentMethods();
   const [success, setSuccess] = useState<boolean>(false);
+  const supportedUserPaymentMethods = useMemo(() => {
+    const available =
+      userPaymentMethods?.filter((method) => paymentMethodTypes.includes(method.type)) ?? [];
+    const deduped = [];
+    const seen = new Set();
+    for (const method of available) {
+      const id = method.card?.last4 ?? method.id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      deduped.push(method);
+    }
+
+    return deduped;
+  }, [userPaymentMethods, paymentMethodTypes]);
 
   const { trackAction } = useTrackEvent();
 
@@ -120,6 +94,7 @@ const StripeTransactionModal = ({
   };
 
   const processingTooLong = paymentIntentStatus === 'processing_too_long';
+  const successTransactionButError = paymentIntentStatus === 'success_with_error';
 
   if (success) {
     return (
@@ -131,6 +106,34 @@ const StripeTransactionModal = ({
         </Group>
         <Divider mx="-lg" />
         {successMessage ? <>{successMessage}</> : <Text>Thank you for your purchase!</Text>}
+        <Button
+          onClick={() => {
+            closeAllModals();
+            onClose();
+          }}
+        >
+          Close
+        </Button>
+      </Stack>
+    );
+  }
+
+  if (successTransactionButError) {
+    return (
+      <Stack>
+        <Group position="apart" noWrap>
+          <Text size="lg" weight={700}>
+            Complete your transaction
+          </Text>
+        </Group>
+        <Divider mx="-lg" />
+        <Text>
+          Thank you, we have received your payment but something seems to have gone wrong. Please{' '}
+          <Text component="span" weight="bold">
+            DO NOT ATTEMPT TO PURCHASE AGAIN
+          </Text>
+          . If your Buzz is not delivered within the next few minutes, please contact support.
+        </Text>
         <Button
           onClick={() => {
             closeAllModals();
@@ -164,12 +167,59 @@ const StripeTransactionModal = ({
         </Group>
         <Divider mx="-lg" />
         {message && <>{message}</>}
+
+        {(supportedUserPaymentMethods?.length ?? 0) > 0 && (
+          <Stack>
+            <Divider mx="-lg" />
+            <Text weight="bold">Saved payment methods</Text>
+            <Stack spacing="sm">
+              {supportedUserPaymentMethods.map((paymentMethod) => (
+                <PaymentMethodItem key={paymentMethod.id} paymentMethod={paymentMethod}>
+                  <Button
+                    color="blue"
+                    onClick={async () => {
+                      const paymentIntent = await onConfirmPayment(paymentMethod.id);
+                      trackAction({
+                        type: 'PurchaseFunds_Confirm',
+                        details: { ...metadata, method: paymentMethod.type },
+                      }).catch(() => undefined);
+                    }}
+                    disabled={processingPayment || processingTooLong || successTransactionButError}
+                    loading={processingPayment}
+                  >
+                    Pay ${formatPriceForDisplay(unitAmount, currency)}
+                  </Button>
+                </PaymentMethodItem>
+              ))}
+            </Stack>
+            <Divider mx="-lg" />
+            <Text weight="bold">Add new payment method</Text>
+          </Stack>
+        )}
+        {setupFuturePayment && (
+          <Text size="sm">
+            Don&rsquo;t see your payment method?{' '}
+            <Text color="blue.4" component="button" onClick={setupFuturePaymentToggle}>
+              Click here
+            </Text>
+          </Text>
+        )}
+        {!setupFuturePayment && (
+          <Text size="sm">
+            <Text color="blue.4" component="button" onClick={setupFuturePaymentToggle}>
+              Back to default payment methods
+            </Text>
+          </Text>
+        )}
         <PaymentElement id="payment-element" options={paymentElementOptions} />
         {errorMessage && (
           <Text color="red" size="sm">
             {errorMessage}
           </Text>
         )}
+
+        <RecaptchaNotice />
+
         <Group position="right">
           <Button
             variant="filled"
@@ -182,11 +232,11 @@ const StripeTransactionModal = ({
             }}
             disabled={processingPayment}
           >
-            {processingTooLong ? 'Close' : 'Cancel'}
+            {processingTooLong || successTransactionButError ? 'Close' : 'Cancel'}
           </Button>
           <Button
             component="button"
-            disabled={processingPayment || processingTooLong}
+            disabled={processingPayment || processingTooLong || successTransactionButError}
             loading={processingPayment}
             type="submit"
           >
@@ -199,6 +249,108 @@ const StripeTransactionModal = ({
     </form>
   );
 };
+
+type Props = {
+  successMessage?: React.ReactNode;
+  message?: React.ReactNode;
+  unitAmount: number;
+  currency?: Currency;
+  onSuccess?: (stripePaymentIntentId: string) => Promise<void>;
+  metadata: PaymentIntentMetadataSchema;
+  paymentMethodTypes?: string[];
+  setupFuturePayment?: boolean;
+  setupFuturePaymentToggle?: () => void;
+};
+
+const { openModal, Modal } = createContextModal<Props>({
+  name: 'stripeTransaction',
+  withCloseButton: false,
+  size: 'lg',
+  radius: 'lg',
+  closeOnEscape: false,
+  closeOnClickOutside: false,
+  zIndex: 400,
+  Element: ({
+    context,
+    props: {
+      unitAmount,
+      currency = Currency.USD,
+      metadata,
+      paymentMethodTypes: desiredPaymentMethodTypes,
+      ...props
+    },
+  }) => {
+    const theme = useMantineTheme();
+    const stripePromise = useStripePromise();
+
+    const {
+      clientSecret,
+      paymentMethodTypes,
+      isLoading,
+      setupFuturePayment,
+      setSetupFuturePayment,
+      error,
+    } = usePaymentIntent({
+      currency,
+      metadata,
+      unitAmount,
+      desiredPaymentMethodTypes,
+    });
+
+    const { isLoading: isLoadingPaymentMethods } = useUserPaymentMethods({
+      enabled: !!clientSecret,
+    });
+
+    if (isLoading || (isLoadingPaymentMethods && !error)) {
+      return (
+        <Center>
+          <Loader variant="bars" />
+        </Center>
+      );
+    }
+
+    const handleClose = () => {
+      context.close();
+    };
+
+    if (error || !clientSecret) {
+      return (
+        <Error
+          error={
+            error ??
+            'We are unable to connect you with Stripe services to perform a transaction. Please try again later.'
+          }
+          onClose={handleClose}
+        />
+      );
+    }
+
+    const options: StripeElementsOptions = {
+      clientSecret,
+      appearance: { theme: theme.colorScheme === 'dark' ? 'night' : 'stripe' },
+      locale: 'en',
+    };
+
+    return (
+      <Elements stripe={stripePromise} key={clientSecret} options={options}>
+        <StripeTransactionModal
+          clientSecret={clientSecret}
+          key={clientSecret}
+          onClose={handleClose}
+          unitAmount={unitAmount}
+          currency={currency}
+          metadata={metadata}
+          // This is the payment methods we will end up supporting based off of
+          // the payment intent instead of the ones we "wish" to support.
+          paymentMethodTypes={paymentMethodTypes}
+          setupFuturePayment={setupFuturePayment}
+          setupFuturePaymentToggle={() => setSetupFuturePayment(!setupFuturePayment)}
+          {...props}
+        />
+      </Elements>
+    );
+  },
+});
 
 export const openStripeTransactionModal = openModal;
 export default Modal;

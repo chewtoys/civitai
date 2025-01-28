@@ -1,143 +1,39 @@
-/* eslint-disable react-hooks/rules-of-hooks */
-import { Alert, createStyles, Group, MantineColor, Stack, Sx, Text } from '@mantine/core';
-import { useLocalStorage } from '@mantine/hooks';
-import { useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import useIsClient from '~/hooks/useIsClient';
-import { trpc } from '~/utils/trpc';
+import { useGetAnnouncements } from '~/components/Announcements/announcements.utils';
+import React, { useRef } from 'react';
+import { Announcement } from '~/components/Announcements/Announcement';
+import { Carousel } from '@mantine/carousel';
+import autoplay from 'embla-carousel-autoplay';
+import { useContainerWidth } from '~/components/ContainerProvider/ContainerProvider';
+import { useDebouncedValue } from '@mantine/hooks';
 
-export const Announcements = (props: AnnouncementsProps) => {
-  const isClient = useIsClient();
-  const isIndex = isClient && window.location.pathname === '/';
+export function Announcements() {
+  const autoplayRef = useRef(autoplay({ delay: 10000 }));
+  const { data } = useGetAnnouncements();
+  const width = useContainerWidth();
+  const widthDebounced = useDebouncedValue(width, 50);
 
-  const dismissed: number[] = useMemo(() => {
-    if (!isClient) return [];
+  const announcements = data.filter((x) => !x.dismissed);
 
-    const dismissedIds = Object.keys(localStorage)
-      .filter((key) => key.startsWith('announcement-'))
-      .map((key) => Number(key.replace('announcement-', '')));
-
-    if (dismissedIds.length === 0 && localStorage.getItem('welcomeAlert') === 'false')
-      dismissedIds.push(0);
-
-    return dismissedIds;
-  }, [isClient]);
-
-  const { data: latestAnnouncement, isFetching } = trpc.announcement.getLatest.useQuery(
-    { dismissed },
-    { enabled: isClient && (dismissed.length > 0 || !isIndex) }
-  );
-
-  if (!isClient) return null;
-  if (!dismissed.length && isIndex) return <WelcomeAnnouncement {...props} />;
-  if (isFetching || !latestAnnouncement) return null;
-
-  return <Announcement {...latestAnnouncement} {...props} />;
-};
-
-type AnnouncementsProps = {
-  className?: string;
-  sx?: Sx;
-};
-
-const WelcomeAnnouncement = (props: AnnouncementsProps) => (
-  <Announcement
-    id={0}
-    emoji="👋"
-    title="Welcome to Civitai!"
-    content="Browse, share, and review custom AI art models, [learn more...](/content/guides/what-is-civitai)"
-    {...props}
-  />
-);
-
-const Announcement = ({
-  id,
-  title,
-  content,
-  color = 'blue',
-  emoji = '👋',
-  className = '',
-  sx,
-}: AnnouncementProps) => {
-  const { classes, cx } = useStyles({ color });
-  const [dismissed, setDismissed] = useLocalStorage({
-    key: `announcement-${id}`,
-    defaultValue: false,
-  });
-
-  if (dismissed) return null;
+  if (!announcements.length) return null;
 
   return (
-    <Alert
-      color={color}
-      py={8}
-      className={cx(className, classes.announcement)}
-      onClose={() => setDismissed(true)}
-      sx={sx}
-      withCloseButton
-    >
-      <Group spacing="xs" noWrap>
-        {emoji && (
-          <Text size={36} p={0} sx={{ lineHeight: 1.2 }}>
-            {emoji}
-          </Text>
-        )}
-        <Stack spacing={0}>
-          <Text size="md" weight={500} className={classes.title} mb={4}>
-            {title}
-          </Text>
-          <Text size="sm" className={classes.text}>
-            <ReactMarkdown allowedElements={['a']} unwrapDisallowed className="markdown-content">
-              {content}
-            </ReactMarkdown>
-          </Text>
-        </Stack>
-      </Group>
-    </Alert>
+    // Required custom class to apply certain styles based on peer elements
+    // eslint-disable-next-line tailwindcss/no-custom-classname
+    <div className="announcements peer container mb-3">
+      <Carousel
+        key={`${widthDebounced}`}
+        withIndicators={announcements.length > 1}
+        withControls={false}
+        slideGap="md"
+        plugins={[autoplayRef.current]}
+        loop
+      >
+        {announcements.map((announcement) => (
+          <Carousel.Slide key={announcement.id}>
+            <Announcement announcement={announcement} className="h-full" />
+          </Carousel.Slide>
+        ))}
+      </Carousel>
+    </div>
   );
-};
-
-type AnnouncementProps = {
-  id: number;
-  title: string;
-  content: string;
-  emoji?: string | null;
-  color?: MantineColor;
-  className?: string;
-  sx?: Sx;
-};
-
-const useStyles = createStyles((theme, { color }: { color: MantineColor }) => ({
-  announcement: {
-    minWidth: 300,
-    maxWidth: 600,
-    top: 'calc(var(--mantine-header-height,0) + 16px)',
-    position: 'sticky',
-    margin: '0 auto',
-    alignSelf: 'center',
-    zIndex: 11,
-    boxShadow: theme.shadows.md,
-    border: `1px solid ${
-      theme.colorScheme === 'dark' ? theme.colors[color][9] : theme.colors[color][2]
-    }`,
-    backgroundColor:
-      theme.colorScheme === 'dark'
-        ? theme.fn.darken(theme.colors[color][8], 0.5)
-        : theme.colors[color][1],
-    [theme.fn.smallerThan('md')]: {
-      marginLeft: -5,
-      marginRight: -5,
-    },
-  },
-  title: {
-    color: theme.colorScheme === 'dark' ? theme.colors[color][0] : theme.colors[color][7],
-    lineHeight: 1.1,
-  },
-  text: {
-    color: theme.colorScheme === 'dark' ? theme.colors[color][2] : theme.colors[color][9],
-    lineHeight: 1.15,
-    '& > div > a': {
-      color: theme.colorScheme === 'dark' ? theme.colors[color][1] : theme.colors[color][8],
-    },
-  },
-}));
+}

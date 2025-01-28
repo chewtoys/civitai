@@ -1,8 +1,17 @@
-import { ReviewReactions } from '@prisma/client';
+import { ReviewReactions } from '~/shared/utils/prisma/enums';
 import { z } from 'zod';
+import { CacheTTL } from '~/server/common/constants';
 
 import { ReviewFilter, ReviewSort } from '~/server/common/enums';
+import { RateLimit } from '~/server/middleware.trpc';
 import { getSanitizedStringSchema } from '~/server/schema/utils.schema';
+
+export const commentRateLimits: RateLimit[] = [
+  { limit: 10, period: CacheTTL.hour },
+  { limit: 4 * 10, period: CacheTTL.day },
+  { limit: 60, period: CacheTTL.hour, userReq: (user) => user.meta?.scores?.total >= 1000 },
+  { limit: 8 * 60, period: CacheTTL.day, userReq: (user) => user.meta?.scores?.total >= 1000 },
+];
 
 export type GetAllCommentsSchema = z.infer<typeof getAllCommentsSchema>;
 export const getAllCommentsSchema = z
@@ -26,7 +35,7 @@ export const commentUpsertInput = z.object({
   reviewId: z.number().nullish(),
   parentId: z.number().nullish(),
   content: getSanitizedStringSchema({
-    allowedTags: ['div', 'strong', 'p', 'em', 'u', 's', 'a', 'br'],
+    allowedTags: ['div', 'strong', 'p', 'em', 'u', 's', 'a', 'br', 'span'],
   }).refine((data) => {
     return data && data.length > 0 && data !== '<p></p>';
   }, 'Cannot be empty'),

@@ -1,7 +1,6 @@
 import { InferGetServerSidePropsType } from 'next';
 
 import { PostDetail } from '~/components/Post/Detail/PostDetail';
-import { parseBrowsingMode } from '~/server/createContext';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { isNumber } from '~/utils/type-guards';
 
@@ -19,17 +18,18 @@ export default function PostDetailPage({
 export const getServerSideProps = createServerSideProps({
   useSSG: true,
   useSession: true,
-  resolver: async ({ ctx, ssg, session = null }) => {
+  resolver: async ({ ctx, ssg, session }) => {
     const params = (ctx.params ?? {}) as { postId: string };
     const postId = Number(params.postId);
     if (!isNumber(postId)) return { notFound: true };
 
     await ssg?.post.get.prefetch({ id: postId });
-    //TODO.Briant - include browsingMode
     await ssg?.image.getInfinite.prefetchInfinite({
       postId,
-      browsingMode: parseBrowsingMode(ctx.req.cookies, session),
+      pending: !!session?.user,
     });
+    await ssg?.post.getContestCollectionDetails.prefetch({ id: postId });
+    await ssg?.hiddenPreferences.getHidden.prefetch();
 
     return { props: { postId } };
   },

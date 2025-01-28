@@ -4,7 +4,7 @@ type TagActivities = 'moderateTag' | 'disableTag' | 'addTag' | 'deleteTag';
 
 type ModelModActivity = {
   entityType: 'model';
-  activity: TagActivities | 'review';
+  activity: TagActivities | 'review' | 'moderateFlag';
 };
 
 type ModelVersionModActivity = {
@@ -19,7 +19,7 @@ type ImageTagModActivity = {
 
 type ImageModActivity = {
   entityType: 'image';
-  activity: TagActivities | 'review';
+  activity: TagActivities | 'review' | 'setNsfwLevel' | 'resolveAppeal';
 };
 
 type ArticleModActivity = {
@@ -32,6 +32,16 @@ type ReportModActivity = {
   activity: 'review';
 };
 
+type ImpersonateModActivity = {
+  entityType: 'impersonate';
+  activity: 'on' | 'off'; // off is currently not used
+};
+
+type UserModActivity = {
+  entityType: 'user';
+  activity: 'setRewardsEligibility';
+};
+
 type ModActivity = {
   entityId?: number | number[];
 } & (
@@ -41,6 +51,8 @@ type ModActivity = {
   | ImageModActivity
   | ReportModActivity
   | ArticleModActivity
+  | ImpersonateModActivity
+  | UserModActivity
 );
 
 export async function trackModActivity(userId: number, input: ModActivity) {

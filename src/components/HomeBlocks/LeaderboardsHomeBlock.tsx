@@ -10,22 +10,23 @@ import {
   Text,
 } from '@mantine/core';
 import { useDebouncedState } from '@mantine/hooks';
-import { NextLink } from '@mantine/next';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { IconArrowRight, IconChevronLeft, IconChevronRight } from '@tabler/icons-react';
 import { Fragment, useCallback, useRef } from 'react';
 import { HomeBlockHeaderMeta } from '~/components/HomeBlocks/components/HomeBlockHeaderMeta';
 import { LeaderHomeBlockCreatorItem } from '~/components/HomeBlocks/components/LeaderboardHomeBlockCreatorItem';
 import { HomeBlockWrapper } from '~/components/HomeBlocks/HomeBlockWrapper';
-import { useMasonryContainerContext } from '~/components/MasonryColumns/MasonryContainer';
 import { HomeBlockMetaSchema } from '~/server/schema/home-block.schema';
 import { trpc } from '~/utils/trpc';
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { useMasonryContext } from '~/components/MasonryColumns/MasonryProvider';
 
-type Props = { homeBlockId: number; metadata: HomeBlockMetaSchema };
+type Props = { homeBlockId: number; metadata: HomeBlockMetaSchema; showAds?: boolean };
 
 const useStyles = createStyles<string, { columnWidth?: number; columnGap?: number }>(
   (theme, { columnGap, columnWidth }, getRef) => ({
     carousel: {
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         marginRight: -theme.spacing.md,
         marginLeft: -theme.spacing.md,
       },
@@ -41,7 +42,7 @@ const useStyles = createStyles<string, { columnWidth?: number; columnGap?: numbe
         opacity: 1,
       },
 
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         display: 'none',
       },
     },
@@ -60,7 +61,7 @@ const useStyles = createStyles<string, { columnWidth?: number; columnGap?: numbe
       overflowX: 'visible',
       paddingBottom: 4,
 
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         marginRight: -theme.spacing.md,
         marginLeft: -theme.spacing.md,
         paddingLeft: theme.spacing.md,
@@ -98,7 +99,7 @@ const useStyles = createStyles<string, { columnWidth?: number; columnGap?: numbe
   })
 );
 
-export const LeaderboardsHomeBlock = ({ ...props }: Props) => {
+export const LeaderboardsHomeBlock = ({ showAds, ...props }: Props) => {
   return (
     <HomeBlockWrapper py={32}>
       <LeaderboardsHomeBlockContent {...props} />
@@ -107,8 +108,11 @@ export const LeaderboardsHomeBlock = ({ ...props }: Props) => {
 };
 
 export const LeaderboardsHomeBlockContent = ({ homeBlockId, metadata }: Props) => {
-  const { data: homeBlock, isLoading } = trpc.homeBlock.getHomeBlock.useQuery({ id: homeBlockId });
-  const { columnWidth, columnGap, columnCount } = useMasonryContainerContext();
+  const { data: homeBlock, isLoading } = trpc.homeBlock.getHomeBlock.useQuery(
+    { id: homeBlockId },
+    { trpc: { context: { skipBatch: true } } }
+  );
+  const { columnWidth, columnGap, columnCount } = useMasonryContext();
   const { classes, cx } = useStyles({
     columnGap,
     columnWidth,
@@ -176,7 +180,7 @@ export const LeaderboardsHomeBlockContent = ({ homeBlockId, metadata }: Props) =
                       <Group position="apart" align="center">
                         <Text size="lg">{leaderboard.title}</Text>
                         <Button
-                          component={NextLink}
+                          component={Link}
                           href={`/leaderboard/${leaderboard.id}`}
                           rightIcon={<IconArrowRight size={16} />}
                           variant="subtle"

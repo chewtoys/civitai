@@ -1,11 +1,25 @@
-import { toggleReaction } from './../services/reaction.service';
-import { ToggleReactionInput } from '~/server/schema/reaction.schema';
+import { Prisma } from '@prisma/client';
+import { EntityMetric_MetricType_Type, ReviewReactions } from '~/shared/utils/prisma/enums';
+import { NotificationCategory } from '~/server/common/enums';
 import { Context } from '~/server/createContext';
-import { handleLogError, throwDbError } from '~/server/utils/errorHandling';
-import { dbRead } from '../db/client';
-import { ReactionType } from '../clickhouse/client';
-import { NsfwLevel } from '@prisma/client';
+import { notifDbRead } from '~/server/db/notifDb';
+import { logToAxiom } from '~/server/logging/client';
+import { imageReactionMilestones } from '~/server/notifications/reaction.notifications';
 import { encouragementReward, goodContentReward } from '~/server/rewards';
+import { ToggleReactionInput } from '~/server/schema/reaction.schema';
+import { getContestsFromEntity } from '~/server/services/collection.service';
+import { createNotification } from '~/server/services/notification.service';
+import { handleLogError, throwBadRequestError, throwDbError } from '~/server/utils/errorHandling';
+import { updateEntityMetric } from '~/server/utils/metric-helpers';
+import {
+  getNsfwLevelDeprecatedReverseMapping,
+  NsfwLevelDeprecated,
+} from '~/shared/constants/browsingLevel.constants';
+import { isFutureDate } from '~/utils/date-helpers';
+import { isDefined } from '~/utils/type-guards';
+import { ReactionType } from '../clickhouse/client';
+import { dbRead } from '../db/client';
+import { toggleReaction } from './../services/reaction.service';
 
 async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | 'created') {
   const shared = {
@@ -21,7 +35,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
           id: input.entityId,
         },
         select: {
-          nsfw: true,
+          nsfwLevel: true,
           userId: true,
         },
       });
@@ -29,8 +43,8 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
       if (image) {
         return {
           type: `Image_${action}`,
-          nsfw: image.nsfw,
-          userId: image.userId,
+          nsfw: getNsfwLevelDeprecatedReverseMapping(image.nsfwLevel),
+          ownerId: image.userId,
           ...shared,
         };
       }
@@ -41,7 +55,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
           id: input.entityId,
         },
         select: {
-          nsfw: true,
+          nsfwLevel: true,
           userId: true,
         },
       });
@@ -49,8 +63,8 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
       if (post) {
         return {
           type: `Post_${action}`,
-          nsfw: post.nsfw ? NsfwLevel.Mature : NsfwLevel.None,
-          userId: post.userId,
+          nsfw: getNsfwLevelDeprecatedReverseMapping(post.nsfwLevel),
+          ownerId: post.userId,
           ...shared,
         };
       }
@@ -61,7 +75,7 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
           id: input.entityId,
         },
         select: {
-          nsfw: true,
+          nsfwLevel: true,
           userId: true,
         },
       });
@@ -69,8 +83,8 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
       if (article) {
         return {
           type: `Article_${action}`,
-          nsfw: article.nsfw ? NsfwLevel.Mature : NsfwLevel.None,
-          userId: article.userId,
+          nsfw: getNsfwLevelDeprecatedReverseMapping(article.nsfwLevel),
+          ownerId: article.userId,
           ...shared,
         };
       }
@@ -83,8 +97,8 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
       if (commentOld) {
         return {
           type: `Comment_${action}`,
-          nsfw: NsfwLevel.None,
-          userId: commentOld.userId,
+          nsfw: NsfwLevelDeprecated.None,
+          ownerId: commentOld.userId,
           ...shared,
         };
       }
@@ -97,8 +111,8 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
       if (commentV2) {
         return {
           type: `CommentV2_${action}`,
-          nsfw: NsfwLevel.None,
-          userId: commentV2.userId,
+          nsfw: NsfwLevelDeprecated.None,
+          ownerId: commentV2.userId,
           ...shared,
         };
       }
@@ -111,8 +125,8 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
       if (question) {
         return {
           type: `Question_${action}`,
-          nsfw: NsfwLevel.None,
-          userId: question?.userId,
+          nsfw: NsfwLevelDeprecated.None,
+          ownerId: question?.userId,
           ...shared,
         };
       }
@@ -125,8 +139,8 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
       if (answer) {
         return {
           type: `Answer_${action}`,
-          nsfw: NsfwLevel.None,
-          userId: answer.userId,
+          nsfw: NsfwLevelDeprecated.None,
+          ownerId: answer.userId,
           ...shared,
         };
       }
@@ -139,14 +153,21 @@ async function getTrackerEvent(input: ToggleReactionInput, result: 'removed' | '
       if (bountyEntry) {
         return {
           type: `BountyEntry_${action}`,
-          nsfw: NsfwLevel.None,
-          userId: bountyEntry?.userId,
+          nsfw: NsfwLevelDeprecated.None,
+          ownerId: bountyEntry?.userId,
           ...shared,
         };
       }
       break;
   }
 }
+
+const reactionMetricMap: { [p in ReviewReactions]?: EntityMetric_MetricType_Type } = {
+  Like: 'ReactionLike',
+  Heart: 'ReactionHeart',
+  Laugh: 'ReactionLaugh',
+  Cry: 'ReactionCry',
+};
 
 export const toggleReactionHandler = async ({
   ctx,
@@ -156,6 +177,27 @@ export const toggleReactionHandler = async ({
   input: ToggleReactionInput;
 }) => {
   try {
+    if (input.entityType === 'image') {
+      // We are only doing this for image contests for now. Because the user
+      // gets an instant feedback, this shouldn't have too bad an impact if any at all.
+      const contests = await getContestsFromEntity({
+        entityType: input.entityType,
+        entityId: input.entityId,
+      });
+
+      if (
+        contests.find(
+          (contest) =>
+            !!contest.metadata?.votingPeriodStart &&
+            isFutureDate(contest.metadata?.votingPeriodStart)
+        )
+      ) {
+        throw throwBadRequestError(
+          'Cannot react to an image in a contest before the voting period starts.'
+        );
+      }
+    }
+
     const result = await toggleReaction({ ...input, userId: ctx.user.id });
     const trackerEvent = await getTrackerEvent(input, result);
     if (trackerEvent) {
@@ -167,6 +209,19 @@ export const toggleReactionHandler = async ({
         .catch(handleLogError);
     }
 
+    if (input.entityType === 'image') {
+      const metricTypeFromInput = reactionMetricMap[input.reaction];
+      if (metricTypeFromInput) {
+        await updateEntityMetric({
+          ctx,
+          entityType: 'Image',
+          entityId: input.entityId,
+          metricType: metricTypeFromInput,
+          amount: result === 'created' ? 1 : -1,
+        });
+      }
+    }
+
     if (result == 'created') {
       await Promise.all([
         encouragementReward
@@ -175,9 +230,9 @@ export const toggleReactionHandler = async ({
               type: input.entityType,
               reactorId: ctx.user.id,
               entityId: input.entityId,
-              ownerId: trackerEvent?.userId,
+              ownerId: trackerEvent?.ownerId,
             },
-            ctx.ip
+            { ip: ctx.ip, fingerprint: ctx.fingerprint }
           )
           .catch(handleLogError),
         goodContentReward
@@ -186,15 +241,88 @@ export const toggleReactionHandler = async ({
               type: input.entityType,
               reactorId: ctx.user.id,
               entityId: input.entityId,
-              ownerId: trackerEvent?.userId,
+              ownerId: trackerEvent?.ownerId,
             },
-            ctx.ip
+            { ip: ctx.ip, fingerprint: ctx.fingerprint }
           )
           .catch(handleLogError),
       ]);
+
+      await createReactionNotification(input).catch();
     }
     return result;
   } catch (error) {
     throw throwDbError(error);
+  }
+};
+
+const createReactionNotification = async ({ entityType, entityId }: ToggleReactionInput) => {
+  if (entityType === 'image') {
+    const cnt = await dbRead.imageReaction.count({
+      where: { imageId: entityId },
+    });
+
+    // const { reactionCount: cnt = 0 } =
+    //   (await dbRead.imageMetric.findFirst({
+    //     where: { imageId: entityId, timeframe: MetricTimeframe.AllTime },
+    //     select: { reactionCount: true },
+    //   })) ?? {};
+
+    if (!cnt) return;
+
+    const match = imageReactionMilestones.toReversed().find((e) => e <= cnt);
+    if (!match) return;
+
+    const type = 'image-reaction-milestone';
+    const key = `${type}:${entityId}:${match}`;
+
+    const query = await notifDbRead.cancellableQuery<{ exists: number }>(Prisma.sql`
+      SELECT 1 as exists
+      FROM "Notification"
+      WHERE key = ${key}
+    `);
+    const items = await query.result();
+    if (items.length > 0) return;
+
+    const resource = await dbRead.image.findFirst({
+      where: { id: entityId },
+      select: {
+        userId: true,
+        id: true,
+        postId: true,
+        resourceHelper: { select: { modelName: true } },
+      },
+    });
+
+    if (!resource) {
+      logToAxiom(
+        {
+          type: 'warning',
+          name: 'Failed to create notification',
+          details: { key: type },
+          message: 'Could not find resource',
+        },
+        'notifications'
+      ).catch();
+      return;
+    }
+
+    const modelNames = resource.resourceHelper.map((r) => r.modelName).filter(isDefined);
+
+    const details = {
+      version: 2,
+      imageId: resource.id,
+      postId: resource.postId,
+      models: modelNames,
+      reactionCount: match,
+    };
+
+    await createNotification({
+      type,
+      key,
+      category: NotificationCategory.Milestone,
+      userId: resource.userId,
+      details,
+    }).catch();
   }
 };

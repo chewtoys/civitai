@@ -1,9 +1,19 @@
 import { VotableTagConnectorInput } from '~/server/schema/tag.schema';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import { ActionIcon, Badge, Group, HoverCard, useMantineTheme, Text, Divider } from '@mantine/core';
+import {
+  ActionIcon,
+  Badge,
+  Group,
+  HoverCard,
+  useMantineTheme,
+  Text,
+  Divider,
+  Menu,
+  UnstyledButton,
+} from '@mantine/core';
 import { useCallback, useRef } from 'react';
-import { TagType, NsfwLevel } from '@prisma/client';
+import { TagType } from '~/shared/utils/prisma/enums';
 import {
   IconArrowBigDown,
   IconArrowBigUp,
@@ -14,23 +24,31 @@ import {
 } from '@tabler/icons-react';
 import { LoginPopover } from '~/components/LoginPopover/LoginPopover';
 import { getTagDisplayName } from '~/libs/tags';
-import Link from 'next/link';
-import { nsfwLevelUI } from '~/libs/moderation';
 import { constants } from '~/server/common/constants';
-import { NextLink } from '@mantine/next';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { Countdown } from '~/components/Countdown/Countdown';
+import { NsfwLevel } from '~/server/common/enums';
+import {
+  votableTagColors,
+  getIsSafeBrowsingLevel,
+} from '~/shared/constants/browsingLevel.constants';
+import { IconDotsVertical } from '@tabler/icons-react';
+import { useHiddenPreferencesContext } from '~/components/HiddenPreferences/HiddenPreferencesProvider';
+import { useToggleHiddenPreferences } from '~/hooks/hidden-preferences';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 
 type VotableTagProps = VotableTagConnectorInput & {
   tagId: number;
   initialVote?: number;
   type: TagType;
-  nsfw: NsfwLevel;
+  nsfwLevel: NsfwLevel;
   name: string;
   score: number;
   needsReview?: boolean;
   concrete?: boolean;
   lastUpvote?: Date | null;
   onChange: (changed: { name: string; vote: number }) => void;
+  highlightContested?: boolean;
 };
 
 type VotableTagStore = {
@@ -67,28 +85,29 @@ export function VotableTag({
   entityId,
   tagId,
   initialVote = 0,
-  type,
-  nsfw,
+  nsfwLevel = 1,
   name,
   score,
   needsReview = false,
   concrete = false,
   lastUpvote,
   onChange,
+  highlightContested,
 }: VotableTagProps) {
+  const currentUser = useCurrentUser();
   const clickedRef = useRef(false);
   const key = getKey({ entityType, entityId, name });
-  const vote = useVotableTagStore(useCallback((state) => state.votes[key], [key])) ?? initialVote;
+  const vote = useVotableTagStore(useCallback((state) => state.votes[key] ?? initialVote, [key])); //eslint-disable-line
   const upvoteDate = useVotableTagStore(useCallback((state) => state.upvoteDates[key], [key]));
-  const setVote = useVotableTagStore((state) => state.setVote);
+  const moderatorVariant = highlightContested && needsReview
 
   const theme = useMantineTheme();
-  const isModeration = type === 'Moderation';
-  const nsfwUI = isModeration ? nsfwLevelUI[nsfw] : undefined;
-  const voteColor = nsfwUI ? theme.colors[nsfwUI.color][nsfwUI.shade] : theme.colors.blue[5];
+  const isNsfw = !getIsSafeBrowsingLevel(nsfwLevel);
+  const { color, shade } = votableTagColors[nsfwLevel][theme.colorScheme];
+  const voteColor = isNsfw ? theme.colors[color][shade] : theme.colors.blue[5];
   const badgeColor = theme.fn.variant({
-    color: nsfwUI?.color ?? 'gray',
-    variant: !!nsfwUI ? 'light' : 'filled',
+    color: moderatorVariant ? 'grape' : color,
+    variant: theme.colorScheme === 'dark' ? (isNsfw ? 'light' : 'filled') : 'light',
   });
   const badgeBorder = theme.fn.lighten(
     needsReview || !concrete
@@ -99,7 +118,7 @@ export function VotableTag({
   const badgeBg = theme.fn.rgba(badgeColor.background ?? theme.colors.gray[4], 0.3);
   const progressBg = theme.fn.rgba(
     badgeColor.background ?? theme.colors.gray[4],
-    isModeration ? 0.4 : 0.8
+    isNsfw ? 0.4 : 0.8
   );
   const opacity = 0.2 + (Math.max(Math.min(score, 10), 0) / 10) * 0.8;
 
@@ -124,7 +143,6 @@ export function VotableTag({
 
     runDebouncer(() => {
       const value = vote !== 1 ? 1 : 0;
-      setVote({ entityId, entityType, name, vote: value });
       onChange({ name, vote: value });
     });
   };
@@ -135,7 +153,6 @@ export function VotableTag({
 
     runDebouncer(() => {
       const value = vote !== -1 ? -1 : 0;
-      setVote({ entityId, entityType, name, vote: value });
       onChange({ name, vote: value });
     });
   };
@@ -145,7 +162,6 @@ export function VotableTag({
     e.nativeEvent.stopImmediatePropagation();
 
     runDebouncer(() => {
-      setVote({ entityId, entityType, name, vote: 0 });
       onChange({ name, vote: 0 });
     });
   };
@@ -153,16 +169,14 @@ export function VotableTag({
   const canVote = tagId;
   let badge = (
     <Badge
-      component={NextLink}
-      radius="xs"
-      href={`/images?tags=${tagId}&view=feed`}
+      radius="sm"
       key={tagId}
       sx={{
         position: 'relative',
         background: badgeBg,
         borderColor: badgeBorder,
+        borderWidth: moderatorVariant ? 3 : 1,
         color: badgeColor.color,
-        cursor: 'pointer',
         userSelect: 'none',
 
         [`&:before`]: {
@@ -175,31 +189,54 @@ export function VotableTag({
           width: `${opacity * 100}%`,
         },
       }}
-      pl={canVote ? 0 : 4}
-      pr={0}
+      pl={canVote ? 3 : 4}
+      pr={!!currentUser ? 0 : undefined}
     >
-      <Group spacing={0}>
+      <Group spacing={0} noWrap>
         {canVote && (
           <LoginPopover>
-            <ActionIcon
-              variant="transparent"
-              size="sm"
-              onClick={handleUpvote}
-              color={vote === 1 ? voteColor : undefined}
-            >
+            <UnstyledButton onClick={handleUpvote} className="z-10">
               <IconArrowBigUp
                 strokeWidth={0}
-                fill={vote === 1 ? voteColor : 'rgba(255, 255, 255, 0.3)'}
+                fill={
+                  vote === 1
+                    ? voteColor
+                    : theme.colorScheme === 'dark'
+                    ? 'rgba(255, 255, 255, 0.3)'
+                    : 'rgba(0, 0, 0, 0.3)'
+                }
                 size="1rem"
               />
-            </ActionIcon>
+            </UnstyledButton>
           </LoginPopover>
+        )}
+        {canVote && (
+          <LoginPopover>
+            <UnstyledButton onClick={handleDownvote} className="z-10 mr-1">
+              <IconArrowBigDown
+                strokeWidth={0}
+                fill={
+                  vote === -1
+                    ? voteColor
+                    : theme.colorScheme === 'dark'
+                    ? 'rgba(255, 255, 255, 0.3)'
+                    : 'rgba(0, 0, 0, 0.3)'
+                }
+                size="1rem"
+              />
+            </UnstyledButton>
+          </LoginPopover>
+        )}
+        {!canVote && (
+          <ActionIcon variant="transparent" size="sm" onClick={handleRemove}>
+            <IconX strokeWidth={2.5} size=".75rem" />
+          </ActionIcon>
         )}
         {needsReview && (
           <IconFlag
             size={12}
             strokeWidth={4}
-            color={theme.colors.yellow[4]}
+            color={theme.colorScheme === 'dark' ? theme.colors.orange[9] : theme.colors.yellow[4]}
             style={{ marginRight: 2 }}
           />
         )}
@@ -207,28 +244,30 @@ export function VotableTag({
           <IconHourglassEmpty
             size={12}
             strokeWidth={4}
-            color={theme.colors.yellow[4]}
+            color={theme.colorScheme === 'dark' ? theme.colors.orange[9] : theme.colors.yellow[4]}
             style={{ marginRight: 2 }}
           />
         )}
-        <span title={!isVoting ? `Score: ${score}` : undefined} style={{ zIndex: 10 }}>
+        <Text
+          component={Link}
+          href={`/images?tags=${tagId}&view=feed`}
+          data-activity="tag-click:image"
+          title={!isVoting ? `Score: ${score}` : undefined}
+          style={{ zIndex: 10 }}
+        >
           {getTagDisplayName(name)}
-        </span>
-        {canVote && (
-          <LoginPopover>
-            <ActionIcon variant="transparent" size="sm" onClick={handleDownvote}>
-              <IconArrowBigDown
-                strokeWidth={0}
-                fill={vote === -1 ? voteColor : 'rgba(255, 255, 255, 0.3)'}
-                size="1rem"
-              />
-            </ActionIcon>
-          </LoginPopover>
-        )}
-        {!canVote && (
-          <ActionIcon variant="transparent" size="sm" onClick={handleRemove}>
-            <IconX strokeWidth={2.5} size=".75rem" />
-          </ActionIcon>
+        </Text>
+        {!!currentUser && (
+          <Menu withinPortal withArrow>
+            <Menu.Target>
+              <ActionIcon size="sm">
+                <IconDotsVertical strokeWidth={2.5} size=".75rem" />
+              </ActionIcon>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <TagContexDropdown tagId={tagId} name={name} />
+            </Menu.Dropdown>
+          </Menu>
         )}
       </Group>
     </Badge>
@@ -277,3 +316,17 @@ const debounce = (func: () => void, timeout = 1000) => {
     func();
   }, timeout);
 };
+
+function TagContexDropdown({ tagId, name }: { tagId: number; name: string }) {
+  const { hiddenTags } = useHiddenPreferencesContext();
+  const { mutate } = useToggleHiddenPreferences();
+  const isHidden = hiddenTags.get(tagId);
+
+  return (
+    <>
+      <Menu.Item onClick={() => mutate({ kind: 'tag', data: [{ id: tagId, name }] })}>
+        {isHidden ? 'Unhide' : 'Hide'} content with this tag
+      </Menu.Item>
+    </>
+  );
+}

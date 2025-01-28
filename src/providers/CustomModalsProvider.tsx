@@ -1,65 +1,44 @@
+import { ModalProps } from '@mantine/core';
 import { ContextModalProps, ModalsProvider } from '@mantine/modals';
 import dynamic from 'next/dynamic';
+import { openBountyEntryFilesModal } from '~/components/Bounty/BountyEntryFilesModal';
+import { openChatShareModal } from '~/components/Chat/ChatShareModal';
 import { openCivitaiLinkModal } from '~/components/CivitaiLink/CivitaiLinkWizard';
-import { openBlockModelTagsModal } from '~/components/Modals/BlockModelTagsModal';
-import { openReportModal } from '~/components/Modals/ReportModal';
-import { openRunStrategyModal } from '~/components/Modals/RunStrategyModal';
-import { openResourceReviewEditModal } from '~/components/ResourceReview/EditResourceReviewModal';
-import { openUnpublishModal } from '~/components/Modals/UnpublishModal';
-import { openAssociateModelsModal } from '~/components/Modals/AssociateModelsModal';
 import { openAddToCollectionModal } from '~/components/Collections/AddToCollectionModal';
 import { openManageHomeBlocksModal } from '~/components/HomeBlocks/ManageHomeBlocksModal';
-import { openBuyBuzzModal } from '~/components/Modals/BuyBuzzModal';
+import { openAssociateModelsModal } from '~/components/Modals/AssociateModelsModal';
+import { openBlockModelTagsModal } from '~/components/Modals/BlockModelTagsModal';
+import { openManageClubPostModal } from '~/components/Modals/ManageClubPostModal';
+import { openRunStrategyModal } from '~/components/Modals/RunStrategyModal';
 import { openSendTipModal } from '~/components/Modals/SendTipModal';
-import { openBountyEntryFilesModal } from '~/components/Bounty/BountyEntryFilesModal';
 import { openStripeTransactionModal } from '~/components/Modals/StripeTransactionModal';
-import { ModalProps } from '@mantine/core';
+import { openUnpublishModal } from '~/components/Modals/UnpublishModal';
 import { openUserProfileEditModal } from '~/components/Modals/UserProfileEditModal';
 
-const DynamicOnboardingModal = dynamic(
-  () => import('~/components/OnboardingModal/OnboardingModal')
-);
 const QuestionsInfoModal = dynamic(() => import('~/components/Questions/QuestionInfoModal'));
-const GeneratedImageLightbox = dynamic(
-  () => import('~/components/ImageGeneration/GeneratedImageLightbox')
-);
 const BlockModelTagsModal = dynamic(() => import('~/components/Modals/BlockModelTagsModal'));
-const ReportModal = dynamic(() => import('~/components/Modals/ReportModal'));
 const RunStrategyModal = dynamic(() => import('~/components/Modals/RunStrategyModal'));
 const AssociateModelsModal = dynamic(() => import('~/components/Modals/AssociateModelsModal'));
 const CivitaiLinkWizard = dynamic(() => import('~/components/CivitaiLink/CivitaiLinkWizard'));
-const ResourceReviewEdit = dynamic(
-  () => import('~/components/ResourceReview/EditResourceReviewModal')
-);
 const CivitaiLinkSuccessModal = dynamic(
   () => import('~/components/CivitaiLink/CivitaiLinkSuccessModal')
 );
 const UnpublishModal = dynamic(() => import('~/components/Modals/UnpublishModal'));
-const GenerationResourceModal = dynamic(
-  () => import('~/components/ImageGeneration/GenerationResources/GenerationResourceModal')
-);
-const ResourceSelectModal = dynamic(
-  () => import('~/components/ImageGeneration/GenerationForm/ResourceSelectModal')
-);
-const BoostModal = dynamic(() => import('~/components/ImageGeneration/BoostModal'));
 const AddToCollectionModal = dynamic(() => import('~/components/Collections/AddToCollectionModal'));
 const ManageHomeBlocksModal = dynamic(
   () => import('~/components/HomeBlocks/ManageHomeBlocksModal')
 );
-const BuyBuzzModal = dynamic(() => import('~/components/Modals/BuyBuzzModal'));
 const SendTipModal = dynamic(() => import('~/components/Modals/SendTipModal'));
 const BountyEntryFilesModal = dynamic(() => import('~/components/Bounty/BountyEntryFilesModal'));
 const StripeTransactionModal = dynamic(() => import('~/components/Modals/StripeTransactionModal'));
 const UserProfileEditModal = dynamic(() => import('~/components/Modals/UserProfileEditModal'));
+const ManageClubPostModal = dynamic(() => import('~/components/Modals/ManageClubPostModal'));
+const ChatShareModal = dynamic(() => import('~/components/Chat/ChatShareModal'));
 
 const registry = {
   blockModelTags: {
     Component: BlockModelTagsModal,
     fn: openBlockModelTagsModal,
-  },
-  report: {
-    Component: ReportModal,
-    fn: openReportModal,
   },
   unpublishModel: {
     Component: UnpublishModal,
@@ -73,10 +52,6 @@ const registry = {
     Component: CivitaiLinkWizard,
     fn: openCivitaiLinkModal,
   },
-  resourceReviewEdit: {
-    Component: ResourceReviewEdit,
-    fn: openResourceReviewEditModal,
-  },
   associateModels: {
     Component: AssociateModelsModal,
     fn: openAssociateModelsModal,
@@ -88,10 +63,6 @@ const registry = {
   manageHomeBlocks: {
     Component: ManageHomeBlocksModal,
     fn: openManageHomeBlocksModal,
-  },
-  buyBuzz: {
-    Component: BuyBuzzModal,
-    fn: openBuyBuzzModal,
   },
   sendTip: {
     Component: SendTipModal,
@@ -108,6 +79,18 @@ const registry = {
   userProfileEditModal: {
     Component: UserProfileEditModal,
     fn: openUserProfileEditModal,
+  },
+  manageClubPostModal: {
+    Component: ManageClubPostModal,
+    fn: openManageClubPostModal,
+  },
+  // imageGenQualityFeedbackModal: {
+  //   Component: GenQualityFeedbackModal,
+  //   fn: openGenQualityFeedbackModal,
+  // },
+  chatShareModal: {
+    Component: ChatShareModal,
+    fn: openChatShareModal,
   },
 };
 
@@ -128,12 +111,7 @@ export const CustomModalsProvider = ({ children }: { children: React.ReactNode }
       }}
       modals={
         {
-          onboarding: DynamicOnboardingModal,
           questionsInfo: QuestionsInfoModal,
-          generatedImageLightbox: GeneratedImageLightbox,
-          generationResourceModal: GenerationResourceModal,
-          resourceSelectModal: ResourceSelectModal,
-          boostModal: BoostModal,
           'civitai-link-success': CivitaiLinkSuccessModal,
           ...(Object.keys(registry) as Array<keyof typeof registry>).reduce<any>((acc, key) => {
             acc[key] = registry[key].Component;
@@ -143,7 +121,7 @@ export const CustomModalsProvider = ({ children }: { children: React.ReactNode }
       }
       // Setting zIndex so confirm modals popup above everything else
       modalProps={{
-        zIndex: 300,
+        zIndex: 400,
       }}
     >
       {children}

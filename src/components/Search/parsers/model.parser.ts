@@ -7,7 +7,7 @@ import { IMAGES_SEARCH_INDEX, MODELS_SEARCH_INDEX } from '~/server/common/consta
 
 export const ModelSearchIndexSortBy = [
   MODELS_SEARCH_INDEX,
-  `${MODELS_SEARCH_INDEX}:metrics.weightedRating:desc`,
+  `${MODELS_SEARCH_INDEX}:metrics.thumbsUpCount:desc`,
   `${MODELS_SEARCH_INDEX}:metrics.downloadCount:desc`,
   `${MODELS_SEARCH_INDEX}:metrics.favoriteCount:desc`,
   `${MODELS_SEARCH_INDEX}:metrics.commentCount:desc`,
@@ -60,16 +60,16 @@ export const modelInstantSearchRoutingParser: InstantSearchRoutingParser = {
   routeToState: (routeState: UiState) => {
     const models: ModelSearchParams = routeState[MODELS_SEARCH_INDEX] as ModelSearchParams;
     const refinementList: Record<string, string[]> = removeEmpty({
-      'version.baseModel': models.baseModel,
-      'category.name': models.category,
-      type: models.modelType,
-      checkpointType: models.checkpointType,
-      'tags.name': models.tags,
-      'user.username': models.users,
+      'version.baseModel': models.baseModel as string[],
+      'category.name': models.category as string[],
+      type: models.modelType as string[],
+      checkpointType: models.checkpointType as string[],
+      'tags.name': models.tags as string[],
+      'user.username': models.users as string[],
     });
 
     const range = removeEmpty({
-      lastVersionAtUnix: models.lastVersionAt,
+      lastVersionAtUnix: models.lastVersionAt as string,
     });
 
     const { query, sortBy } = models;

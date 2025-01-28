@@ -1,20 +1,64 @@
-import { uniq } from 'lodash-es';
-import { dbWrite, dbRead } from '~/server/db/client';
+import { Prisma } from '@prisma/client';
+import { uniq, uniqBy } from 'lodash-es';
+import { SessionUser } from 'next-auth';
+import { v4 as uuid } from 'uuid';
 import {
-  BulkSaveCollectionItemsInput,
+  ArticleSort,
+  CollectionReviewSort,
+  CollectionSort,
+  ImageSort,
+  ModelSort,
+  NotificationCategory,
+  NsfwLevel,
+  PostSort,
+  SearchIndexUpdateQueueAction,
+} from '~/server/common/enums';
+import { dbRead, dbWrite } from '~/server/db/client';
+import { userContentOverviewCache } from '~/server/redis/caches';
+import {
+  GetByIdInput,
+  UserPreferencesInput,
+  userPreferencesSchema,
+} from '~/server/schema/base.schema';
+import {
   AddCollectionItemInput,
+  BulkSaveCollectionItemsInput,
+  CollectionMetadataSchema,
+  EnableCollectionYoutubeSupportInput,
   GetAllCollectionItemsSchema,
+  GetAllCollectionsInfiniteSchema,
   GetAllUserCollectionsInputSchema,
   GetUserCollectionItemsByItemSchema,
+  RemoveCollectionItemInput,
+  SetCollectionItemNsfwLevelInput,
+  SetItemScoreInput,
+  UpdateCollectionCoverImageInput,
   UpdateCollectionItemsStatusInput,
   UpsertCollectionInput,
-  GetAllCollectionsInfiniteSchema,
-  UpdateCollectionCoverImageInput,
-  CollectionMetadataSchema,
 } from '~/server/schema/collection.schema';
-import { SessionUser } from 'next-auth';
+import { ImageMetaProps } from '~/server/schema/image.schema';
+import { isNotTag, isTag } from '~/server/schema/tag.schema';
+import { UserMeta } from '~/server/schema/user.schema';
+import { collectionsSearchIndex, imagesSearchIndex } from '~/server/search-index';
+import { collectionSelect } from '~/server/selectors/collection.selector';
+import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
+import type { ArticleGetAll } from '~/server/services/article.service';
+import { getArticles } from '~/server/services/article.service';
+import { homeBlockCacheBust } from '~/server/services/home-block-cache.service';
+import { getAllImages, ImagesInfiniteModel, ingestImage } from '~/server/services/image.service';
 import {
-  Collection,
+  getModelsWithImagesAndModelVersions,
+  GetModelsWithImagesAndModelVersions,
+} from '~/server/services/model.service';
+import { createNotification } from '~/server/services/notification.service';
+import { getPostsInfinite, PostsInfiniteModel } from '~/server/services/post.service';
+import {
+  throwAuthorizationError,
+  throwBadRequestError,
+  throwNotFoundError,
+} from '~/server/utils/errorHandling';
+import { getYoutubeRefreshToken } from '~/server/youtube/client';
+import {
   CollectionContributorPermission,
   CollectionItemStatus,
   CollectionMode,
@@ -25,51 +69,12 @@ import {
   ImageIngestionStatus,
   MediaType,
   MetricTimeframe,
-  NsfwLevel,
-  Prisma,
-  SearchIndexUpdateQueueAction,
-} from '@prisma/client';
-import {
-  throwAuthorizationError,
-  throwBadRequestError,
-  throwNotFoundError,
-} from '~/server/utils/errorHandling';
+  TagTarget,
+} from '~/shared/utils/prisma/enums';
 import { isDefined } from '~/utils/type-guards';
-import { ArticleGetAll } from '~/types/router';
-import { getArticles } from '~/server/services/article.service';
-import {
-  getModelsWithImagesAndModelVersions,
-  GetModelsWithImagesAndModelVersions,
-} from '~/server/services/model.service';
-import {
-  ArticleSort,
-  BrowsingMode,
-  CollectionReviewSort,
-  CollectionSort,
-  ImageSort,
-  ModelSort,
-  PostSort,
-} from '~/server/common/enums';
-import {
-  deleteImageById,
-  getAllImages,
-  ImagesInfiniteModel,
-  ingestImage,
-} from '~/server/services/image.service';
-import { getPostsInfinite, PostsInfiniteModel } from '~/server/services/post.service';
-import {
-  GetByIdInput,
-  UserPreferencesInput,
-  userPreferencesSchema,
-} from '~/server/schema/base.schema';
-import { imageSelect } from '~/server/selectors/image.selector';
-import { ImageMetaProps } from '~/server/schema/image.schema';
-import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
-import { homeBlockCacheBust } from '~/server/services/home-block-cache.service';
-import { collectionsSearchIndex } from '~/server/search-index';
-import { createNotification } from '~/server/services/notification.service';
 
 export type CollectionContributorPermissionFlags = {
+  collectionId: number;
   read: boolean;
   write: boolean;
   writeReview: boolean;
@@ -79,10 +84,12 @@ export type CollectionContributorPermissionFlags = {
   isOwner: boolean;
   followPermissions: CollectionContributorPermission[];
   publicCollection: boolean;
+  collectionType: CollectionType | null;
+  collectionMode: CollectionMode | null;
 };
 
 export const getAllCollections = async <TSelect extends Prisma.CollectionSelect>({
-  input: { limit, cursor, privacy, types, userId, sort, ids },
+  input: { limit, cursor, privacy, types, userId, sort, ids, modes },
   user,
   select,
 }: {
@@ -104,6 +111,7 @@ export const getAllCollections = async <TSelect extends Prisma.CollectionSelect>
       read: privacy && privacy.length > 0 ? { in: privacy } : CollectionReadConfiguration.Public,
       type: types && types.length > 0 ? { in: types } : undefined,
       userId,
+      mode: modes && modes.length > 0 && user?.isModerator ? { in: modes } : undefined,
     },
     select,
     orderBy,
@@ -121,6 +129,7 @@ export const getUserCollectionPermissionsById = async ({
   isModerator?: boolean;
 }) => {
   const permissions: CollectionContributorPermissionFlags = {
+    collectionId: id,
     read: false,
     write: false,
     writeReview: false,
@@ -130,6 +139,8 @@ export const getUserCollectionPermissionsById = async ({
     isOwner: false,
     publicCollection: false,
     followPermissions: [],
+    collectionType: null,
+    collectionMode: null,
   };
 
   const collection = await dbRead.collection.findFirst({
@@ -138,6 +149,8 @@ export const getUserCollectionPermissionsById = async ({
       read: true,
       write: true,
       userId: true,
+      type: true,
+      mode: true,
       contributors: userId
         ? {
             select: {
@@ -160,6 +173,9 @@ export const getUserCollectionPermissionsById = async ({
     return permissions;
   }
 
+  permissions.collectionType = collection.type;
+  permissions.collectionMode = collection.mode;
+
   if (
     collection.read === CollectionReadConfiguration.Public ||
     collection.read === CollectionReadConfiguration.Unlisted
@@ -171,13 +187,19 @@ export const getUserCollectionPermissionsById = async ({
   }
 
   if (collection.write === CollectionWriteConfiguration.Public) {
-    // Follow will grant write permissions
+    // Follow will make it so that they can see the collection in their feed.
     permissions.follow = true;
+    // Means that the users will be able to add stuff to the collection without following. It will follow automatically.
+    permissions.write = true;
     permissions.followPermissions.push(CollectionContributorPermission.ADD);
   }
+
   if (collection.write === CollectionWriteConfiguration.Review) {
-    // Follow will grant write permissions
+    // Follow will make it so that they can see the collection in their feed.
     permissions.follow = true;
+
+    // Means that the users will be able to add stuff to the collection without following. It will follow automatically.
+    permissions.writeReview = true;
     permissions.followPermissions.push(CollectionContributorPermission.ADD_REVIEW);
   }
 
@@ -192,15 +214,17 @@ export const getUserCollectionPermissionsById = async ({
     permissions.write = true;
   }
 
-  if (isModerator) {
+  if (isModerator && !permissions.isOwner) {
     permissions.manage = true;
     permissions.read = true;
-    permissions.write = true;
+    // Makes sure that moderators' stuff still needs to be reviewed.
+    permissions.write = collection.write === CollectionWriteConfiguration.Public;
+    permissions.writeReview = collection.write === CollectionWriteConfiguration.Review;
   }
 
   const [contributorItem] = collection.contributors;
 
-  if (!contributorItem) {
+  if (!contributorItem || permissions.isOwner) {
     return permissions;
   }
 
@@ -225,27 +249,55 @@ export const getUserCollectionPermissionsById = async ({
   return permissions;
 };
 
+type CollectionForPermission = {
+  id: number;
+  name: string;
+  description?: string;
+  read: CollectionReadConfiguration;
+  userId: number;
+  write: CollectionWriteConfiguration;
+  imageId?: number;
+};
+
 export const getUserCollectionsWithPermissions = async <
   TSelect extends Prisma.CollectionSelect = Prisma.CollectionSelect
 >({
   input,
-  select,
 }: {
   input: GetAllUserCollectionsInputSchema & { userId: number };
-  select: TSelect;
 }) => {
-  const { userId, permissions, permission, contributingOnly } = input;
+  const { userId, permissions, permission, contributingOnly = true } = input;
   // By default, owned collections will be always returned
-  const OR: Prisma.Enumerable<Prisma.CollectionWhereInput> = [{ userId }];
+  const AND: Prisma.Sql[] = [];
+  const SELECT: Prisma.Sql = Prisma.raw(
+    `SELECT c."id", c."name", c."description", c."read", c."userId", c."write", c."imageId"`
+  );
+
+  if (input.type) {
+    AND.push(Prisma.sql`(c."type" = ${input.type}::"CollectionType" OR c."type" IS NULL)`);
+  }
+
+  const queries: Prisma.Sql[] = [
+    Prisma.sql`(
+      ${SELECT}
+      FROM "Collection" c
+      WHERE "userId" = ${userId}
+        ${AND.length > 0 ? Prisma.sql`AND ${Prisma.join(AND, ',')}` : Prisma.sql``}
+
+    )`,
+  ];
 
   if (
     permissions &&
     permissions.includes(CollectionContributorPermission.ADD) &&
     !contributingOnly
   ) {
-    OR.push({
-      write: CollectionWriteConfiguration.Public,
-    });
+    queries.push(Prisma.sql`
+      ${SELECT}
+      FROM "Collection" c
+      WHERE "write" = ${CollectionWriteConfiguration.Public}::"CollectionWriteConfiguration"
+          ${AND.length > 0 ? Prisma.sql`AND ${Prisma.join(AND, ',')}` : Prisma.sql``}
+    `);
   }
 
   if (
@@ -256,52 +308,71 @@ export const getUserCollectionsWithPermissions = async <
     // Even with view permission we don't really
     // want to return unlisted unless the user is a contributor
     // with that permission
-    OR.push({
-      read: CollectionWriteConfiguration.Public,
-    });
+    queries.push(Prisma.sql`
+      ${SELECT}
+      FROM "Collection" c
+      WHERE "read" = ${CollectionReadConfiguration.Public}::"CollectionReadConfiguration"
+        ${AND.length > 0 ? Prisma.sql`AND ${Prisma.join(AND, ',')}` : Prisma.sql``}
+
+    `);
   }
 
   if (permissions || permission) {
-    OR.push({
-      contributors: {
-        some: {
-          userId,
-          permissions: {
-            hasSome: permission ? [permission] : permissions,
+    queries.push(Prisma.sql`(
+        ${SELECT}
+        FROM "CollectionContributor" AS cc
+        JOIN "Collection" AS c ON c."id" = cc."collectionId"
+        WHERE cc."userId" = ${userId}
+          AND cc."permissions" && ARRAY[${Prisma.raw(
+            (permissions || [permission]).map((p) => `'${p}'`).join(',')
+          )}]::"CollectionContributorPermission"[]
+          AND cc."collectionId" IS NOT NULL
+          ${AND.length > 0 ? Prisma.sql`AND ${Prisma.join(AND, ',')}` : Prisma.sql``}
+    )`);
+  }
+
+  // Moved to using raw queries because of huge performance issues with Prisma.
+  // Now we're doing Unions which makes it faster
+  const collections = await dbRead.$queryRaw<CollectionForPermission[]>`
+    ${Prisma.join(queries, ' UNION ')}
+  `;
+
+  const collectionImageIds = collections.map((c) => c.imageId).filter(isDefined);
+
+  const images =
+    collectionImageIds.length > 0
+      ? await dbRead.image.findMany({
+          where: {
+            id: {
+              in: collectionImageIds,
+            },
           },
-        },
-      },
-    });
-  }
+        })
+      : [];
 
-  const AND: Prisma.Enumerable<Prisma.CollectionWhereInput> = [{ OR }];
-
-  if (input.type) {
-    // TODO.collections: Support exclusive type
-    AND.push({
-      OR: [
-        {
-          type: input.type,
-        },
-        {
-          type: null,
-        },
-      ],
-    });
-  }
-
-  const collections = (await dbRead.collection.findMany({
+  const collectionTags = await dbRead.tagsOnCollection.findMany({
     where: {
-      AND,
+      collectionId: {
+        in: collections.map((c) => c.id),
+      },
     },
-    select,
-  })) as Collection[];
+    include: {
+      tag: true,
+    },
+  });
 
   // Return user collections first && add isOwner  property
   return collections
     .map((collection) => ({
       ...collection,
       isOwner: collection.userId === userId,
+      image: images.find((i) => i.id === collection.imageId),
+      tags: collectionTags
+        .filter((t) => t.collectionId === collection.id)
+        .map((t) => ({
+          ...t.tag,
+          filterableOnly: t.filterableOnly,
+        })),
     }))
     .sort(({ userId: collectionUserId }) => (userId === collectionUserId ? -1 : 1));
 };
@@ -311,28 +382,27 @@ export const getCollectionById = async ({ input }: { input: GetByIdInput }) => {
   const collection = await dbRead.collection.findUnique({
     where: { id },
     select: {
-      id: true,
-      name: true,
-      description: true,
-      read: true,
-      write: true,
-      type: true,
+      ...collectionSelect,
       user: { select: userWithCosmeticsSelect },
-      nsfw: true,
-      image: { select: imageSelect },
-      mode: true,
-      metadata: true,
     },
   });
   if (!collection) throw throwNotFoundError(`No collection with id ${id}`);
 
   return {
     ...collection,
-    nsfw: collection.nsfw ?? false,
+    nsfwLevel: collection.nsfwLevel as NsfwLevel,
     image: collection.image
-      ? { ...collection.image, meta: collection.image.meta as ImageMetaProps | null }
+      ? {
+          ...collection.image,
+          nsfwLevel: collection.image.nsfwLevel as NsfwLevel,
+          meta: collection.image.meta as ImageMetaProps | null,
+        }
       : null,
     metadata: (collection.metadata ?? {}) as CollectionMetadataSchema,
+    tags: collection.tags.map((t) => ({
+      ...t.tag,
+      filterableOnly: t.filterableOnly,
+    })),
   };
 };
 
@@ -344,39 +414,72 @@ const inputToCollectionType = {
 } as const;
 
 export const saveItemInCollections = async ({
-  input: { collectionIds, type, userId, isModerator, removeFromCollectionIds, ...input },
+  input: {
+    collections: upsertCollectionItems,
+    type,
+    userId,
+    isModerator,
+    removeFromCollectionIds,
+    ...input
+  },
 }: {
   input: AddCollectionItemInput & { userId: number; isModerator?: boolean };
 }) => {
-  const itemKey = Object.keys(inputToCollectionType).find((key) => input.hasOwnProperty(key));
+  const itemKey = Object.keys(inputToCollectionType).find((key) =>
+    input.hasOwnProperty(key)
+  ) as keyof typeof inputToCollectionType;
   if (!itemKey) throw throwBadRequestError(`We don't know the type of thing you're adding`);
   // Safeguard against duppes.
-  collectionIds = uniq(collectionIds);
+  upsertCollectionItems = uniqBy(upsertCollectionItems, 'collectionId');
   removeFromCollectionIds = uniq(removeFromCollectionIds);
 
   const collections = await dbRead.collection.findMany({
+    select: collectionSelect,
     where: {
-      id: { in: collectionIds },
+      id: { in: upsertCollectionItems.map((c) => c.collectionId) },
     },
   });
 
   if (itemKey && inputToCollectionType.hasOwnProperty(itemKey)) {
-    const type = inputToCollectionType[itemKey as keyof typeof inputToCollectionType];
+    const type = inputToCollectionType[itemKey];
     // check if all collections match the Model type
     const filteredCollections = collections.filter((c) => c.type === type || c.type == null);
 
-    if (filteredCollections.length !== collectionIds.length) {
+    if (filteredCollections.length !== upsertCollectionItems.length) {
       throw throwBadRequestError('Collection type mismatch');
     }
   }
 
   const data = (
     await Promise.all(
-      collectionIds.map(async (collectionId) => {
+      upsertCollectionItems.map(async (upsertCollection) => {
+        const { collectionId, tagId } = upsertCollection;
         const collection = collections.find((c) => c.id === collectionId);
 
         if (!collection) {
           return null;
+        }
+
+        const inputTags = collection.tags?.filter((t) => !t.filterableOnly);
+
+        if (
+          inputTags.length > 0 &&
+          !tagId &&
+          !(collection.metadata as CollectionMetadataSchema)?.disableTagRequired
+        ) {
+          throw throwBadRequestError('Collection requires a tag');
+        }
+
+        if (collection.tags.length === 0 && tagId) {
+          throw throwBadRequestError('Provided tag is not part of this collection');
+        }
+
+        if (
+          collection.tags.length > 0 &&
+          tagId &&
+          !collection.tags.some((t) => t.tag.id === tagId)
+        ) {
+          throw throwBadRequestError('Provided tag is not part of this collection');
         }
 
         const metadata = (collection?.metadata ?? {}) as CollectionMetadataSchema;
@@ -386,12 +489,37 @@ export const saveItemInCollections = async ({
           id: collectionId,
         });
 
-        await validateContestCollectionEntry({
-          metadata,
-          collectionId,
-          userId,
-          [`${itemKey}s`]: [input[itemKey as keyof typeof input]],
-        });
+        if (
+          !permission.isContributor &&
+          !permission.isOwner &&
+          !metadata?.disableFollowOnSubmission
+        ) {
+          // Make sure to follow the collection
+          await addContributorToCollection({
+            targetUserId: userId,
+            userId: userId,
+            collectionId,
+          });
+        }
+
+        if (collection.mode === CollectionMode.Contest) {
+          await validateContestCollectionEntry({
+            metadata,
+            collectionId,
+            userId,
+            isModerator,
+            [`${itemKey}s`]: [input[itemKey]],
+          });
+        }
+
+        // A shame to hard-code the `featured` name here. Might wanna look into adding a featured mode instead,
+        // For now tho, should work
+        if (collection.userId == -1 && !collection.mode && collection.name.includes('Featured')) {
+          // Assume it's a featured collection:
+          await validateFeaturedCollectionEntry({
+            [`${itemKey}s`]: [input[itemKey]],
+          });
+        }
 
         if (!permission.isContributor && !permission.isOwner) {
           // Person adding content to stuff they don't follow.
@@ -410,7 +538,8 @@ export const saveItemInCollections = async ({
             : CollectionItemStatus.ACCEPTED,
           reviewedById: permission.write ? userId : null,
           reviewedAt: permission.write ? new Date() : null,
-          [itemKey]: input[itemKey as keyof typeof input],
+          [itemKey]: input[itemKey],
+          tagId,
         };
       })
     )
@@ -423,22 +552,24 @@ export const saveItemInCollections = async ({
       dbWrite.$executeRaw`
       INSERT INTO "CollectionItem" ("collectionId", "addedById", "status", "randomId" , "${Prisma.raw(
         itemKey
-      )}")
+      )}", "tagId")
       SELECT
         v."collectionId",
         v."addedById",
         v."status",
         FLOOR(RANDOM() * 1000000000),
-        v."${Prisma.raw(itemKey)}"
+        v."${Prisma.raw(itemKey)}",
+        v."tagId"
       FROM jsonb_to_recordset(${JSON.stringify(data)}::jsonb) AS v(
         "collectionId" INTEGER,
         "addedById" INTEGER,
         "status" "CollectionItemStatus",
-        "${Prisma.raw(itemKey)}" INTEGER
+        "${Prisma.raw(itemKey)}" INTEGER,
+        "tagId" INTEGER
       )
       ON CONFLICT ("collectionId", "${Prisma.raw(itemKey)}")
         WHERE "${Prisma.raw(itemKey)}" IS NOT NULL
-        DO NOTHING;
+        DO UPDATE SET "tagId" = EXCLUDED."tagId";
     `
     );
   }
@@ -478,6 +609,7 @@ export const saveItemInCollections = async ({
       )
     ).filter(isDefined);
 
+    // if we have items to remove, add a deleteMany mutation to the transaction
     if (removeAllowedCollectionItemIds.length > 0)
       transactions.push(
         dbWrite.collectionItem.deleteMany({
@@ -486,13 +618,25 @@ export const saveItemInCollections = async ({
       );
   }
 
-  // if we have items to remove, add a deleteMany mutation to the transaction
+  await dbWrite.$transaction(transactions);
 
+  // Clear cache for homeBlocks
   await Promise.all(
-    collectionIds.map((collectionId) => homeBlockCacheBust(HomeBlockType.Collection, collectionId))
+    upsertCollectionItems.map((item) =>
+      homeBlockCacheBust(HomeBlockType.Collection, item.collectionId)
+    )
   );
 
-  await dbWrite.$transaction(transactions);
+  // Update collection search index
+  const affectedCollections = [
+    ...upsertCollectionItems.map((item) => item.collectionId),
+    ...removeFromCollectionIds,
+  ];
+  if (affectedCollections.length > 0) {
+    await collectionsSearchIndex.queueUpdate(
+      affectedCollections.map((id) => ({ id, action: SearchIndexUpdateQueueAction.Update }))
+    );
+  }
 
   return data.length > 0 ? 'added' : removeFromCollectionIds?.length > 0 ? 'removed' : null;
 };
@@ -500,10 +644,11 @@ export const saveItemInCollections = async ({
 export const upsertCollection = async ({
   input,
 }: {
-  input: UpsertCollectionInput & { userId: number };
+  input: UpsertCollectionInput & { userId: number; isModerator?: boolean };
 }) => {
   const {
     userId,
+    isModerator,
     id,
     name,
     description,
@@ -515,23 +660,65 @@ export const upsertCollection = async ({
     nsfw,
     mode,
     metadata,
+    tags,
     ...collectionItem
   } = input;
 
   if (id) {
+    const permission = await getUserCollectionPermissionsById({
+      id,
+      userId,
+      isModerator,
+    });
+    if (!permission.manage) {
+      throw throwAuthorizationError('You do not have permission to manage this collection');
+    }
+
     // Get current collection values for comparison
     const currentCollection = await dbWrite.collection.findUnique({
       where: { id },
-      select: { id: true, mode: true, image: { select: { id: true } } },
+      select: {
+        id: true,
+        read: true,
+        mode: true,
+        createdAt: true,
+        image: { select: { id: true } },
+      },
     });
     if (!currentCollection) throw throwNotFoundError(`No collection with id ${id}`);
 
+    // nb - if we ever allow a cover image on create, copy this logic below
+    // TODO commenting this out - other users can manage collections
+    // const coverImgId = imageId ?? image?.id;
+    // if (isDefined(coverImgId)) {
+    //   const isImgOwner = await isImageOwner({ userId, isModerator, imageId: coverImgId });
+    //   if (!isImgOwner) {
+    //     throw throwAuthorizationError('Invalid cover image');
+    //   }
+    // }
+
     const updated = await dbWrite.$transaction(async (tx) => {
+      if (tags) {
+        // Attempt to run this first, collides with create/connect
+        await tx.tagsOnCollection.deleteMany({
+          where: {
+            collectionId: id,
+
+            tagId: {
+              notIn: tags.filter(isTag).map((x) => x.id),
+            },
+          },
+        });
+      }
+
       const updated = await tx.collection.update({
         select: {
           id: true,
           mode: true,
           image: { select: { id: true, url: true, ingestion: true, type: true } },
+          read: true,
+          write: true,
+          userId: true,
         },
         where: { id },
         data: {
@@ -555,9 +742,29 @@ export const upsertCollection = async ({
                       meta: (image?.meta as Prisma.JsonObject) ?? Prisma.JsonNull,
                       userId,
                       resources: undefined,
+                      id: undefined,
                     },
                   },
                 }
+            : undefined,
+          tags: tags
+            ? {
+                connectOrCreate: tags.filter(isTag).map((tag) => ({
+                  where: { tagId_collectionId: { tagId: tag.id, collectionId: id as number } },
+                  create: { tagId: tag.id },
+                })),
+                create: tags.filter(isNotTag).map((tag) => {
+                  const name = tag.name.toLowerCase().trim();
+                  return {
+                    tag: {
+                      connectOrCreate: {
+                        where: { name },
+                        create: { name, target: [TagTarget.Collection] },
+                      },
+                    },
+                  };
+                }),
+              }
             : undefined,
         },
       });
@@ -569,20 +776,61 @@ export const upsertCollection = async ({
         `;
       }
 
+      await userContentOverviewCache.bust(updated.userId);
+
       return updated;
     });
 
-    if (input.read === CollectionReadConfiguration.Public) {
+    if (
+      input.read === CollectionReadConfiguration.Public &&
+      currentCollection.read !== input.read
+    ) {
       // Set publishedAt for all post belonging to this collection if changing privacy to public
-      await dbWrite.post.updateMany({
-        where: { collectionId: updated.id },
-        data: { publishedAt: new Date() },
-      });
-    } else {
-      // otherwise set publishedAt to null
-      await dbWrite.post.updateMany({
-        where: { collectionId: updated.id },
-        data: { publishedAt: null },
+      await dbWrite.$queryRaw`
+        UPDATE "Post" SET
+          "publishedAt" = COALESCE(DATE("metadata"->>'prevPublishedAt'), ${currentCollection.createdAt}, NOW()),
+          "metadata" = jsonb_set("metadata", '{prevPublishedAt}', NULL)
+        WHERE "collectionId" = ${updated.id}
+      `;
+    } else if (!updated.mode && input.read !== CollectionReadConfiguration.Public) {
+      // otherwise set publishedAt to null when no mode is setup.
+      await dbWrite.$queryRaw`
+        UPDATE "Post" SET
+          "publishedAt" = NULL,
+          "metadata" = jsonb_set("metadata", '{prevPublishedAt}', to_jsonb("publishedAt"))
+        WHERE "collectionId" = ${updated.id}
+      `;
+    }
+
+    // Update contributors:
+    if (
+      (input.write && input.write !== updated.write) ||
+      (input.read && input.read !== updated.read)
+    ) {
+      // Update contributors permissions:
+      const permissions: CollectionContributorPermission[] = [];
+      if (updated.read !== CollectionReadConfiguration.Private) {
+        permissions.push(CollectionContributorPermission.VIEW);
+      }
+
+      if (updated.write === CollectionWriteConfiguration.Public) {
+        permissions.push(CollectionContributorPermission.ADD);
+      }
+
+      if (updated.write === CollectionWriteConfiguration.Review) {
+        permissions.push(CollectionContributorPermission.ADD_REVIEW);
+      }
+
+      await dbWrite.collectionContributor.updateMany({
+        where: {
+          collectionId: updated.id,
+          userId: {
+            not: updated.userId,
+          },
+        },
+        data: {
+          permissions,
+        },
       });
     }
 
@@ -591,16 +839,32 @@ export const upsertCollection = async ({
       await ingestImage({ image: updated.image });
     }
 
-    // Delete image if it was removed
-    if (currentCollection.image && !input.image) {
-      await deleteImageById({ id: currentCollection.image.id });
-    }
+    await collectionsSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Update }]);
+
+    // nb: doing this will delete a user's own image
+    // if (currentCollection.image && !input.image) {
+    //   const isOwner = await isImageOwner({
+    //     userId,
+    //     isModerator,
+    //     imageId: currentCollection.image.id,
+    //   });
+    //   if (isOwner) {
+    //     await deleteImageById({ id: currentCollection.image.id });
+    //   }
+    // }
 
     return updated;
   }
 
+  // TODO allow cover image
   const collection = await dbWrite.collection.create({
-    select: { id: true, image: { select: { id: true, url: true } } },
+    select: {
+      id: true,
+      image: { select: { id: true, url: true } },
+      read: true,
+      write: true,
+      userId: true,
+    },
     data: {
       name,
       description,
@@ -622,8 +886,25 @@ export const upsertCollection = async ({
         },
       },
       items: { create: { ...collectionItem, imageId, addedById: userId } },
+      tags: tags
+        ? {
+            create: tags.map((tag) => {
+              const name = tag.name.toLowerCase().trim();
+              return {
+                tag: {
+                  connectOrCreate: {
+                    where: { name },
+                    create: { name, target: [TagTarget.Collection] },
+                  },
+                },
+              };
+            }),
+          }
+        : undefined,
     },
   });
+
+  await userContentOverviewCache.bust(userId);
 
   return collection;
 };
@@ -643,6 +924,8 @@ export const updateCollectionCoverImage = async ({
   if (!permission.manage) {
     return;
   }
+
+  // TODO if necessary, check image ownership here
 
   const updated = await dbWrite.collection.update({
     select: { id: true, image: { select: { id: true, url: true, ingestion: true, type: true } } },
@@ -674,13 +957,14 @@ interface ImageCollectionItem {
 
 interface ArticleCollectionItem {
   type: 'article';
-  data: ArticleGetAll['items'][0];
+  data: ArticleGetAll[0];
 }
 
 export type CollectionItemExpanded = {
   id: number;
   status?: CollectionItemStatus;
   createdAt: Date | null;
+  scores?: { userId: number; score: number }[] | null;
 } & (ModelCollectionItem | PostCollectionItem | ImageCollectionItem | ArticleCollectionItem);
 
 export const getCollectionItemsByCollectionId = async ({
@@ -699,6 +983,7 @@ export const getCollectionItemsByCollectionId = async ({
     cursor,
     forReview,
     reviewSort,
+    collectionTagId,
   } = input;
 
   const skip = page && limit ? (page - 1) * limit : undefined;
@@ -712,7 +997,8 @@ export const getCollectionItemsByCollectionId = async ({
   });
 
   if (
-    (statuses.includes(CollectionItemStatus.REVIEW) ||
+    (forReview ||
+      statuses.includes(CollectionItemStatus.REVIEW) ||
       statuses.includes(CollectionItemStatus.REJECTED)) &&
     !permission.isOwner &&
     !permission.manage
@@ -727,11 +1013,10 @@ export const getCollectionItemsByCollectionId = async ({
     status: { in: statuses },
     // Ensure we only show images that have been scanned
     image:
-      collection.type === CollectionType.Image
-        ? {
-            ingestion: ImageIngestionStatus.Scanned,
-          }
+      collection.type === CollectionType.Image && !forReview
+        ? { ingestion: ImageIngestionStatus.Scanned }
         : undefined,
+    tagId: collectionTagId,
   };
 
   const orderBy: Prisma.CollectionItemFindManyArgs['orderBy'] = [];
@@ -759,6 +1044,17 @@ export const getCollectionItemsByCollectionId = async ({
       status: input.forReview,
       createdAt: true,
       randomId: true,
+      scores: input.forReview
+        ? {
+            select: {
+              userId: true,
+              score: true,
+            },
+            where: {
+              userId: user?.id,
+            },
+          }
+        : undefined,
     },
     where,
     orderBy,
@@ -766,6 +1062,10 @@ export const getCollectionItemsByCollectionId = async ({
 
   if (collectionItems.length === 0) {
     return [];
+  }
+
+  if (user && forReview) {
+    user.isModerator = true;
   }
 
   const modelIds = collectionItems.map((item) => item.modelId).filter(isDefined);
@@ -783,6 +1083,7 @@ export const getCollectionItemsByCollectionId = async ({
             favorites: false,
             ...userPreferencesInput,
             ids: modelIds,
+            browsingLevel: input.browsingLevel,
           },
         })
       : { items: [] };
@@ -797,9 +1098,10 @@ export const getCollectionItemsByCollectionId = async ({
           periodMode: 'stats',
           sort: ArticleSort.Newest,
           ...userPreferencesInput,
-          browsingMode: userPreferencesInput.browsingMode || BrowsingMode.SFW,
+          browsingLevel: input.browsingLevel,
           sessionUser: user,
           ids: articleIds,
+          include: ['cosmetics'],
         })
       : { items: [] };
 
@@ -808,17 +1110,18 @@ export const getCollectionItemsByCollectionId = async ({
   const images =
     imageIds.length > 0
       ? await getAllImages({
-          include: [],
+          include: ['cosmetics', 'tagIds', 'profilePictures'],
           limit: imageIds.length,
           period: MetricTimeframe.AllTime,
           periodMode: 'stats',
           sort: ImageSort.Newest,
           ...userPreferencesInput,
-          userId: user?.id,
-          isModerator: user?.isModerator,
+          browsingLevel: input.browsingLevel,
+          user,
           ids: imageIds,
           headers: { src: 'getCollectionItemsByCollectionId' },
           includeBaseModel: true,
+          pending: forReview,
         })
       : { items: [] };
 
@@ -833,7 +1136,7 @@ export const getCollectionItemsByCollectionId = async ({
           sort: PostSort.Newest,
           ...userPreferencesInput,
           user,
-          browsingMode: userPreferencesInput.browsingMode || BrowsingMode.SFW,
+          browsingLevel: input.browsingLevel,
           ids: postIds,
           include: ['cosmetics'],
         })
@@ -921,7 +1224,6 @@ export const getUserCollectionItemsByItem = async ({
       ],
       userId,
     },
-    select: { id: true, userId: true },
   });
 
   if (userCollections.length === 0) return [];
@@ -930,9 +1232,11 @@ export const getUserCollectionItemsByItem = async ({
     select: {
       collectionId: true,
       addedById: true,
+      tagId: true,
       collection: {
         select: {
           userId: true,
+          read: true,
         },
       },
     },
@@ -965,30 +1269,26 @@ export const deleteCollectionById = async ({
   userId,
   isModerator,
 }: GetByIdInput & { userId: number; isModerator?: boolean }) => {
-  try {
-    const collection = await dbRead.collection.findFirst({
-      // Confirm the collection belongs to the user:
-      where: { id, userId: isModerator ? undefined : userId },
-      select: { id: true },
-    });
+  const collection = await dbRead.collection.findFirstOrThrow({
+    // Confirm the collection belongs to the user:
+    where: { id, userId: isModerator ? undefined : userId },
+    select: { id: true, mode: true },
+  });
 
-    if (!collection) {
-      return null;
-    }
-
-    const res = await dbWrite.collection.delete({ where: { id } });
-
-    await collectionsSearchIndex.queueUpdate([
-      {
-        id,
-        action: SearchIndexUpdateQueueAction.Delete,
-      },
-    ]);
-
-    return res;
-  } catch {
-    // Ignore errors
+  if (collection.mode === CollectionMode.Bookmark) {
+    throw throwBadRequestError('You cannot delete a bookmark collection');
   }
+
+  const res = await dbWrite.collection.delete({ where: { id } });
+
+  await collectionsSearchIndex.queueUpdate([
+    {
+      id,
+      action: SearchIndexUpdateQueueAction.Delete,
+    },
+  ]);
+
+  return res;
 };
 
 export const addContributorToCollection = async ({
@@ -1070,23 +1370,41 @@ export const getAvailableCollectionItemsFilterForUser = ({
   permissions: CollectionContributorPermissionFlags;
   userId?: number;
 }) => {
+  const rawAND: Prisma.Sql[] = [];
+  const AND: Prisma.Enumerable<Prisma.CollectionItemWhereInput> = [];
+
   // A user with relevant permissions can filter & manage these permissions
   if ((permissions.manage || permissions.isOwner) && statuses) {
-    return [{ status: { in: statuses } }];
+    AND.push({ status: { in: statuses } });
+    rawAND.push(
+      Prisma.sql`ci."status" IN (${Prisma.raw(
+        statuses.map((s) => `'${s}'::"CollectionItemStatus"`).join(', ')
+      )})`
+    );
+
+    return {
+      AND,
+      rawAND,
+    };
   }
 
-  const AND: Prisma.Enumerable<Prisma.CollectionItemWhereInput> = userId
-    ? [
-        {
-          OR: [
-            { status: CollectionItemStatus.ACCEPTED },
-            { AND: [{ status: CollectionItemStatus.REVIEW }, { addedById: userId }] },
-          ],
-        },
-      ]
-    : [{ status: CollectionItemStatus.ACCEPTED }];
+  if (userId) {
+    AND.push({
+      OR: [
+        { status: CollectionItemStatus.ACCEPTED },
+        { AND: [{ status: CollectionItemStatus.REVIEW }, { addedById: userId }] },
+      ],
+    });
 
-  return AND;
+    rawAND.push(
+      Prisma.sql`(ci."status" = ${CollectionItemStatus.ACCEPTED}::"CollectionItemStatus" OR (ci."status" = ${CollectionItemStatus.REVIEW}::"CollectionItemStatus" AND ci."addedById" = ${userId}))`
+    );
+  } else {
+    AND.push({ status: CollectionItemStatus.ACCEPTED });
+    rawAND.push(Prisma.sql`ci."status" = ${CollectionItemStatus.ACCEPTED}::"CollectionItemStatus"`);
+  }
+
+  return { AND, rawAND };
 };
 
 export const updateCollectionItemsStatus = async ({
@@ -1103,7 +1421,7 @@ export const updateCollectionItemsStatus = async ({
   // Check if collection actually exists before anything
   const collection = await dbWrite.collection.findUnique({
     where: { id: collectionId },
-    select: { id: true, type: true, mode: true, name: true },
+    select: { id: true, type: true, mode: true, name: true, metadata: true },
   });
 
   if (!collection) throw throwNotFoundError('No collection with id ' + collectionId);
@@ -1117,11 +1435,53 @@ export const updateCollectionItemsStatus = async ({
   if (!manage && !isOwner)
     throw throwAuthorizationError('You do not have permissions to manage contributor item status.');
 
+  const collectionMetadata = collection.metadata as CollectionMetadataSchema;
+
+  if (status === CollectionItemStatus.ACCEPTED) {
+    if (collectionMetadata?.judgesCanScoreEntries) {
+      const exists = await dbRead.collectionItem.findFirst({
+        where: {
+          id: { in: collectionItemIds },
+          scores: {
+            none: {},
+          },
+        },
+      });
+
+      if (exists) {
+        throw throwBadRequestError(
+          'Some of the items selected do not have scores. Please ensure all items have scores before approving them.'
+        );
+      }
+    }
+
+    if (collectionMetadata?.judgesApplyBrowsingLevel && collection.type === CollectionType.Image) {
+      const exists = await dbRead.collectionItem.findFirst({
+        where: {
+          id: { in: collectionItemIds },
+          image: {
+            nsfwLevel: {
+              in: [0, -1],
+            },
+          },
+        },
+      });
+
+      if (exists) {
+        throw throwBadRequestError(
+          'Some of the items selected have not been given a NSFW rating. Please ensure all items have a NSFW rating before approving them.'
+        );
+      }
+    }
+  }
+
   if (collectionItemIds.length > 0) {
-    console.log(collection.mode);
     await dbWrite.$executeRaw`
-      UPDATE "CollectionItem" 
-      SET "reviewedById" = ${userId}, "reviewedAt" = ${new Date()}, "status" = ${status}::"CollectionItemStatus" ${Prisma.raw(
+      UPDATE "CollectionItem"
+      SET "reviewedById" = ${userId},
+      "reviewedAt" = ${new Date()},
+      "updatedAt" = ${new Date()},
+      "status" = ${status}::"CollectionItemStatus" ${Prisma.raw(
       collection.mode === CollectionMode.Contest
         ? ', "randomId" = FLOOR(RANDOM() * 1000000000)'
         : ''
@@ -1144,6 +1504,8 @@ export const updateCollectionItemsStatus = async ({
         await createNotification({
           type: 'contest-collection-item-status-change',
           userId: item.addedById,
+          category: NotificationCategory.Update,
+          key: `contest-collection-item-status-change:${uuid()}`,
           details: {
             status,
             collectionId: collection.id,
@@ -1162,9 +1524,44 @@ export const updateCollectionItemsStatus = async ({
   return collection;
 };
 
-const validateContestCollectionEntry = async ({
+export function getCollectionItemCount({
+  collectionIds: ids,
+  status,
+}: {
+  collectionIds: number[];
+  status?: CollectionItemStatus;
+}) {
+  if (ids.length === 0) return [] as { id: number; count: number }[];
+
+  const where = [Prisma.sql`"collectionId" IN (${Prisma.join(ids)})`];
+  if (status) where.push(Prisma.sql`"status" = ${status}::"CollectionItemStatus"`);
+
+  return dbRead.$queryRaw<{ id: number; count: number }[]>`
+    SELECT "collectionId" as "id", COUNT(*) as "count"
+    FROM "CollectionItem"
+    WHERE ${Prisma.sql`${Prisma.join(where, ' AND ')}`}
+      AND ("imageId" IS NOT NULL OR "modelId" IS NOT NULL OR "postId" IS NOT NULL OR "articleId" IS NOT NULL)
+    GROUP BY "collectionId"
+  `;
+}
+
+export function getContributorCount({ collectionIds: ids }: { collectionIds: number[] }) {
+  if (ids.length === 0) return [] as { id: number; count: number }[];
+
+  const where = [Prisma.sql`"collectionId" IN (${Prisma.join(ids)})`];
+
+  return dbRead.$queryRaw<{ id: number; count: number }[]>`
+    SELECT "collectionId" as "id", COUNT(*) as "count"
+    FROM "CollectionContributor"
+    WHERE ${Prisma.sql`${Prisma.join(where, ' AND ')}`}
+    GROUP BY "collectionId"
+  `;
+}
+
+export const validateContestCollectionEntry = async ({
   collectionId,
   userId,
+  isModerator,
   metadata,
   articleIds = [],
   modelIds = [],
@@ -1173,12 +1570,27 @@ const validateContestCollectionEntry = async ({
 }: {
   collectionId: number;
   userId: number;
+  isModerator?: boolean;
   metadata?: CollectionMetadataSchema;
   articleIds?: number[];
   modelIds?: number[];
   imageIds?: number[];
   postIds?: number[];
 }) => {
+  const user = await dbRead.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      meta: true,
+    },
+  });
+
+  const userMeta = (user?.meta ?? {}) as UserMeta;
+
+  if (userMeta?.contestBanDetails) {
+    throw throwBadRequestError('You are banned from participating in contests');
+  }
+
   if (!metadata) {
     return;
   }
@@ -1195,10 +1607,13 @@ const validateContestCollectionEntry = async ({
       where: {
         collectionId,
         addedById: userId,
+        status: {
+          in: [CollectionItemStatus.ACCEPTED, CollectionItemStatus.REVIEW],
+        },
       },
     });
 
-    if (itemCount + savedItemsCount > metadata.maxItemsPerUser) {
+    if (itemCount + savedItemsCount > metadata.maxItemsPerUser && !isModerator) {
       throw throwBadRequestError(`You have reached the maximum number of items in collection`);
     }
   }
@@ -1272,33 +1687,165 @@ const validateContestCollectionEntry = async ({
       }
     }
   }
+
+  // Check the entry is not on a feature collection:
+  const featuredCollections = await dbRead.collection.findMany({
+    where: {
+      userId: -1, // Civit
+      mode: null, // Not contest or anything like that
+      name: {
+        contains: 'Featured',
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (featuredCollections.length > 0) {
+    // confirm no collection items exists on those for this contest collection:
+    const existingCollectionItemsOnFeaturedCollections = await dbRead.collectionItem.findFirst({
+      where: {
+        collectionId: {
+          in: featuredCollections.map((f) => f.id),
+        },
+        modelId: modelIds.length > 0 ? { in: modelIds } : undefined,
+        imageId: imageIds.length > 0 ? { in: imageIds } : undefined,
+        articleId: articleIds.length > 0 ? { in: articleIds } : undefined,
+        postId: postIds.length > 0 ? { in: postIds } : undefined,
+      },
+    });
+
+    if (existingCollectionItemsOnFeaturedCollections) {
+      throw throwBadRequestError(
+        'At least one of the items provided is already featured by civitai and cannot be added to the contest.'
+      );
+    }
+  }
+};
+
+const validateFeaturedCollectionEntry = async ({
+  articleIds = [],
+  modelIds = [],
+  imageIds = [],
+  postIds = [],
+}: {
+  articleIds?: number[];
+  modelIds?: number[];
+  imageIds?: number[];
+  postIds?: number[];
+}) => {
+  // Check the entry is not on a feature collection:
+  const contestCollectionIds = await dbRead.collection.findMany({
+    where: {
+      mode: CollectionMode.Contest,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (contestCollectionIds.length > 0) {
+    // confirm no collection items exists on those for this contest collection:
+    const existingCollectionItemsOnContestCollection = await dbRead.collectionItem.findFirst({
+      where: {
+        collectionId: {
+          in: contestCollectionIds.map((f) => f.id),
+        },
+        modelId: modelIds.length > 0 ? { in: modelIds } : undefined,
+        imageId: imageIds.length > 0 ? { in: imageIds } : undefined,
+        articleId: articleIds.length > 0 ? { in: articleIds } : undefined,
+        postId: postIds.length > 0 ? { in: postIds } : undefined,
+      },
+    });
+
+    if (existingCollectionItemsOnContestCollection) {
+      throw throwBadRequestError(
+        'At least one of the items provided is already in a contest collection and cannot be added to the featured collections.'
+      );
+    }
+  }
 };
 
 export const bulkSaveItems = async ({
-  input: { userId, collectionId, articleIds = [], modelIds = [], imageIds = [], postIds = [] },
+  input: {
+    userId,
+    collectionId,
+    articleIds = [],
+    modelIds = [],
+    imageIds = [],
+    postIds = [],
+    tagId,
+    isModerator,
+  },
   permissions,
 }: {
-  input: BulkSaveCollectionItemsInput & { userId: number };
+  input: BulkSaveCollectionItemsInput & { userId: number; isModerator?: boolean };
   permissions: CollectionContributorPermissionFlags;
 }) => {
   const collection = await dbRead.collection.findUnique({
     where: { id: collectionId },
-    select: { type: true, metadata: true, name: true },
+    select: collectionSelect,
   });
 
   if (!collection) throw throwNotFoundError('No collection with id ' + collectionId);
+  const inputTags = collection.tags?.filter((t) => !t.filterableOnly);
+
+  if (
+    inputTags.length > 0 &&
+    !tagId &&
+    !(collection.metadata as CollectionMetadataSchema)?.disableTagRequired
+  ) {
+    throw throwBadRequestError(
+      'It is required to tag your entry in order for it to be added to this collection'
+    );
+  }
+
+  if (collection.tags.length === 0 && tagId) {
+    throw throwBadRequestError('This collection does not support tagging entries');
+  }
+
+  if (collection.tags.length > 0 && tagId && !collection.tags.find((t) => t.tag.id === tagId)) {
+    throw throwBadRequestError('The tag provided is not allowed in this collection');
+  }
+
+  if (
+    !permissions.isContributor &&
+    !permissions.isOwner &&
+    !(collection.metadata as CollectionMetadataSchema)?.disableFollowOnSubmission
+  ) {
+    // Make sure to follow the collection
+    await addContributorToCollection({
+      targetUserId: userId,
+      userId: userId,
+      collectionId,
+    });
+  }
 
   const metadata = (collection.metadata ?? {}) as CollectionMetadataSchema;
 
-  await validateContestCollectionEntry({
-    metadata,
-    collectionId,
-    userId,
-    articleIds,
-    modelIds,
-    imageIds,
-    postIds,
-  });
+  if (collection.mode === CollectionMode.Contest) {
+    await validateContestCollectionEntry({
+      metadata,
+      collectionId,
+      userId,
+      isModerator,
+      articleIds,
+      modelIds,
+      imageIds,
+      postIds,
+    });
+  }
+
+  if (collection.userId == -1 && !collection.mode && collection.name.includes('Featured')) {
+    // Assume it's a featured collection:
+    await validateFeaturedCollectionEntry({
+      articleIds,
+      modelIds,
+      imageIds,
+      postIds,
+    });
+  }
 
   const baseData = {
     collectionId,
@@ -1306,6 +1853,7 @@ export const bulkSaveItems = async ({
     status: permissions.writeReview ? CollectionItemStatus.REVIEW : CollectionItemStatus.ACCEPTED,
     reviewedAt: permissions.write ? new Date() : null,
     reviewedById: permissions.write ? userId : null,
+    tagId,
   };
   let data: Prisma.CollectionItemCreateManyInput[] = [];
   if (
@@ -1388,7 +1936,13 @@ export const bulkSaveItems = async ({
 
   await homeBlockCacheBust(HomeBlockType.Collection, collectionId);
 
-  return dbWrite.collectionItem.createMany({ data });
+  const { count } = await dbWrite.collectionItem.createMany({ data });
+
+  // return imageIds for use in controller updateEntityMetrics
+  return {
+    count,
+    imageIds: data.map((d) => d.imageId).filter(isDefined),
+  };
 };
 
 type ImageProps = {
@@ -1400,12 +1954,13 @@ type ImageProps = {
   hash: string | null;
   height: number | null;
   width: number | null;
-  nsfw: NsfwLevel;
+  nsfwLevel: NsfwLevel;
   postId: number | null;
   index: number | null;
   scannedAt: Date | null;
   mimeType: string | null;
   meta: Prisma.JsonObject | null;
+  userId: number;
 } | null;
 
 type CollectionImageRaw = {
@@ -1429,6 +1984,7 @@ export const getCollectionCoverImages = async ({
         'name', i."name",
         'url', i."url",
         'nsfw', i."nsfw",
+        'nsfwLevel', i."nsfwLevel",
         'width', i."width",
         'height', i."height",
         'hash', i."hash",
@@ -1436,7 +1992,8 @@ export const getCollectionCoverImages = async ({
         'mimeType', i."mimeType",
         'scannedAt', i."scannedAt",
         'type', i."type",
-        'meta', i."meta"
+        'meta', i."meta",
+        'userId', i."userId"
       ) image
   `;
 
@@ -1511,7 +2068,7 @@ export const getCollectionCoverImages = async ({
   const tags = await dbRead.tagsOnImage.findMany({
     where: {
       imageId: { in: [...new Set(itemImages.map(({ image }) => image?.id).filter(isDefined))] },
-      disabled: false,
+      disabledAt: null,
     },
     select: { imageId: true, tagId: true },
   });
@@ -1529,3 +2086,339 @@ export const getCollectionCoverImages = async ({
     }))
     .filter((itemImage) => !!(itemImage.image || itemImage.src));
 };
+
+type CollectionForMeta = { id: number; metadata: CollectionMetadataSchema | null };
+
+export const getContestsFromEntity = async ({
+  entityType,
+  entityId,
+}: {
+  entityType: 'post' | 'article' | 'model' | 'image';
+  entityId: number;
+}) => {
+  const entityToField = {
+    post: 'postId',
+    article: 'articleId',
+    model: 'modelId',
+    image: 'imageId',
+  };
+
+  if (!entityToField[entityType]) {
+    return [] as CollectionForMeta[];
+  }
+
+  const contestEntries = await dbRead.$queryRaw<CollectionForMeta[]>`
+    SELECT ci."collectionId" as "id", c."metadata"
+    FROM "CollectionItem" ci
+    JOIN "Collection" c ON c.id = ci."collectionId"
+    WHERE ci."${Prisma.raw(entityToField[entityType])}" = ${entityId} AND c."mode" = 'Contest'
+  `;
+
+  return contestEntries;
+};
+
+export const removeCollectionItem = async ({
+  userId,
+  collectionId,
+  itemId,
+  isModerator,
+}: RemoveCollectionItemInput & { userId: number; isModerator?: boolean }) => {
+  const permissions = await getUserCollectionPermissionsById({
+    id: collectionId,
+    userId,
+    isModerator,
+  });
+
+  if (!permissions.collectionType) {
+    throw throwNotFoundError('Unable to determine collection type');
+  }
+
+  let isOwner = false;
+  const tableKey =
+    permissions.collectionType === CollectionType.Model
+      ? 'Model'
+      : permissions.collectionType === CollectionType.Article
+      ? 'Article'
+      : permissions.collectionType === CollectionType.Image
+      ? 'Image'
+      : permissions.collectionType === CollectionType.Post
+      ? 'Post'
+      : null;
+
+  if (!tableKey) {
+    throw throwNotFoundError('Unable to determine collection type');
+  }
+
+  const [item] = await dbRead.$queryRaw<{ userId: number }[]>`
+    SELECT "userId" FROM "${Prisma.raw(tableKey)}" WHERE id = ${itemId}
+  `;
+
+  if (!item) {
+    throw throwNotFoundError('Item not found');
+  }
+
+  isOwner = item.userId === userId;
+
+  if (
+    !permissions.write &&
+    !permissions.writeReview &&
+    !isOwner &&
+    !permissions.manage &&
+    !isModerator
+  ) {
+    throw throwAuthorizationError(
+      'You do not have permission to remove items from this collection.'
+    );
+  }
+
+  await dbWrite.$queryRaw`
+    DELETE FROM "CollectionItem"
+    WHERE "collectionId" = ${collectionId} AND "${Prisma.raw(
+    `${tableKey.toLowerCase()}Id`
+  )}" = ${itemId}
+  `;
+
+  return {
+    collectionId,
+    itemId,
+    type: permissions.collectionType,
+  };
+};
+
+export async function checkUserOwnsCollectionAndItem({
+  itemId,
+  collectionId,
+  userId,
+}: {
+  itemId: number;
+  collectionId: number;
+  userId: number;
+}) {
+  const collection = await dbRead.collection.findFirst({
+    where: { id: collectionId, userId },
+    select: { type: true, userId: true },
+  });
+  if (!collection) return false;
+
+  const tableKey =
+    collection.type === CollectionType.Model
+      ? 'Model'
+      : collection.type === CollectionType.Article
+      ? 'Article'
+      : collection.type === CollectionType.Image
+      ? 'Image'
+      : collection.type === CollectionType.Post
+      ? 'Post'
+      : null;
+
+  if (!tableKey) throw throwNotFoundError('Unable to determine collection type');
+
+  const [item] = await dbRead.$queryRaw<{ userId: number }[]>`
+    SELECT "userId" FROM "${Prisma.raw(tableKey)}" WHERE id = ${itemId}
+  `;
+  if (!item) return false;
+
+  return item.userId === collection.userId;
+}
+
+export const setItemScore = async ({
+  collectionItemId,
+  userId,
+  score,
+}: SetItemScoreInput & { userId: number }) => {
+  const collectionItem = await dbRead.collectionItem.findUnique({
+    where: { id: collectionItemId },
+    select: {
+      id: true,
+      collection: {
+        select: { id: true, mode: true },
+      },
+    },
+  });
+  if (!collectionItem) throw throwNotFoundError('Collection item not found');
+  if (!collectionItem.collection) throw throwNotFoundError('Collection not found');
+  if (collectionItem.collection.mode !== CollectionMode.Contest)
+    throw throwBadRequestError('This collection is not a contest collection');
+
+  const itemScore = await dbWrite.collectionItemScore.upsert({
+    where: { userId_collectionItemId: { userId, collectionItemId: collectionItem.id } },
+    create: { userId, collectionItemId: collectionItem.id, score },
+    update: { score },
+  });
+
+  return itemScore;
+};
+
+export const getCollectionItemById = ({ id }: GetByIdInput) => {
+  return dbRead.collectionItem.findUniqueOrThrow({
+    where: { id },
+    include: {
+      collection: true,
+    },
+  });
+};
+
+export async function getCollectionEntryCount({
+  collectionId,
+  userId,
+}: {
+  collectionId: number;
+  userId: number;
+}) {
+  const [collection] = await dbRead.$queryRaw<{ total: number }[]>`
+    SELECT
+      CAST(c.metadata->'maxItemsPerUser' as int) as total
+    FROM "Collection" c
+    WHERE c.id = ${collectionId}
+  `;
+  if (!collection) throw throwNotFoundError('Collection not found');
+
+  const statuses = await dbRead.$queryRaw<{ status: CollectionItemStatus; count: number }[]>`
+    SELECT
+      "status",
+      CAST(COUNT(*) as int) as "count"
+    FROM "CollectionItem"
+    WHERE "collectionId" = ${collectionId}
+    AND "addedById" = ${userId}
+    GROUP BY "status"
+  `;
+  console.log(collection);
+  const result: { [key in CollectionItemStatus]?: number } & { max: number } = {
+    max: collection.total,
+  };
+  for (const { status, count } of statuses) result[status] = count;
+  return result;
+}
+
+export const setCollectionItemNsfwLevel = async ({
+  collectionItemId,
+  nsfwLevel,
+}: SetCollectionItemNsfwLevelInput) => {
+  const collectionItem = await getCollectionItemById({ id: collectionItemId });
+
+  if (!collectionItem) {
+    throw throwNotFoundError('Collection item not found');
+  }
+
+  if (collectionItem.collection.type !== CollectionType.Image || !collectionItem.imageId) {
+    throw throwBadRequestError(
+      'NSFW Level assignment support is only available on image collections.'
+    );
+  }
+
+  const metadata = (collectionItem.collection.metadata ?? {}) as CollectionMetadataSchema;
+
+  if (!metadata?.judgesApplyBrowsingLevel) {
+    throw throwBadRequestError('This collection does not support NSFW level assignment.');
+  }
+
+  const image = await dbRead.image.findUnique({
+    where: { id: collectionItem.imageId as number },
+    select: {
+      post: {
+        select: {
+          collectionId: true,
+        },
+      },
+    },
+  });
+
+  if (!image) {
+    throw throwNotFoundError('Image not found');
+  }
+
+  if (image.post?.collectionId !== collectionItem.collectionId) {
+    throw throwBadRequestError(
+      'The image you are trying to apply an NSFW level to was not created for this collection. NSFW level assignment is only available for images created for this collection.'
+    );
+  }
+
+  if (!nsfwLevel) throw throwBadRequestError();
+
+  await dbWrite.image.update({
+    where: { id: collectionItem.imageId as number },
+    data: { nsfwLevel, scannedAt: new Date(), ingestion: ImageIngestionStatus.Scanned },
+  });
+
+  await imagesSearchIndex.queueUpdate([
+    { id: collectionItem.imageId, action: SearchIndexUpdateQueueAction.Update },
+  ]);
+};
+
+export const enableCollectionYoutubeSupport = async ({
+  collectionId,
+  userId,
+  authenticationCode,
+}: EnableCollectionYoutubeSupportInput & { userId: number }) => {
+  const user = await dbRead.user.findUnique({ where: { id: userId } });
+  if (!user?.isModerator) {
+    throw throwAuthorizationError('You do not have permission to enable youtube support');
+  }
+
+  const collection = await getCollectionById({ input: { id: collectionId } });
+
+  if (collection.mode !== CollectionMode.Contest) {
+    throw throwBadRequestError('Only contest collections can have youtube support enabled');
+  }
+
+  if (collection.type !== CollectionType.Image) {
+    throw throwBadRequestError('Only image collections can have youtube support enabled');
+  }
+
+  const metadata = collection.metadata as CollectionMetadataSchema;
+
+  if (metadata.youtubeSupportEnabled) {
+    throw throwBadRequestError('Youtube support is already enabled for this collection');
+  }
+
+  // Attempt to save the auth code on the key-value store.
+  try {
+    const { tokens } = await getYoutubeRefreshToken(
+      authenticationCode,
+      '/collections/youtube/auth'
+    );
+    const collectionKey = `collection:${collectionId}:youtube-authentication-code`;
+
+    if (!tokens.refresh_token) {
+      throw throwBadRequestError('Failed to get youtube refresh token');
+    }
+    await dbWrite.$transaction(async (tx) => {
+      await tx.keyValue.upsert({
+        where: {
+          key: collectionKey,
+        },
+        update: {
+          value: tokens.refresh_token as string,
+        },
+        create: {
+          key: collectionKey,
+          value: tokens.refresh_token as string,
+        },
+      });
+
+      await tx.collection.update({
+        where: {
+          id: collection.id,
+        },
+        data: {
+          metadata: {
+            ...metadata,
+            youtubeSupportEnabled: true,
+          },
+        },
+      });
+    });
+
+    return { collectionId, youtubeSupportEnabled: true };
+  } catch (error) {
+    throw throwBadRequestError('Failed to save youtube authentication code');
+  }
+};
+
+export async function randomizeCollectionItems(collectionId: number) {
+  await dbWrite.$executeRaw`
+    UPDATE "CollectionItem" ci SET "randomId" = FLOOR(RANDOM() * 1000000000)
+    WHERE ci."collectionId" = ${collectionId}
+      AND ci."status" = 'ACCEPTED'
+  `;
+}

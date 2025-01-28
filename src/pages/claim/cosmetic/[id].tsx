@@ -1,6 +1,7 @@
 import {
   Alert,
   Button,
+  Card,
   Center,
   Container,
   Group,
@@ -10,14 +11,16 @@ import {
   ThemeIcon,
   Title,
 } from '@mantine/core';
-import { CosmeticSource } from '@prisma/client';
-import { IconCircleCheck } from '@tabler/icons-react';
+import { CosmeticSource } from '~/shared/utils/prisma/enums';
+import { IconCircleCheck, IconClock2, IconX } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
 import { z } from 'zod';
 import { getEdgeUrl } from '~/client-utils/cf-images-utils';
 import { NotFound } from '~/components/AppLayout/NotFound';
+import { useQueryCosmetic } from '~/components/Cosmetics/cosmetics.util';
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
 import { Meta } from '~/components/Meta/Meta';
+import { PageLoader } from '~/components/PageLoader/PageLoader';
 import { enterFall, jelloVertical } from '~/libs/animations';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { getLoginLink } from '~/utils/login-helpers';
@@ -49,18 +52,25 @@ export const getServerSideProps = createServerSideProps({
   },
 });
 
-type ClaimStatus = 'pending' | 'claimed' | 'equipped';
+const availableCosmeticTypes: string[] = ['Badge', 'ContentDecoration'];
+type ClaimStatus = 'unavailable' | 'pending' | 'claimed' | 'equipped';
 export default function ClaimCosmeticPage({ id }: { id: number }) {
   const queryUtils = trpc.useContext();
   const [status, setStatus] = useState<ClaimStatus | null>();
-  const { data: cosmetic, isLoading: cosmeticLoading } = trpc.cosmetic.getById.useQuery({ id });
+  const { cosmetic, isLoading: cosmeticLoading } = useQueryCosmetic({ id });
   const { data: cosmeticStatus, refetch } = trpc.user.cosmeticStatus.useQuery({ id });
 
   useEffect(() => {
     if (!cosmeticStatus) return;
 
     setStatus(
-      cosmeticStatus.equippedAt ? 'equipped' : cosmeticStatus.obtainedAt ? 'claimed' : 'pending'
+      !cosmeticStatus.available
+        ? 'unavailable'
+        : cosmeticStatus.equipped
+        ? 'equipped'
+        : cosmeticStatus.obtained
+        ? 'claimed'
+        : 'pending'
     );
   }, [cosmeticStatus]);
 
@@ -91,8 +101,9 @@ export default function ClaimCosmeticPage({ id }: { id: number }) {
     setStatus('equipped');
   };
 
-  if (cosmeticLoading || !cosmetic) return <Loader />;
-  const canClaim = cosmetic.type === 'Badge' && cosmetic.source === CosmeticSource.Claim;
+  if (cosmeticLoading || !cosmetic) return <PageLoader />;
+  const canClaim =
+    availableCosmeticTypes.includes(cosmetic.type) && cosmetic.source === CosmeticSource.Claim;
   if (!canClaim) {
     return <NotFound />;
   }
@@ -103,6 +114,16 @@ export default function ClaimCosmeticPage({ id }: { id: number }) {
   const cosmeticImage = (cosmetic.data as MixedObject).url;
 
   const actionStates: Record<ClaimStatus, React.ReactNode> = {
+    unavailable: (
+      <Alert radius="sm" color="red" sx={{ zIndex: 10 }}>
+        <Group spacing="xs" noWrap position="center">
+          <ThemeIcon color="red" size="lg">
+            <IconX strokeWidth={3} />
+          </ThemeIcon>
+          <Title order={2}>{`You haven't earned this cosmetic`}</Title>
+        </Group>
+      </Alert>
+    ),
     pending: (
       <Center>
         <Button onClick={handleClaim} size="lg" w={300}>
@@ -121,7 +142,7 @@ export default function ClaimCosmeticPage({ id }: { id: number }) {
           <ThemeIcon color="green" size="lg">
             <IconCircleCheck />
           </ThemeIcon>
-          <Title order={2}>{`This badge is equipped`}</Title>
+          <Title order={2}>{`This cosmetic is equipped`}</Title>
         </Group>
       </Alert>
     ),
@@ -132,17 +153,20 @@ export default function ClaimCosmeticPage({ id }: { id: number }) {
       <Meta
         title={`Claim ${cosmetic.name} | Civitai`}
         description={`Claim the ${cosmetic.name}. Awarded for ${cosmetic.description} while you can`}
-        image={getEdgeUrl(cosmeticImage, { width: 256 })}
+        imageUrl={getEdgeUrl(cosmeticImage, { width: 256 })}
+        deIndex
       />
       <Container size="xs" mb="lg">
         <Stack spacing={0}>
-          <Center>
-            <Alert radius="sm" color="blue" sx={{ zIndex: 10 }}>
-              <Group spacing="xs" noWrap position="center">
-                <Text size="md" weight={500}>{`🎉 You've received a badge! 🎉`}</Text>
-              </Group>
-            </Alert>
-          </Center>
+          {cosmeticAvailable && status !== 'unavailable' && (
+            <Center>
+              <Alert radius="sm" color="blue" sx={{ zIndex: 10 }}>
+                <Group spacing="xs" noWrap position="center">
+                  <Text size="md" weight={500}>{`🎉 You've received a cosmetic! 🎉`}</Text>
+                </Group>
+              </Alert>
+            </Center>
+          )}
           <Center
             sx={{
               animationName: `${enterFall}, ${jelloVertical}`,
@@ -153,7 +177,26 @@ export default function ClaimCosmeticPage({ id }: { id: number }) {
             h={256}
             my="lg"
           >
-            <EdgeMedia src={(cosmetic.data as MixedObject).url} width={256} />
+            {cosmetic.type === 'Badge' && (
+              <EdgeMedia
+                src={(cosmetic.data as MixedObject).url}
+                alt={cosmetic.name}
+                style={{ height: 256, width: 256 }}
+              />
+            )}
+            {cosmetic.type === 'ContentDecoration' && (
+              <Card
+                withBorder
+                shadow="sm"
+                h={256}
+                w={(256 * 2) / 3}
+                sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+              >
+                <Text size="xs" color="dimmed">
+                  Example Cosmetic here
+                </Text>
+              </Card>
+            )}
           </Center>
           <Title order={1} align="center" mb={5}>
             {cosmetic.name}

@@ -11,8 +11,11 @@ import {
   ThemeIcon,
 } from '@mantine/core';
 import {
+  IconArrowsHorizontal,
+  IconBolt,
   IconBookmark,
   IconBox,
+  IconBrush,
   IconBulb,
   IconCheck,
   IconChecks,
@@ -31,9 +34,11 @@ import {
   IconTarget,
   IconTargetArrow,
   IconTargetOff,
+  IconThumbUp,
   IconTrophy,
+  IconX,
 } from '@tabler/icons-react';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useRouter } from 'next/router';
 import { useEffect, useMemo } from 'react';
 import { IconBadge } from '~/components/IconBadge/IconBadge';
@@ -73,6 +78,14 @@ const metricTypes: Record<
       />
     ),
     tooltip: 'Average Rating',
+  }),
+  thumbsUpCount: () => ({
+    tooltip: 'Likes',
+    icon: <IconThumbUp {...iconProps} />,
+  }),
+  generationCount: () => ({
+    tooltip: 'Generations',
+    icon: <IconBrush {...iconProps} />,
   }),
   heart: () => ({
     icon: <IconHeart {...iconProps} />,
@@ -115,9 +128,25 @@ const metricTypes: Record<
     tooltip: 'Views',
     icon: <IconEye {...iconProps} />,
   }),
+  level: () => ({
+    tooltip: 'Level',
+    icon: <IconStar {...iconProps} />,
+  }),
+  strikes: () => ({
+    tooltip: 'Strikes',
+    icon: <IconX {...iconProps} />,
+  }),
+  streak: () => ({
+    tooltip: 'Longest Streak',
+    icon: <IconArrowsHorizontal {...iconProps} />,
+  }),
   bookmark: () => ({
     tooltip: 'Bookmarks',
     icon: <IconBookmark {...iconProps} />,
+  }),
+  lifetime: () => ({
+    tooltip: 'Lifetime Buzz',
+    icon: <IconBolt {...iconProps} />,
   }),
   reactionCount: () => ({
     tooltip: 'Reactions',
@@ -142,6 +171,10 @@ const metricTypes: Record<
   entries: () => ({
     tooltip: 'Entries',
     icon: <IconBox {...iconProps} />,
+  }),
+  cosmetics: () => ({
+    tooltip: 'Cosmetics',
+    icon: <IconHexagonFilled {...iconProps} />,
   }),
   diamond: () => ({
     tooltip: 'Diamond Days',

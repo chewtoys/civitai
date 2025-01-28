@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { dbRead, dbWrite } from '~/server/db/client';
 import { userWithProfileSelect } from '~/server/selectors/user.selector';
 import {
@@ -8,10 +9,14 @@ import {
   UserProfileUpdateSchema,
 } from '~/server/schema/user-profile.schema';
 import { ImageMetaProps } from '~/server/schema/image.schema';
-import { CollectionReadConfiguration, ImageIngestionStatus, Prisma } from '@prisma/client';
+import { ImageIngestionStatus } from '~/shared/utils/prisma/enums';
 import { isDefined } from '~/utils/type-guards';
 import { ingestImage } from '~/server/services/image.service';
-import { updateLeaderboardRank } from '~/server/services/user.service';
+import { equipCosmetic, updateLeaderboardRank } from '~/server/services/user.service';
+import { UserMeta } from '~/server/schema/user.schema';
+import { banReasonDetails } from '~/server/common/constants';
+import { getUserBanDetails } from '~/utils/user-helpers';
+import { userContentOverviewCache } from '~/server/redis/caches';
 
 export const getUserContentOverview = async ({
   username,
@@ -37,42 +42,16 @@ export const getUserContentOverview = async ({
     userId = user.id;
   }
 
-  const [data] = await dbRead.$queryRaw<
-    {
-      id: number;
-      modelCount: number;
-      imageCount: number;
-      postCount: number;
-      articleCount: number;
-      bountyCount: number;
-      bountyEntryCount: number;
-      receivedReviewCount: number;
-      writtenReviewCount: number;
-      collectionCount: number;
-    }[]
-  >`
-    SELECT 
-        (SELECT COUNT(*)::INT FROM "Model" m WHERE m."userId" = u.id AND m."status" = 'Published') as "modelCount",
-        (SELECT COUNT(*)::INT FROM "Post" p WHERE p."userId" = u.id AND p."publishedAt" IS NOT NULL) as "postCount",
-        (SELECT COUNT(*)::INT FROM "Image" i WHERE i."ingestion" = 'Scanned' AND i."needsReview" IS NULL AND i."userId" = u.id AND i."postId" IS NOT NULL) as "imageCount",
-        (SELECT COUNT(*)::INT FROM "Article" a WHERE a."userId" = u.id AND a."publishedAt" <= NOW()) as "articleCount", 
-        (SELECT COUNT(*)::INT FROM "Bounty" b WHERE b."userId" = u.id AND b."startsAt" <= NOW() ) as "bountyCount",
-        (SELECT COUNT(*)::INT FROM "BountyEntry" be WHERE be."userId" = u.id) as "bountyEntryCount",
-        (SELECT COUNT(*)::INT FROM "ResourceReview" r INNER JOIN "Model" m ON m.id = r."modelId" AND m."userId" = u.id WHERE r."userId" != u.id) as "receivedReviewCount",
-        (SELECT COUNT(*)::INT FROM "ResourceReview" r WHERE r."userId" = u.id) as "writtenReviewCount",
-        (SELECT COUNT(*)::INT FROM "Collection" c WHERE c."userId" = u.id AND c."read" = ${CollectionReadConfiguration.Public}::"CollectionReadConfiguration" ) as "collectionCount"
-    FROM "User" u
-    WHERE u.id = ${userId}
-  `;
-
-  return data;
+  const data = await userContentOverviewCache.fetch([userId]);
+  return data[userId];
 };
 
 export const getUserWithProfile = async ({
   username,
   id,
   tx,
-}: GetUserProfileSchema & { tx?: Prisma.TransactionClient }) => {
+  isModerator,
+}: GetUserProfileSchema & { tx?: Prisma.TransactionClient; isModerator?: boolean }) => {
   const dbClient = tx ?? dbWrite;
   // Use write to get the latest most accurate user here since we'll need to create the profile
   // if it doesn't exist.
@@ -86,13 +65,39 @@ export const getUserWithProfile = async ({
         username,
         deletedAt: null,
       },
-      select: userWithProfileSelect,
+      select: { ...userWithProfileSelect, bannedAt: true, meta: true, publicSettings: true },
+    });
+
+    // Becuase this is a view, it might be slow and we prefer to get the stats in a separate query
+    // Ideally, using dbRead.
+    const stats = await dbRead.userStat.findFirst({
+      where: {
+        userId: user.id,
+      },
+      select: {
+        ratingAllTime: true,
+        ratingCountAllTime: true,
+        downloadCountAllTime: true,
+        favoriteCountAllTime: true,
+        thumbsUpCountAllTime: true,
+        followerCountAllTime: true,
+        reactionCountAllTime: true,
+        uploadCountAllTime: true,
+        generationCountAllTime: true,
+      },
     });
 
     const { profile } = user;
+    const userMeta = (user.meta ?? {}) as UserMeta;
 
     return {
       ...user,
+      meta: undefined,
+      ...getUserBanDetails({
+        meta: userMeta,
+        isModerator: isModerator ?? false,
+      }),
+      stats: stats,
       profile: {
         ...profile,
         privacySettings: (profile?.privacySettings ?? {}) as PrivacySettingsSchema,
@@ -102,6 +107,7 @@ export const getUserWithProfile = async ({
           ? {
               ...profile.coverImage,
               meta: profile.coverImage.meta as ImageMetaProps | null,
+              metadata: profile.coverImage.metadata as MixedObject,
               tags: profile.coverImage.tags.map((t) => t.tag),
             }
           : null,
@@ -132,55 +138,78 @@ export const getUserWithProfile = async ({
 };
 
 export const updateUserProfile = async ({
-  profileImage,
+  // profileImage,
   socialLinks,
   sponsorshipLinks,
-  badgeId,
-  nameplateId,
+  // badgeId,
+  // nameplateId,
   userId,
   coverImage,
-  leaderboardShowcase,
+  // leaderboardShowcase,
+  // profilePicture,
+  creatorCardStatsPreferences,
   ...profile
 }: UserProfileUpdateSchema & { userId: number }) => {
   const current = await getUserWithProfile({ id: userId }); // Ensures user exists && has a profile record.
 
+  // We can safeuly update creatorCardStatsPreferences out of the transaction as it's not critical
+  if (creatorCardStatsPreferences) {
+    await dbWrite.$executeRawUnsafe(`
+        UPDATE "User"
+        SET "publicSettings" = jsonb_set(
+          "publicSettings",
+          '{creatorCardStatsPreferences}',
+          '${JSON.stringify(creatorCardStatsPreferences)}'::jsonb
+        )
+        WHERE "id" = ${userId}`);
+  }
+
   await dbWrite.$transaction(
     async (tx) => {
-      const shouldUpdateCosmetics = badgeId !== undefined || nameplateId !== undefined;
-      const payloadCosmeticIds: number[] = [];
+      // const shouldUpdateCosmetics = badgeId !== undefined || nameplateId !== undefined;
+      // const payloadCosmeticIds: number[] = [];
 
-      if (badgeId) payloadCosmeticIds.push(badgeId);
-      if (nameplateId) payloadCosmeticIds.push(nameplateId);
+      // if (badgeId) payloadCosmeticIds.push(badgeId);
+      // if (nameplateId) payloadCosmeticIds.push(nameplateId);
 
-      const shouldUpdateUser = shouldUpdateCosmetics || profileImage || leaderboardShowcase;
+      // const shouldUpdateUser = shouldUpdateCosmetics || profileImage || leaderboardShowcase;
 
-      if (shouldUpdateUser) {
-        await tx.user.update({
-          where: {
-            id: userId,
-          },
-          data: {
-            image: profileImage,
-            leaderboardShowcase,
-            cosmetics: shouldUpdateCosmetics
-              ? {
-                  updateMany: {
-                    where: { equippedAt: { not: null } },
-                    data: { equippedAt: null },
-                  },
-                  update: payloadCosmeticIds.map((cosmeticId) => ({
-                    where: { userId_cosmeticId: { userId, cosmeticId } },
-                    data: { equippedAt: new Date() },
-                  })),
-                }
-              : undefined,
-          },
-        });
+      // if (shouldUpdateUser) {
+      //   await tx.user.update({
+      //     where: {
+      //       id: userId,
+      //     },
+      //     data: {
+      //       image: profileImage,
+      //       leaderboardShowcase,
+      //       profilePicture:
+      //         profilePicture === null
+      //           ? { delete: true }
+      //           : profilePicture
+      //           ? {
+      //               delete: true,
+      //               upsert: {
+      //                 where: { id: profilePicture.id },
+      //                 update: {
+      //                   ...profilePicture,
+      //                   userId,
+      //                 },
+      //                 create: {
+      //                   ...profilePicture,
+      //                   userId,
+      //                 },
+      //               },
+      //             }
+      //           : undefined,
+      //     },
+      //   });
 
-        if (leaderboardShowcase !== undefined) {
-          await updateLeaderboardRank(userId);
-        }
-      }
+      //   if (shouldUpdateCosmetics) await equipCosmetic({ userId, cosmeticId: payloadCosmeticIds });
+
+      //   if (leaderboardShowcase !== undefined) {
+      //     await updateLeaderboardRank({ userIds: userId });
+      //   }
+      // }
 
       const links = [...(socialLinks ?? []), ...(sponsorshipLinks ?? [])];
 

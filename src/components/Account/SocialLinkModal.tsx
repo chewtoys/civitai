@@ -1,5 +1,5 @@
 import { Stack, Button, Modal, Group } from '@mantine/core';
-import { LinkType } from '@prisma/client';
+import { LinkType } from '~/shared/utils/prisma/enums';
 import { useSession } from 'next-auth/react';
 import { useEffect } from 'react';
 import { z } from 'zod';
@@ -37,8 +37,7 @@ export function SocialLinkModal({
 
   const handleSubmit = (data: z.infer<typeof schema>) => {
     if (!session?.user?.id || !selected) return;
-    const userId = session.user.id;
-    mutate({ ...selected, ...data, userId });
+    mutate({ ...selected, ...data });
   };
 
   useEffect(() => {

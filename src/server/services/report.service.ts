@@ -1,17 +1,56 @@
-import { ImageEngagementType, Prisma, Report, ReportReason, ReportStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import {
+  AppealStatus,
+  BuzzAccountType,
+  EntityType,
+  ImageEngagementType,
+  ImageIngestionStatus,
+  ReportReason,
+  ReportStatus,
+} from '~/shared/utils/prisma/enums';
+import { Report } from '~/shared/utils/prisma/models';
+import {
+  BlockedReason,
+  NotificationCategory,
+  NsfwLevel,
+  SearchIndexUpdateQueueAction,
+} from '~/server/common/enums';
 
-import { dbWrite, dbRead } from '~/server/db/client';
+import { dbRead, dbWrite } from '~/server/db/client';
+import { reportAcceptedReward } from '~/server/rewards';
 import { GetByIdInput } from '~/server/schema/base.schema';
 import {
+  CreateEntityAppealInput,
   CreateReportInput,
-  GetReportCountInput,
+  GetRecentAppealsInput,
   GetReportsInput,
   ReportEntity,
+  ResolveAppealInput,
 } from '~/server/schema/report.schema';
+import {
+  articlesSearchIndex,
+  collectionsSearchIndex,
+  imagesMetricsSearchIndex,
+  imagesSearchIndex,
+} from '~/server/search-index';
+import { trackModActivity } from '~/server/services/moderator.service';
 import { addTagVotes } from '~/server/services/tag.service';
-import { refreshHiddenImagesForUser } from '~/server/services/user-cache.service';
-import { throwBadRequestError } from '~/server/utils/errorHandling';
+import {
+  throwAuthorizationError,
+  throwBadRequestError,
+  throwNotFoundError,
+} from '~/server/utils/errorHandling';
 import { getPagination, getPagingData } from '~/server/utils/pagination-helpers';
+import { createBuzzTransaction, refundTransaction } from '~/server/services/buzz.service';
+import { withRetries } from '~/utils/errorHandling';
+import { TransactionType } from '~/server/schema/buzz.schema';
+import dayjs from 'dayjs';
+import {
+  ingestImage,
+  queueImageSearchIndexUpdate,
+  updateNsfwLevel,
+} from '~/server/services/image.service';
+import { createNotification } from '~/server/services/notification.service';
 
 export const getReportById = <TSelect extends Prisma.ReportSelect>({
   id,
@@ -81,35 +120,42 @@ const reportTypeNameMap: Record<ReportEntity, string> = {
   [ReportEntity.Collection]: 'collection',
   [ReportEntity.Bounty]: 'bounty',
   [ReportEntity.BountyEntry]: 'bountyEntry',
+  [ReportEntity.Chat]: 'chat',
 };
 
+const reportTypeConnectionMap = {
+  [ReportEntity.User]: 'userId',
+  [ReportEntity.Model]: 'modelId',
+  [ReportEntity.Comment]: 'commentId',
+  [ReportEntity.CommentV2]: 'commentV2Id',
+  [ReportEntity.Image]: 'imageId',
+  [ReportEntity.ResourceReview]: 'resourceReviewId',
+  [ReportEntity.Article]: 'articleId',
+  [ReportEntity.Post]: 'postId',
+  [ReportEntity.Collection]: 'collectionId',
+  [ReportEntity.Bounty]: 'bountyId',
+  [ReportEntity.BountyEntry]: 'bountyEntryId',
+  [ReportEntity.Chat]: 'chatId',
+} as const;
+
+const statusOverrides: Partial<Record<ReportReason, ReportStatus>> = {
+  [ReportReason.NSFW]: ReportStatus.Actioned,
+};
+
+type CreateReportProps = CreateReportInput & { userId: number; isModerator?: boolean };
 export const createReport = async ({
   userId,
   type,
   id,
   isModerator,
   ...data
-}: CreateReportInput & { userId: number; isModerator?: boolean }) => {
-  let isReportingLocked = false;
-  if (type === ReportEntity.Image) {
-    const image = await dbRead.imageResource.findFirst({
-      where: { imageId: id, modelVersion: { model: { underAttack: true } } },
-      select: { imageId: true },
-    });
-    isReportingLocked = !!image;
-  } else if (type === ReportEntity.Model) {
-    const model = await dbRead.model.findFirst({
-      where: { id, underAttack: true },
-      select: { id: true },
-    });
-    isReportingLocked = !!model;
-  }
-
-  if (isReportingLocked) throwBadRequestError('Reporting is locked for this model.');
-
+}: CreateReportProps) => {
   // Add report type to details for notifications
   if (!data.details) data.details = {};
   (data.details as MixedObject).reportType = reportTypeNameMap[type];
+
+  // only mods can create csam reports
+  if (data.reason === ReportReason.CSAM && !isModerator) throw throwAuthorizationError();
 
   const validReport =
     data.reason !== ReportReason.NSFW
@@ -122,19 +168,27 @@ export const createReport = async ({
       : null;
   if (validReport) return validReport;
 
-  const report: Prisma.ReportCreateNestedOneWithoutModelInput = {
-    create: {
-      ...data,
-      userId,
-      status: data.reason === ReportReason.NSFW ? ReportStatus.Actioned : ReportStatus.Pending,
-    },
-  };
+  await dbWrite.$transaction(async (tx) => {
+    // create the report
+    await tx.report.create({
+      data: {
+        ...data,
+        userId,
+        status: statusOverrides[data.reason] ?? ReportStatus.Pending,
+        [type]: {
+          create: {
+            [reportTypeConnectionMap[type]]: id,
+          },
+        },
+      },
+    });
 
-  return dbWrite.$transaction(async (tx) => {
-    switch (type) {
-      case ReportEntity.Model:
-        if (data.reason === ReportReason.NSFW)
-          await addTagVotes({
+    // handle NSFW
+    if (data.reason === ReportReason.NSFW)
+      switch (type) {
+        case ReportEntity.Model:
+        case ReportEntity.Image:
+          return await addTagVotes({
             userId,
             type,
             id,
@@ -142,122 +196,54 @@ export const createReport = async ({
             isModerator,
             vote: 1,
           });
+        case ReportEntity.Collection:
+          await tx.collection.update({ where: { id }, data: { nsfw: true } });
+          return collectionsSearchIndex.queueUpdate([
+            { id, action: SearchIndexUpdateQueueAction.Update },
+          ]);
+        case ReportEntity.Article:
+          await tx.article.update({ where: { id }, data: { nsfw: true } });
+          return articlesSearchIndex.queueUpdate([
+            { id, action: SearchIndexUpdateQueueAction.Update },
+          ]);
+        case ReportEntity.Post:
+          return await tx.post.update({ where: { id }, data: { nsfw: true } });
+      }
 
-        await tx.modelReport.create({
-          data: {
-            model: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      case ReportEntity.Comment:
-        await tx.commentReport.create({
-          data: {
-            comment: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      case ReportEntity.CommentV2:
-        await tx.commentV2Report.create({
-          data: {
-            commentV2: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      case ReportEntity.Image:
-        if (data.reason === ReportReason.NSFW)
-          addTagVotes({ userId, type, id, tags: data.details.tags ?? [], isModerator, vote: 1 });
-
-        await tx.imageReport.create({
-          data: {
-            image: { connect: { id } },
-            report,
-          },
-        });
-        if (data.reason === ReportReason.TOSViolation) {
-          await tx.imageEngagement.create({
+    // handle TOS violations
+    if (data.reason === ReportReason.TOSViolation)
+      switch (type) {
+        case ReportEntity.Image:
+          await dbWrite.imageEngagement.create({
             data: {
               imageId: id,
               userId,
               type: ImageEngagementType.Hide,
             },
           });
-          await refreshHiddenImagesForUser({ userId });
-        }
+          break;
+      }
 
-        break;
-      case ReportEntity.ResourceReview:
-        await tx.resourceReviewReport.create({
-          data: {
-            resourceReview: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      case ReportEntity.Article:
-        if (data.reason === ReportReason.NSFW)
-          await tx.article.update({ where: { id }, data: { nsfw: true } });
-
-        await tx.articleReport.create({
-          data: {
-            article: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      case ReportEntity.Post:
-        if (data.reason === ReportReason.NSFW)
-          await tx.post.update({ where: { id }, data: { nsfw: true } });
-
-        await tx.postReport.create({
-          data: {
-            post: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      case ReportEntity.User:
-        await tx.userReport.create({
-          data: {
-            user: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      case ReportEntity.Collection:
-        if (data.reason === ReportReason.NSFW)
-          await tx.collection.update({ where: { id }, data: { nsfw: true } });
-
-        await tx.collectionReport.create({
-          data: {
-            collection: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      case ReportEntity.Bounty:
-        if (data.reason === ReportReason.NSFW)
-          await tx.bounty.update({ where: { id }, data: { nsfw: true } });
-
-        await tx.bountyReport.create({
-          data: {
-            bounty: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      case ReportEntity.BountyEntry:
-        await tx.bountyEntryReport.create({
-          data: {
-            bountyEntry: { connect: { id } },
-            report,
-          },
-        });
-        break;
-      default:
-        throw new Error('unhandled report type');
+    if (data.reason === ReportReason.CSAM && type === ReportEntity.Image) {
+      await dbWrite.report.updateMany({
+        where: {
+          reason: { not: ReportReason.CSAM },
+          image: { imageId: id },
+        },
+        data: { status: ReportStatus.Actioned },
+      });
+      await dbWrite.image.update({
+        where: { id },
+        data: {
+          ingestion: 'Blocked',
+          nsfwLevel: NsfwLevel.Blocked,
+          blockedFor: BlockedReason.CSAM,
+        },
+      });
+      await imagesSearchIndex.queueUpdate([{ id, action: SearchIndexUpdateQueueAction.Delete }]);
+      await imagesMetricsSearchIndex.queueUpdate([
+        { id, action: SearchIndexUpdateQueueAction.Delete },
+      ]);
     }
   });
 };
@@ -318,57 +304,260 @@ export const updateReportById = ({
   return dbWrite.report.update({ where: { id }, data });
 };
 
-export const bulkUpdateReports = ({
+export async function bulkSetReportStatus({
   ids,
-  data,
+  status,
+  userId,
+  ip,
 }: {
   ids: number[];
-  data: Prisma.ReportUpdateManyArgs['data'];
-}) => {
-  return dbWrite.report.updateMany({ where: { id: { in: ids } }, data });
-};
+  status: ReportStatus;
+  userId: number;
+  ip?: string;
+}) {
+  const statusSetAt = new Date();
 
-export const getReportCounts = ({ type }: GetReportCountInput) => {
-  return dbRead.report.count({
-    where: { [type]: { isNot: null }, status: ReportStatus.Pending },
+  const reports = await dbRead.report.findMany({
+    where: { id: { in: ids }, status: { not: status } },
+    select: { id: true, userId: true, alsoReportedBy: true },
   });
-};
 
-export const getCommentReports = <TSelect extends Prisma.CommentReportSelect>({
-  commentId,
-  select,
+  if (!reports) return;
+
+  await dbWrite.$transaction(
+    reports.map((report) =>
+      dbWrite.report.update({
+        where: { id: report.id },
+        data: {
+          status,
+          statusSetAt,
+          statusSetBy: userId,
+          previouslyReviewedCount:
+            status === ReportStatus.Actioned ? report.alsoReportedBy.length + 1 : undefined,
+        },
+      })
+    )
+  );
+
+  // Track mod activity in the background
+  trackModReports({ ids, userId: userId });
+
+  // If we're actioning reports, we need to reward the users who reported them
+  if (status === ReportStatus.Actioned) {
+    const prepReports = reports.map((report) => ({
+      id: report.id,
+      userIds: [report.userId, ...report.alsoReportedBy],
+    }));
+
+    for (const report of prepReports) {
+      await Promise.all(
+        report.userIds.map((userId) =>
+          reportAcceptedReward.apply({ userId, reportId: report.id }, { ip })
+        )
+      );
+    }
+  }
+}
+
+// #region [helpers]
+function trackModReports({ ids, userId }: { ids: number[]; userId: number }) {
+  Promise.all(
+    ids.map((id) =>
+      trackModActivity(userId, {
+        entityType: 'report',
+        entityId: id,
+        activity: 'review',
+      })
+    )
+  );
+}
+
+// #endregion
+
+export function getRecentAppealsByUserId({ userId }: GetRecentAppealsInput) {
+  return dbRead.appeal.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+  });
+}
+
+export function getAppealCount({
+  userId,
+  status,
+  startDate,
 }: {
-  commentId: number;
-  select: TSelect;
-}) => {
-  return dbRead.commentReport.findMany({
-    select,
-    where: { commentId },
+  userId: number;
+  status: AppealStatus[];
+  startDate?: Date;
+}) {
+  return dbRead.appeal.count({
+    where: { userId, status: { in: status }, createdAt: { gte: startDate } },
   });
-};
+}
 
-export const getImageReports = <TSelect extends Prisma.ImageReportSelect>({
-  imageId,
-  select,
-}: {
-  imageId: number;
-  select: TSelect;
-}) => {
-  return dbRead.imageReport.findMany({
-    select,
-    where: { imageId },
-  });
-};
+function getAppealById({ id, select }: GetByIdInput & { select?: Prisma.AppealSelect }) {
+  return dbRead.appeal.findUnique({ where: { id }, select });
+}
 
-export const getResourceReviewReports = <TSelect extends Prisma.ResourceReviewReportSelect>({
-  resourceReviewId,
-  select,
-}: {
-  resourceReviewId: number;
-  select: TSelect;
-}) => {
-  return dbRead.resourceReviewReport.findMany({
-    select,
-    where: { resourceReviewId },
+export async function getAppealDetails({ id }: GetByIdInput) {
+  const appeal = await getAppealById({ id });
+  if (!appeal) throw throwNotFoundError('Appeal not found');
+
+  // Get details based on entityType
+  let entityDetails: MixedObject | null = null;
+  switch (appeal.entityType) {
+    case EntityType.Image:
+      entityDetails = await dbRead.image.findUnique({
+        where: { id: appeal.entityId },
+        select: { id: true, url: true, userId: true },
+      });
+      break;
+    default:
+      // Do nothing
+      break;
+  }
+
+  return { ...appeal, entityDetails };
+}
+
+export async function createEntityAppeal({
+  entityId,
+  entityType,
+  message,
+  userId,
+}: CreateEntityAppealInput & { userId: number }) {
+  let buzzTransactionId: string | null = null;
+  // check if user has more than 3 pending or rejected appeal in the last 30 days
+  const appealsCount = await getAppealCount({
+    userId,
+    startDate: dayjs().subtract(30, 'days').toDate(),
+    status: [AppealStatus.Pending, AppealStatus.Rejected],
   });
-};
+
+  if (appealsCount >= 3) {
+    const transaction = await withRetries(() =>
+      createBuzzTransaction({
+        amount: 100,
+        fromAccountId: userId,
+        toAccountId: 0,
+        type: TransactionType.Appeal,
+        fromAccountType: BuzzAccountType.user,
+        description: `Appeal fee for ${entityType} ${entityId}`,
+      })
+    );
+    buzzTransactionId = transaction.transactionId;
+  }
+
+  try {
+    const appeal = await dbWrite.$transaction(async (tx) => {
+      switch (entityType) {
+        case EntityType.Image:
+          // Update entity with needsReview = appeal
+          await tx.image.update({
+            where: { id: entityId },
+            data: { needsReview: 'appeal' },
+          });
+          break;
+        default:
+          // Do nothing
+          break;
+      }
+
+      return tx.appeal.create({
+        data: { entityId, entityType, appealMessage: message, userId, buzzTransactionId },
+      });
+    });
+
+    return appeal;
+  } catch (error) {
+    await refundTransaction(buzzTransactionId as string, 'Refund appeal fee');
+    throw error;
+  }
+}
+
+export async function resolveEntityAppeal({
+  ids,
+  entityType,
+  status,
+  internalNotes,
+  resolvedMessage,
+  userId,
+}: ResolveAppealInput & { userId?: number }) {
+  const appeals = await dbRead.appeal.findMany({
+    where: { entityId: { in: ids }, status: AppealStatus.Pending, entityType },
+    select: {
+      id: true,
+      entityId: true,
+      entityType: true,
+      resolvedAt: true,
+      buzzTransactionId: true,
+      status: true,
+      userId: true,
+    },
+  });
+  const affectedIds = appeals.map((a) => a.id);
+  if (affectedIds.length === 0) return [];
+
+  await dbWrite.appeal.updateMany({
+    where: { id: { in: affectedIds } },
+    data: { status, resolvedBy: userId, resolvedMessage, internalNotes, resolvedAt: new Date() },
+  });
+
+  const approved = status === AppealStatus.Approved;
+  for (const appeal of appeals) {
+    switch (appeal.entityType) {
+      case EntityType.Image:
+        // Update entity with needsReview = null
+        const image = await dbWrite.image.update({
+          where: { id: appeal.entityId },
+          data: approved
+            ? {
+                needsReview: null,
+                blockedFor: null,
+                ingestion: ImageIngestionStatus.Scanned,
+                nsfwLevel: 0,
+              }
+            : { needsReview: null },
+        });
+
+        if (approved) await updateNsfwLevel(image.id);
+
+        await queueImageSearchIndexUpdate({
+          ids: [appeal.entityId],
+          action: approved
+            ? SearchIndexUpdateQueueAction.Update
+            : SearchIndexUpdateQueueAction.Delete,
+        });
+        break;
+      default:
+        // Do nothing
+        break;
+    }
+
+    if (approved && appeal.buzzTransactionId) {
+      await withRetries(() =>
+        refundTransaction(
+          appeal.buzzTransactionId as string,
+          `Refunded appeal ${appeal.id} for ${appeal.entityType} ${appeal.entityId}`
+        )
+      );
+    }
+
+    // Notify the user that their appeal has been resolved
+    await createNotification({
+      userId: appeal.userId,
+      type: 'entity-appeal-resolved',
+      category: NotificationCategory.Other,
+      key: `entity-appeal-resolved:${appeal.entityType}:${appeal.entityId}`,
+      details: {
+        entityType: appeal.entityType,
+        entityId: appeal.entityId,
+        status,
+        resolvedMessage,
+      },
+    });
+  }
+
+  return appeals;
+}

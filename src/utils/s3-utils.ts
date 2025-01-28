@@ -3,56 +3,42 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   GetObjectCommandInput,
   HeadObjectCommand,
-  PutBucketCorsCommand,
+  // PutBucketCorsCommand,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { env } from '~/env/server.mjs';
+import { env } from '~/env/server';
 
 const missingEnvs = (): string[] => {
   const keys = [];
-  if (!env.S3_UPLOAD_KEY) {
-    keys.push('S3_UPLOAD_KEY');
-  }
-  if (!env.S3_UPLOAD_SECRET) {
-    keys.push('S3_UPLOAD_SECRET');
-  }
-  if (!env.S3_UPLOAD_ENDPOINT) {
-    keys.push('S3_UPLOAD_ENDPOINT');
-  }
-  if (!env.S3_UPLOAD_BUCKET) {
-    keys.push('S3_UPLOAD_BUCKET');
-  }
+  if (!env.S3_UPLOAD_KEY) keys.push('S3_UPLOAD_KEY');
+  if (!env.S3_UPLOAD_SECRET) keys.push('S3_UPLOAD_SECRET');
+  if (!env.S3_UPLOAD_ENDPOINT) keys.push('S3_UPLOAD_ENDPOINT');
+  if (!env.S3_UPLOAD_BUCKET) keys.push('S3_UPLOAD_BUCKET');
   return keys;
 };
 
-export async function setCors(s3: S3Client | null = null) {
-  if (!s3) s3 = await getS3Client();
-  await s3.send(
-    new PutBucketCorsCommand({
-      Bucket: env.S3_UPLOAD_BUCKET,
-      CORSConfiguration: {
-        CORSRules: [
-          {
-            AllowedHeaders: ['content-type'],
-            ExposeHeaders: ['ETag'],
-            AllowedMethods: ['PUT', 'GET'],
-            AllowedOrigins: env.S3_ORIGINS ? env.S3_ORIGINS : ['*'],
-          },
-        ],
-      },
-    })
-  );
-}
-
-export function getS3Client() {
+type S3Clients = 'model' | 'image';
+export function getS3Client(destination: S3Clients = 'model') {
   const missing = missingEnvs();
   if (missing.length > 0) throw new Error(`Next S3 Upload: Missing ENVs ${missing.join(', ')}`);
+
+  if (destination === 'image' && env.S3_IMAGE_UPLOAD_KEY && env.S3_IMAGE_UPLOAD_SECRET) {
+    return new S3Client({
+      credentials: {
+        accessKeyId: env.S3_IMAGE_UPLOAD_KEY,
+        secretAccessKey: env.S3_IMAGE_UPLOAD_SECRET,
+      },
+      region: env.S3_IMAGE_UPLOAD_REGION,
+      endpoint: env.S3_IMAGE_UPLOAD_ENDPOINT,
+    });
+  }
 
   return new S3Client({
     credentials: {
@@ -91,19 +77,39 @@ export function deleteObject(bucket: string, key: string, s3: S3Client | null = 
   );
 }
 
+// https://docs.aws.amazon.com/AmazonS3/latest/userguide/example_s3_DeleteObjects_section.html
+export function deleteManyObjects(bucket: string, keys: string[], s3: S3Client | null = null) {
+  if (!s3) s3 = getS3Client();
+  return s3.send(
+    new DeleteObjectsCommand({
+      Bucket: bucket,
+      Delete: {
+        Objects: keys.map((key) => ({ Key: key })),
+      },
+    })
+  );
+}
+
 const DOWNLOAD_EXPIRATION = 60 * 60 * 24; // 24 hours
 const UPLOAD_EXPIRATION = 60 * 60 * 12; // 12 hours
 const FILE_CHUNK_SIZE = 100 * 1024 * 1024; // 100 MB
-export async function getMultipartPutUrl(key: string, size: number, s3: S3Client | null = null) {
+export async function getMultipartPutUrl(
+  key: string,
+  size: number,
+  s3: S3Client | null = null,
+  bucket: string | null = null,
+  mimeType?: string,
+  chunkSize: number = FILE_CHUNK_SIZE
+) {
   if (!s3) s3 = getS3Client();
 
-  const bucket = await getBucket();
+  if (!bucket) bucket = await getBucket();
   const { UploadId } = await s3.send(
-    new CreateMultipartUploadCommand({ Bucket: bucket, Key: key })
+    new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: mimeType })
   );
 
   const promises = [];
-  for (let i = 0; i < Math.ceil(size / FILE_CHUNK_SIZE); i++) {
+  for (let i = 0; i < Math.ceil(size / chunkSize); i++) {
     promises.push(
       getSignedUrl(
         s3,
@@ -164,7 +170,13 @@ type GetObjectOptions = {
 
 const s3Host = new URL(env.S3_UPLOAD_ENDPOINT).host;
 export function parseKey(fileUrl: string) {
-  const url = new URL(fileUrl);
+  let url: URL;
+  try {
+    url = new URL(fileUrl);
+  } catch {
+    return { key: fileUrl };
+  }
+
   const bucketInPath = url.hostname === s3Host;
   if (bucketInPath) {
     const pathParts = url.pathname.split('/');
@@ -198,6 +210,23 @@ export async function getGetUrl(
   return { url, bucket, key: parsedKey };
 }
 
+export async function getGetUrlByKey(
+  key: string,
+  { s3, expiresIn = DOWNLOAD_EXPIRATION, fileName, bucket }: GetObjectOptions = {}
+) {
+  if (!s3) s3 = getS3Client();
+
+  if (!bucket) bucket = env.S3_UPLOAD_BUCKET;
+  const command: GetObjectCommandInput = {
+    Bucket: bucket,
+    Key: key,
+  };
+  if (fileName) command.ResponseContentDisposition = `attachment; filename="${fileName}"`;
+
+  const url = await getSignedUrl(s3, new GetObjectCommand(command), { expiresIn });
+  return { url, bucket, key };
+}
+
 export async function checkFileExists(key: string, s3: S3Client | null = null) {
   if (!s3) s3 = getS3Client();
 
@@ -214,4 +243,27 @@ export async function checkFileExists(key: string, s3: S3Client | null = null) {
   }
 
   return true;
+}
+
+export async function getFileMetadata(
+  key: string,
+  { bucket, s3 }: { bucket?: string; s3?: S3Client } = {}
+) {
+  s3 ??= getS3Client();
+  bucket ??= env.S3_UPLOAD_BUCKET;
+
+  const { key: parsedKey, bucket: parsedBucket } = parseKey(key);
+  const data = await s3.send(
+    new HeadObjectCommand({
+      Key: parsedKey,
+      Bucket: parsedBucket ?? bucket,
+    })
+  );
+
+  return {
+    metadata: data.Metadata,
+    size: data.ContentLength,
+    mimeType: data.ContentType,
+    lastModified: data.LastModified,
+  };
 }

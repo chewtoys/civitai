@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { dbWrite, dbRead } from '~/server/db/client';
+import { dbRead, dbWrite } from '~/server/db/client';
 import { GetByIdInput } from '~/server/schema/base.schema';
 
 export const getUserAccounts = <TSelect extends Prisma.AccountSelect = Prisma.AccountSelect>({
@@ -12,11 +12,12 @@ export const getUserAccounts = <TSelect extends Prisma.AccountSelect = Prisma.Ac
   return dbRead.account.findMany({
     where: { userId },
     select,
+    orderBy: { id: 'asc' },
   });
 };
 
-export const deleteAccount = ({ id }: GetByIdInput) => {
+export const deleteAccount = ({ id, userId }: GetByIdInput & { userId: number }) => {
   return dbWrite.account.delete({
-    where: { id },
+    where: { id, userId },
   });
 };

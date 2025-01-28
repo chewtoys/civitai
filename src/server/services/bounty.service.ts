@@ -1,19 +1,19 @@
+import { Prisma } from '@prisma/client';
 import {
   BountyEntryMode,
   Currency,
   ImageIngestionStatus,
   MetricTimeframe,
-  Prisma,
   TagTarget,
-} from '@prisma/client';
+} from '~/shared/utils/prisma/enums';
 import dayjs, { ManipulateType } from 'dayjs';
 import { groupBy } from 'lodash-es';
 import { bountyRefundedEmail } from '~/server/email/templates';
 import { TransactionType } from '~/server/schema/buzz.schema';
 import { createBuzzTransaction, getUserBuzzAccount } from '~/server/services/buzz.service';
 import { createEntityImages, updateEntityImages } from '~/server/services/image.service';
-import { decreaseDate, startOfDay, toUtc } from '~/utils/date-helpers';
-import { BountySort, BountyStatus } from '../common/enums';
+import { decreaseDate, startOfDay } from '~/utils/date-helpers';
+import { BountySort, BountyStatus, NsfwLevel } from '../common/enums';
 import { dbRead, dbWrite } from '../db/client';
 import { GetByIdInput } from '../schema/base.schema';
 import {
@@ -35,6 +35,10 @@ import {
   throwNotFoundError,
 } from '../utils/errorHandling';
 import { updateEntityFiles } from './file.service';
+import { ImageMetadata, VideoMetadata } from '~/server/schema/media.schema';
+import { userContentOverviewCache } from '~/server/redis/caches';
+import { BountyUpsertForm } from '~/components/Bounty/BountyUpsertForm';
+import { throwOnBlockedLinkDomain } from '~/server/services/blocklist.service';
 
 export const getAllBounties = <TSelect extends Prisma.BountySelect>({
   input: {
@@ -49,6 +53,7 @@ export const getAllBounties = <TSelect extends Prisma.BountySelect>({
     userId,
     period,
     baseModels,
+    excludedUserIds,
   },
   select,
 }: {
@@ -89,6 +94,10 @@ export const getAllBounties = <TSelect extends Prisma.BountySelect>({
 
       AND.push({ OR });
     }
+  }
+
+  if (excludedUserIds?.length) {
+    AND.push({ userId: { notIn: excludedUserIds } });
   }
 
   const orderBy: Prisma.BountyFindManyArgs['orderBy'] = [];
@@ -155,8 +164,8 @@ export const createBounty = async ({
       break;
   }
 
-  const startsAt = startOfDay(toUtc(incomingStartsAt));
-  const expiresAt = startOfDay(toUtc(incomingExpiresAt));
+  const startsAt = startOfDay(incomingStartsAt, { utc: true });
+  const expiresAt = startOfDay(incomingExpiresAt, { utc: true });
 
   const bounty = await dbWrite.$transaction(
     async (tx) => {
@@ -237,6 +246,10 @@ export const createBounty = async ({
     { maxWait: 10000, timeout: 30000 }
   );
 
+  if (bounty.userId) {
+    await userContentOverviewCache.bust(bounty.userId);
+  }
+
   return { ...bounty, details: bounty.details as BountyDetailsSchema | null };
 };
 
@@ -254,8 +267,8 @@ export const updateBountyById = async ({
   ...data
 }: UpdateBountyInput & { userId: number }) => {
   // Convert dates to UTC for storing
-  const startsAt = startOfDay(toUtc(incomingStartsAt));
-  const expiresAt = startOfDay(toUtc(incomingExpiresAt));
+  const startsAt = startOfDay(incomingStartsAt, { utc: true });
+  const expiresAt = startOfDay(incomingExpiresAt, { utc: true });
 
   const bounty = await dbWrite.$transaction(
     async (tx) => {
@@ -344,21 +357,37 @@ export const updateBountyById = async ({
     { maxWait: 10000, timeout: 30000 }
   );
 
+  if (bounty?.userId) {
+    await userContentOverviewCache.bust(bounty?.userId);
+  }
+
   return bounty;
 };
 
 export const upsertBounty = async ({
   id,
   userId,
+  isModerator,
   ...data
-}: UpsertBountyInput & { userId: number }) => {
+}: UpsertBountyInput & { userId: number; isModerator: boolean }) => {
+  await throwOnBlockedLinkDomain(data.description);
   if (id) {
+    if (!isModerator) {
+      for (const key of data.lockedProperties ?? []) delete data[key as keyof typeof data];
+    }
+
     const updateInput = await updateBountyInputSchema.parseAsync({ id, ...data });
     return updateBountyById({
       ...updateInput,
       userId,
     });
   } else {
+    if (data.poi || (data.poi && data.nsfw)) {
+      throw throwBadRequestError(
+        'The creation of bounties intended to depict an actual person is prohibited.'
+      );
+    }
+
     const createInput = await createBountyInputSchema.parseAsync({ ...data });
     return createBounty({ ...createInput, userId });
   }
@@ -445,7 +474,11 @@ export const getBountyImages = async ({
     select: { image: { select: imageSelect } },
   });
 
-  return connections.map(({ image }) => ({ ...image, tags: image.tags.map((t) => t.tag) }));
+  return connections.map(({ image }) => ({
+    ...image,
+    nsfwLevel: image.nsfwLevel as NsfwLevel,
+    tags: image.tags.map((t) => t.tag),
+  }));
 };
 
 export const getBountyFiles = async ({ id }: GetByIdInput) => {
@@ -575,8 +608,10 @@ export const getImagesForBounties = async ({
   const groupedImages = groupBy(
     connections.map(({ entityId, image }) => ({
       ...image,
+      nsfwLefel: image.nsfwLevel as NsfwLevel,
       tags: image.tags.map((t) => ({ id: t.tag.id, name: t.tag.name })),
       entityId,
+      metadata: image.metadata as ImageMetadata | VideoMetadata | null,
     })),
     'entityId'
   );
@@ -652,8 +687,14 @@ export const refundBounty = async ({
     });
   }
 
-  return await dbWrite.bounty.update({
+  const updated = await dbWrite.bounty.update({
     where: { id },
     data: { complete: true, refunded: true },
   });
+
+  if (updated.userId) {
+    await userContentOverviewCache.bust(updated.userId);
+  }
+
+  return updated;
 };

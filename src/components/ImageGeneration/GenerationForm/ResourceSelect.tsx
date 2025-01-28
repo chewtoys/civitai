@@ -1,48 +1,64 @@
 import { Button, ButtonProps, Input, InputWrapperProps } from '@mantine/core';
 import { IconPlus } from '@tabler/icons-react';
 import React, { useEffect } from 'react';
+import { openResourceSelectModal } from '~/components/Dialog/dialog-registry';
+import {
+  ResourceSelectOptions,
+  ResourceSelectSource,
+} from '~/components/ImageGeneration/GenerationForm/resource-select.types';
 import { ResourceSelectCard } from '~/components/ImageGeneration/GenerationForm/ResourceSelectCard';
-import { openResourceSelectModal } from '~/components/ImageGeneration/GenerationForm/ResourceSelectModal';
-import { ResourceSelectOptions } from '~/components/ImageGeneration/GenerationForm/resource-select.types';
 import { withController } from '~/libs/form/hoc/withController';
-import { Generation } from '~/server/services/generation/generation.types';
+import { GenerationResource } from '~/server/services/generation/generation.service';
 
-function ResourceSelect({
+export const ResourceSelect = ({
   value,
   onChange,
   buttonLabel,
+  modalTitle,
   buttonProps,
   options = {},
   allowRemove = true,
+  selectSource = 'generation',
+  disabled,
+  hideVersion,
   ...inputWrapperProps
 }: {
-  value?: Generation.Resource;
-  onChange?: (value?: Generation.Resource) => void;
+  value?: GenerationResource;
+  onChange?: (value?: GenerationResource) => void;
   buttonLabel: React.ReactNode;
+  modalTitle?: React.ReactNode;
   buttonProps?: Omit<ButtonProps, 'onClick'>;
   options?: ResourceSelectOptions;
   allowRemove?: boolean;
-} & Omit<InputWrapperProps, 'children'>) {
+  selectSource?: ResourceSelectSource;
+  hideVersion?: boolean;
+} & Omit<InputWrapperProps, 'children' | 'onChange'> & { disabled?: boolean }) => {
   const types = options.resources?.map((x) => x.type);
-  const _value = types && value && !types.includes(value.modelType) ? undefined : value;
+  const _value = types && value && !types.includes(value.model.type) ? undefined : value;
 
-  const handleAdd = (resource: Generation.Resource) => {
-    onChange?.(resource);
-  };
+  function handleChange(resource?: GenerationResource) {
+    if (
+      selectSource === 'generation' &&
+      resource &&
+      !resource.canGenerate &&
+      resource.substitute?.canGenerate
+    ) {
+      onChange?.({ ...resource, ...resource.substitute });
+    } else {
+      onChange?.(resource);
+    }
+  }
 
   const handleRemove = () => {
-    onChange?.(undefined);
-  };
-
-  const handleUpdate = (resource: Generation.Resource) => {
-    onChange?.(resource);
+    handleChange(undefined);
   };
 
   const handleOpenResourceSearch = () => {
     openResourceSelectModal({
-      title: buttonLabel,
-      onSelect: handleAdd,
+      title: modalTitle ?? buttonLabel,
+      onSelect: handleChange,
       options,
+      selectSource,
     });
   };
 
@@ -60,6 +76,7 @@ function ResourceSelect({
             leftIcon={<IconPlus size={18} />}
             fullWidth
             onClick={handleOpenResourceSearch}
+            disabled={disabled}
             {...buttonProps}
           >
             {buttonLabel}
@@ -68,14 +85,16 @@ function ResourceSelect({
       ) : (
         <ResourceSelectCard
           resource={value}
-          onUpdate={handleUpdate}
+          selectSource={selectSource}
+          onUpdate={handleChange}
           onRemove={allowRemove ? handleRemove : undefined}
           onSwap={handleOpenResourceSearch}
+          hideVersion={hideVersion}
         />
       )}
     </Input.Wrapper>
   );
-}
+};
 
 const InputResourceSelect = withController(ResourceSelect, ({ field }) => ({
   value: field.value,

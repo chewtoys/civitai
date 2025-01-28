@@ -1,4 +1,4 @@
-import { HomeBlockType } from '@prisma/client';
+import { HomeBlockType } from '~/shared/utils/prisma/enums';
 import { z } from 'zod';
 import { getByIdSchema } from '~/server/schema/base.schema';
 
@@ -11,6 +11,11 @@ const socialBlockSchema = z.object({
 });
 export type SocialBlockSchema = z.infer<typeof socialBlockSchema>;
 
+const cosmeticShopSectionSchema = z.object({
+  id: z.number(),
+  maxItems: z.number().optional(),
+});
+
 export const homeBlockMetaSchema = z
   .object({
     title: z.string(),
@@ -22,6 +27,7 @@ export const homeBlockMetaSchema = z
       id: z.number(),
       limit: z.number().default(8),
       rows: z.number().default(2),
+      tagId: z.coerce.number().optional(),
     }),
     leaderboards: z.array(
       z.object({
@@ -34,9 +40,11 @@ export const homeBlockMetaSchema = z
       ids: z.array(z.number()).optional(),
       limit: z.number().optional(),
     }),
+    event: z.string(),
     socials: z.array(socialBlockSchema),
     link: z.string(),
     linkText: z.string(),
+    cosmeticShopSection: cosmeticShopSectionSchema,
   })
   .partial();
 

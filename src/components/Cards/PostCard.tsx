@@ -1,92 +1,67 @@
-import { Group, Stack, Text, UnstyledButton } from '@mantine/core';
+import { Text } from '@mantine/core';
 import React from 'react';
-import { FeedCard } from '~/components/Cards/FeedCard';
 import { useCardStyles } from '~/components/Cards/Cards.styles';
-import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
-import { ImageGuard } from '~/components/ImageGuard/ImageGuard';
-import { MediaHash } from '~/components/ImageHash/ImageHash';
-import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { PostsInfiniteModel } from '~/server/services/post.service';
-import { useRouter } from 'next/router';
 import { IconPhoto } from '@tabler/icons-react';
 import { abbreviateNumber } from '~/utils/number-helpers';
 import { IconBadge } from '~/components/IconBadge/IconBadge';
-
-const IMAGE_CARD_WIDTH = 332;
+import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { AddArtFrameMenuItem } from '~/components/Decorations/AddArtFrameMenuItem';
+import { CosmeticEntity } from '~/shared/utils/prisma/enums';
+import { AspectRatioImageCard } from '~/components/CardTemplates/AspectRatioImageCard';
+import { UserAvatarSimple } from '~/components/UserAvatar/UserAvatarSimple';
 
 export function PostCard({ data }: Props) {
-  const { classes, cx } = useCardStyles({ aspectRatio: 1 });
-  const router = useRouter();
-  return (
-    <FeedCard href={`/posts/${data.id}`} aspectRatio="square">
-      <div className={classes.root}>
-        {data.image && (
-          <ImageGuard
-            images={[data.image]}
-            connect={{ entityId: data.id, entityType: 'post' }}
-            render={(image) => (
-              <ImageGuard.Content>
-                {({ safe }) => (
-                  <>
-                    <ImageGuard.Report context="post" />
-                    <ImageGuard.ToggleConnect position="top-left" />
-                    {!safe ? (
-                      <MediaHash {...data.image} />
-                    ) : (
-                      <EdgeMedia
-                        src={image.url}
-                        name={image.name ?? image.id.toString()}
-                        alt={image.name ?? undefined}
-                        type={image.type}
-                        width={IMAGE_CARD_WIDTH}
-                        placeholder="empty"
-                        className={classes.image}
-                      />
-                    )}
-                  </>
-                )}
-              </ImageGuard.Content>
-            )}
-          />
-        )}
-        <Stack
-          className={cx(classes.contentOverlay, classes.bottom, classes.gradientOverlay)}
-          spacing="sm"
-        >
-          <Group position="apart" align="end" noWrap>
-            <Stack spacing="sm">
-              {data.user?.id !== -1 && (
-                <UnstyledButton
-                  sx={{ color: 'white' }}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
+  const currentUser = useCurrentUser();
+  const { classes } = useCardStyles({ aspectRatio: 1 });
 
-                    router.push(`/user/${data.user.username}`);
-                  }}
-                >
-                  <UserAvatar
-                    user={data.user}
-                    avatarProps={{ radius: 'md', size: 32 }}
-                    withUsername
-                  />
-                </UnstyledButton>
-              )}
-              {data.title && (
-                <Text size="xl" weight={700} lineClamp={2} lh={1.2}>
-                  {data.title}
-                </Text>
-              )}
-            </Stack>
-            <Group align="end">
-              <IconBadge className={classes.iconBadge} icon={<IconPhoto size={14} />}>
-                <Text size="xs">{abbreviateNumber(data.imageCount)}</Text>
-              </IconBadge>
-            </Group>
-          </Group>
-        </Stack>
-      </div>
-    </FeedCard>
+  const image = data.images[0];
+  const isOwner = currentUser?.id === data.user.id;
+
+  return (
+    <AspectRatioImageCard
+      href={`/posts/${data.id}`}
+      aspectRatio="square"
+      cosmetic={data.cosmetic?.data}
+      image={image}
+      contentType="post"
+      contentId={data.id}
+      header={
+        <>
+          <ImageContextMenu
+            className="ml-auto"
+            image={image}
+            context="post"
+            additionalMenuItems={
+              isOwner ? (
+                <AddArtFrameMenuItem
+                  entityType={CosmeticEntity.Post}
+                  entityId={data.id}
+                  image={image}
+                  currentCosmetic={data.cosmetic}
+                />
+              ) : null
+            }
+          />
+        </>
+      }
+      footer={
+        <div className="flex w-full flex-wrap items-end justify-between gap-1">
+          <div className="flex flex-col gap-2">
+            <UserAvatarSimple {...data.user} />
+            {data.title && (
+              <Text className={classes.dropShadow} size="xl" weight={700} lineClamp={2} lh={1.2}>
+                {data.title}
+              </Text>
+            )}
+          </div>
+          <IconBadge className={classes.iconBadge} icon={<IconPhoto size={14} />}>
+            <Text size="xs">{abbreviateNumber(data.imageCount)}</Text>
+          </IconBadge>
+        </div>
+      }
+    />
   );
 }
 

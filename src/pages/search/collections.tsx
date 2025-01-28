@@ -1,31 +1,27 @@
-import { Stack, Text, Box, Center, Loader, Title, ThemeIcon } from '@mantine/core';
-import { useInfiniteHits, useInstantSearch } from 'react-instantsearch';
+import { Box, Center, Loader, Stack, Text, ThemeIcon, Title } from '@mantine/core';
+import { useInstantSearch } from 'react-instantsearch';
 
+import { IconCloudOff } from '@tabler/icons-react';
+import { CollectionCard } from '~/components/Cards/CollectionCard';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { InViewLoader } from '~/components/InView/InViewLoader';
 import {
+  BrowsingLevelFilter,
   ChipRefinementList,
   SearchableMultiSelectRefinementList,
   SortBy,
 } from '~/components/Search/CustomSearchComponents';
-import { useMemo } from 'react';
-import { SearchHeader } from '~/components/Search/SearchHeader';
-import { IconCloudOff } from '@tabler/icons-react';
-import { TimeoutLoader } from '~/components/Search/TimeoutLoader';
-import { SearchLayout, useSearchLayoutStyles } from '~/components/Search/SearchLayout';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { applyUserPreferencesCollections } from '~/components/Search/search.utils';
-import { COLLECTIONS_SEARCH_INDEX } from '~/server/common/constants';
 import { CollectionsSearchIndexSortBy } from '~/components/Search/parsers/collection.parser';
-import { CollectionCard } from '~/components/Cards/CollectionCard';
-import { CollectionSearchIndexRecord } from '~/server/search-index/collections.search-index';
-import { InViewLoader } from '~/components/InView/InViewLoader';
+import { useInfiniteHitsTransformed } from '~/components/Search/search.utils2';
+import { SearchHeader } from '~/components/Search/SearchHeader';
+import { SearchLayout, useSearchLayoutStyles } from '~/components/Search/SearchLayout';
+import { TimeoutLoader } from '~/components/Search/TimeoutLoader';
+import { COLLECTIONS_SEARCH_INDEX } from '~/server/common/constants';
+import { CollectionMetadataSchema } from '~/server/schema/collection.schema';
 
 export default function CollectionSearch() {
   return (
     <SearchLayout.Root>
-      <SearchLayout.Filters>
-        <RenderFilters />
-      </SearchLayout.Filters>
       <SearchLayout.Content>
         <SearchHeader />
         <CollectionHitList />
@@ -37,6 +33,7 @@ export default function CollectionSearch() {
 const RenderFilters = () => {
   return (
     <>
+      <BrowsingLevelFilter attributeName="nsfwLevel" />
       <SortBy
         title="Sort collections by"
         items={[
@@ -53,28 +50,14 @@ const RenderFilters = () => {
 };
 
 export function CollectionHitList() {
-  const { hits, showMore, isLastPage } = useInfiniteHits<CollectionSearchIndexRecord>();
+  const { hits, showMore, isLastPage } = useInfiniteHitsTransformed<'collections'>();
   const { status } = useInstantSearch();
   const { classes, cx } = useSearchLayoutStyles();
-  const currentUser = useCurrentUser();
-  const {
-    users: hiddenUsers,
-    images: hiddenImages,
-    tags: hiddenTags,
-    isLoading: loadingPreferences,
-  } = useHiddenPreferencesContext();
 
-  const collections = useMemo(() => {
-    return applyUserPreferencesCollections<CollectionSearchIndexRecord>({
-      items: hits,
-      hiddenUsers,
-      hiddenImages,
-      hiddenTags,
-      currentUserId: currentUser?.id,
-    });
-  }, [hits, hiddenUsers, hiddenImages, hiddenTags, currentUser]);
-
-  const hiddenItems = hits.length - collections.length;
+  const { loadingPreferences, items, hiddenCount } = useApplyHiddenPreferences({
+    type: 'collections',
+    data: hits,
+  });
 
   if (loadingPreferences) {
     return (
@@ -91,9 +74,9 @@ export function CollectionHitList() {
       <Box>
         <Center>
           <Stack spacing="md" align="center" maw={800}>
-            {hiddenItems > 0 && (
+            {hiddenCount > 0 && (
               <Text color="dimmed">
-                {hiddenItems} collections have been hidden due to your settings.
+                {hiddenCount} collections have been hidden due to your settings.
               </Text>
             )}
             <ThemeIcon size={128} radius={100} sx={{ opacity: 0.5 }}>
@@ -135,22 +118,22 @@ export function CollectionHitList() {
 
   return (
     <Stack>
-      {hiddenItems > 0 && (
-        <Text color="dimmed">{hiddenItems} collections have been hidden due to your settings.</Text>
+      {hiddenCount > 0 && (
+        <Text color="dimmed">{hiddenCount} collections have been hidden due to your settings.</Text>
       )}
       <Box
         className={cx(classes.grid)}
         style={{
           // Overwrite default sizing here.
-          gridTemplateColumns: `repeat(auto-fill, minmax(350px, 1fr))`,
+          gridTemplateColumns: `repeat(auto-fill, minmax(320px, 1fr))`,
         }}
       >
-        {collections.map((hit) => {
+        {items.map((hit) => {
           return (
             <CollectionCard
               key={hit.id}
-              sx={{}}
               data={{
+                metadata: {} as CollectionMetadataSchema,
                 ...hit,
                 // Reset values not relevant
                 // Image is filled via images
@@ -165,6 +148,7 @@ export function CollectionHitList() {
           );
         })}
       </Box>
+      {/* <MasonryGrid data={items} render={ArticleCard} itemId={(x) => x.id} empty={<NoContent />} /> */}
       {hits.length > 0 && !isLastPage && (
         <InViewLoader
           loadFn={showMore}
@@ -181,5 +165,16 @@ export function CollectionHitList() {
 }
 
 CollectionSearch.getLayout = function getLayout(page: React.ReactNode) {
-  return <SearchLayout indexName={COLLECTIONS_SEARCH_INDEX}>{page}</SearchLayout>;
+  return (
+    <SearchLayout
+      indexName={COLLECTIONS_SEARCH_INDEX}
+      leftSidebar={
+        <SearchLayout.Filters>
+          <RenderFilters />
+        </SearchLayout.Filters>
+      }
+    >
+      {page}
+    </SearchLayout>
+  );
 };

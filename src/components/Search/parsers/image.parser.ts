@@ -1,16 +1,16 @@
 import { IndexUiState, UiState } from 'instantsearch.js';
 import { z } from 'zod';
+import { IMAGES_SEARCH_INDEX } from '~/server/common/constants';
 import { removeEmpty } from '~/utils/object-helpers';
 import { QS } from '~/utils/qs';
 import { InstantSearchRoutingParser, searchParamsSchema } from './base';
-import { IMAGES_SEARCH_INDEX } from '~/server/common/constants';
 
 export const ImagesSearchIndexSortBy = [
   IMAGES_SEARCH_INDEX,
-  `${IMAGES_SEARCH_INDEX}:rank.reactionCountAllTimeRank:asc`,
-  `${IMAGES_SEARCH_INDEX}:rank.commentCountAllTimeRank:asc`,
-  `${IMAGES_SEARCH_INDEX}:rank.collectedCountAllTimeRank:asc`,
-  `${IMAGES_SEARCH_INDEX}:rank.tippedAmountCountAllTimeRank:asc`,
+  `${IMAGES_SEARCH_INDEX}:stats.reactionCountAllTime:desc`,
+  `${IMAGES_SEARCH_INDEX}:stats.commentCountAllTime:desc`,
+  `${IMAGES_SEARCH_INDEX}:stats.collectedCountAllTime:desc`,
+  `${IMAGES_SEARCH_INDEX}:stats.tippedAmountCountAllTime:desc`,
   `${IMAGES_SEARCH_INDEX}:createdAt:desc`,
 ] as const;
 
@@ -22,9 +22,6 @@ const imageSearchParamsSchema = searchParamsSchema
     index: z.literal('images'),
     createdAt: z.string(),
     sortBy: z.enum(ImagesSearchIndexSortBy),
-    generationTool: z
-      .union([z.array(z.string()), z.string()])
-      .transform((val) => (Array.isArray(val) ? val : [val])),
     baseModel: z
       .union([z.array(z.string()), z.string()])
       .transform((val) => (Array.isArray(val) ? val : [val])),
@@ -32,6 +29,12 @@ const imageSearchParamsSchema = searchParamsSchema
       .union([z.array(z.string()), z.string()])
       .transform((val) => (Array.isArray(val) ? val : [val])),
     tags: z
+      .union([z.array(z.string()), z.string()])
+      .transform((val) => (Array.isArray(val) ? val : [val])),
+    tools: z
+      .union([z.array(z.string()), z.string()])
+      .transform((val) => (Array.isArray(val) ? val : [val])),
+    techniques: z
       .union([z.array(z.string()), z.string()])
       .transform((val) => (Array.isArray(val) ? val : [val])),
     users: z
@@ -57,14 +60,15 @@ export const imagesInstantSearchRoutingParser: InstantSearchRoutingParser = {
   routeToState: (routeState: ImageUiState) => {
     const images: ImageSearchParams = (routeState[IMAGES_SEARCH_INDEX] || {}) as ImageSearchParams;
     const refinementList: Record<string, string[]> = removeEmpty({
-      generationTool: images.generationTool,
-      aspectRatio: images.aspectRatio,
-      baseModel: images.baseModel,
-      'tags.name': images.tags,
-      'user.username': images.users,
+      aspectRatio: images.aspectRatio as string[],
+      baseModel: images.baseModel as string[],
+      tagNames: images.tags as string[],
+      toolNames: images.tools as string[],
+      techniqueNames: images.techniques as string[],
+      'user.username': images.users as string[],
     });
     const range = removeEmpty({
-      createdAtUnix: images.createdAt,
+      createdAtUnix: images.createdAt as string,
     });
 
     const { query, sortBy, imageId } = images;
@@ -87,10 +91,11 @@ export const imagesInstantSearchRoutingParser: InstantSearchRoutingParser = {
     }
 
     const createdAt = uiState[IMAGES_SEARCH_INDEX].range?.['createdAtUnix'];
-    const generationTool = uiState[IMAGES_SEARCH_INDEX].refinementList?.['generationTool'];
     const aspectRatio = uiState[IMAGES_SEARCH_INDEX].refinementList?.['aspectRatio'];
     const baseModel = uiState[IMAGES_SEARCH_INDEX].refinementList?.['baseModel'];
-    const tags = uiState[IMAGES_SEARCH_INDEX].refinementList?.['tags.name'];
+    const tags = uiState[IMAGES_SEARCH_INDEX].refinementList?.['tagNames'];
+    const tools = uiState[IMAGES_SEARCH_INDEX].refinementList?.['toolNames'];
+    const techniques = uiState[IMAGES_SEARCH_INDEX].refinementList?.['techniqueNames'];
     const users = uiState[IMAGES_SEARCH_INDEX].refinementList?.['user.username'];
     const sortBy =
       (uiState[IMAGES_SEARCH_INDEX].sortBy as ImageSearchParams['sortBy']) || defaultSortBy;
@@ -100,13 +105,14 @@ export const imagesInstantSearchRoutingParser: InstantSearchRoutingParser = {
 
     const state: ImageSearchParams = {
       tags,
+      tools,
+      techniques,
       users,
       sortBy,
       query,
       imageId,
       baseModel,
       aspectRatio,
-      generationTool,
       createdAt,
     };
 

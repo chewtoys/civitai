@@ -1,8 +1,8 @@
 import { Button, Group, Popover, Text, Tooltip } from '@mantine/core';
-import { ReviewReactions } from '@prisma/client';
+import { ReviewReactions } from '~/shared/utils/prisma/enums';
 import { IconMoodSmile, IconPlus } from '@tabler/icons-react';
 import { groupBy } from 'lodash-es';
-import { Session } from 'next-auth';
+import type { Session } from 'next-auth';
 import { useSession } from 'next-auth/react';
 import { createContext, useContext, useMemo } from 'react';
 
@@ -77,7 +77,7 @@ function ReactionBadge({ reaction, reactions }: ReactionBadgeProps) {
   const canClick = user && !disabled;
 
   return (
-    <Tooltip label={tooltip} withArrow withinPortal>
+    <Tooltip label={tooltip} withArrow withinPortal maw={300} multiline>
       <Button
         size="xs"
         radius="xl"

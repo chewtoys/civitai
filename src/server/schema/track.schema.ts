@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { ActionType } from '../clickhouse/client';
-import { LoginRedirectReason, loginRedirectReasons, trackedReasons } from '~/utils/login-helpers';
+import { trackedReasons } from '~/utils/login-helpers';
 
 export const addViewSchema = z.object({
   type: z.enum([
@@ -24,7 +23,11 @@ export const addViewSchema = z.object({
     'BountyEntry',
   ]),
   entityId: z.number(),
+  ads: z.enum(['Member', 'Blocked', 'Served', 'Off']).optional(),
+  nsfw: z.boolean().optional(),
   details: z.object({}).passthrough().optional(),
+  nsfwLevel: z.number().optional(),
+  browsingLevel: z.number().optional(),
 });
 
 export type AddViewSchema = z.infer<typeof addViewSchema>;
@@ -33,6 +36,13 @@ export type TrackShareInput = z.infer<typeof trackShareSchema>;
 export const trackShareSchema = z.object({
   platform: z.enum(['reddit', 'twitter', 'clipboard']),
   url: z.string().url().trim().nonempty(),
+});
+
+export type TrackSearchInput = z.infer<typeof trackSearchSchema>;
+export const trackSearchSchema = z.object({
+  query: z.string().trim(),
+  index: z.string(),
+  filters: z.object({}).passthrough().optional(),
 });
 
 // action tracking schemas
@@ -103,6 +113,30 @@ const loginRedirectSchema = z.object({
   type: z.literal('LoginRedirect'),
   reason: z.enum(trackedReasons),
 });
+
+const membershipCancelSchema = z.object({
+  type: z.literal('Membership_Cancel'),
+  details: z
+    .object({
+      reason: z.string(),
+      from: z.string(),
+    })
+    .passthrough()
+    .optional(),
+});
+
+const membershipDowngradeSchema = z.object({
+  type: z.literal('Membership_Downgrade'),
+  details: z
+    .object({
+      reason: z.string(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+    })
+    .passthrough()
+    .optional(),
+});
+
 export type TrackActionInput = z.infer<typeof trackActionSchema>;
 export const trackActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('AddToBounty_Click') }),
@@ -117,4 +151,6 @@ export const trackActionSchema = z.discriminatedUnion('type', [
   purchaseFundsCancelSchema,
   purchaseFundsConfirmSchema,
   loginRedirectSchema,
+  membershipCancelSchema,
+  membershipDowngradeSchema,
 ]);

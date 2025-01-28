@@ -1,53 +1,78 @@
-import { MediaType, MetricTimeframe, ReviewReactions } from '@prisma/client';
+import { closeModal, openConfirmModal } from '@mantine/modals';
+import { hideNotification, showNotification } from '@mantine/notifications';
+import { isEqual } from 'lodash-es';
 import { useMemo, useState } from 'react';
 import { z } from 'zod';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
 import { useZodRouteParams } from '~/hooks/useZodRouteParams';
 import { FilterKeys, useFiltersContext } from '~/providers/FiltersProvider';
+import { constants } from '~/server/common/constants';
 import { ImageSort } from '~/server/common/enums';
 import { periodModeSchema } from '~/server/schema/base.schema';
-import { GetImagesByCategoryInput, GetInfiniteImagesInput } from '~/server/schema/image.schema';
+import { GetInfiniteImagesInput } from '~/server/schema/image.schema';
+import { MediaType, MetricTimeframe, ReviewReactions } from '~/shared/utils/prisma/enums';
+import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
 import { removeEmpty } from '~/utils/object-helpers';
 import { postgresSlugify } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
 import { booleanString, numericString, numericStringArray } from '~/utils/zod-helpers';
-import { GetAllModelsInput } from '~/server/schema/model.schema';
-import { isEqual } from 'lodash-es';
 
+const imageSections = ['images', 'reactions'] as const;
+export type ImageSections = (typeof imageSections)[number];
+
+// output is input to getInfiniteImagesSchema
+export type ImagesQueryParamSchema = z.infer<typeof imagesQueryParamSchema>;
 export const imagesQueryParamSchema = z
   .object({
+    baseModels: z
+      .union([z.enum(constants.baseModels).array(), z.enum(constants.baseModels)])
+      .transform((val) => (Array.isArray(val) ? val : [val]))
+      .optional(),
+    collectionId: numericString(),
+    collectionTagId: numericString(),
+    hideAutoResources: booleanString(),
+    hideManualResources: booleanString(),
+    followed: booleanString(),
+    fromPlatform: booleanString(),
+    hidden: booleanString(),
+    limit: numericString(),
     modelId: numericString(),
     modelVersionId: numericString(),
-    postId: numericString(),
-    collectionId: numericString(),
-    username: z.coerce.string().transform(postgresSlugify),
-    prioritizedUserIds: numericStringArray(),
-    limit: numericString(),
+    notPublished: booleanString(),
     period: z.nativeEnum(MetricTimeframe),
     periodMode: periodModeSchema,
-    sort: z.nativeEnum(ImageSort),
-    tags: numericStringArray(),
-    view: z.enum(['categories', 'feed']),
-    excludeCrossPosts: z.boolean(),
+    postId: numericString(),
+    prioritizedUserIds: numericStringArray(),
     reactions: z.preprocess(
       (val) => (Array.isArray(val) ? val : [val]),
       z.array(z.nativeEnum(ReviewReactions))
     ),
-    types: z.preprocess(
-      (val) => (Array.isArray(val) ? val : [val]),
-      z.array(z.nativeEnum(MediaType))
-    ),
+    scheduled: booleanString(),
+    section: z.enum(imageSections),
+    sort: z.nativeEnum(ImageSort),
+    tags: numericStringArray(),
+    techniques: numericStringArray(),
+    tools: numericStringArray(),
+    types: z
+      .union([z.array(z.nativeEnum(MediaType)), z.nativeEnum(MediaType)])
+      .transform((val) => (Array.isArray(val) ? val : [val]))
+      .optional(),
+    useIndex: booleanString().nullish(),
+    userId: numericString(),
+    username: z.coerce.string().transform(postgresSlugify),
+    view: z.enum(['categories', 'feed']),
     withMeta: booleanString(),
-    section: z.enum(['images', 'reactions']),
-    hidden: z.coerce.boolean(),
-    followed: z.coerce.boolean(),
+    remixOfId: numericString(),
   })
   .partial();
 
 export const useImageQueryParams = () => useZodRouteParams(imagesQueryParamSchema);
 
-export const useImageFilters = (type: FilterKeys<'images' | 'modelImages'>) => {
+// could have userImages and userVideo
+export const useImageFilters = (type: FilterKeys<'images' | 'videos' | 'modelImages'>) => {
   const storeFilters = useFiltersContext((state) => state[type]);
   const { query } = useImageQueryParams(); // router params are the overrides
+
   return removeEmpty({ ...storeFilters, ...query });
 };
 
@@ -56,50 +81,145 @@ export const useDumbImageFilters = (defaultFilters?: Partial<GetInfiniteImagesIn
   const filtersUpdated = !isEqual(filters, defaultFilters);
 
   return {
-    filters,
+    filters: { ...filters },
     setFilters,
     filtersUpdated,
   };
 };
 
 export const useQueryImages = (
-  filters?: Partial<GetInfiniteImagesInput>,
-  options?: { keepPreviousData?: boolean; enabled?: boolean }
+  filters?: GetInfiniteImagesInput,
+  options?: { keepPreviousData?: boolean; enabled?: boolean; applyHiddenPreferences?: boolean }
 ) => {
+  const { applyHiddenPreferences = true, ...queryOptions } = options ?? {};
   filters ??= {};
-  const browsingMode = useFiltersContext((state) => state.browsingMode);
-  const { data, ...rest } = trpc.image.getInfinite.useInfiniteQuery(
-    { browsingMode, ...filters },
+  const { data, isLoading, ...rest } = trpc.image.getInfinite.useInfiniteQuery(
+    { ...filters },
     {
       getNextPageParam: (lastPage) => lastPage.nextCursor,
       trpc: { context: { skipBatch: true } },
-      ...options,
+      ...queryOptions,
     }
   );
 
-  const images = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data]);
+  const flatData = useMemo(() => data?.pages.flatMap((x) => (!!x ? x.items : [])), [data]);
+  const { items, loadingPreferences, hiddenCount } = useApplyHiddenPreferences({
+    type: 'images',
+    data: flatData,
+    showHidden: !!filters.hidden,
+    disabled: !applyHiddenPreferences,
+    isRefetching: rest.isRefetching,
+  });
 
-  return { data, images, ...rest };
+  return {
+    data,
+    flatData,
+    images: items,
+    removedImages: hiddenCount,
+    fetchedImages: flatData?.length,
+    isLoading: isLoading || loadingPreferences,
+    ...rest,
+  };
 };
 
-export const useQueryImageCategories = (
-  filters?: Partial<GetImagesByCategoryInput>,
+export const useQueryModelVersionImages = (
+  modelVersionId: number,
   options?: { keepPreviousData?: boolean; enabled?: boolean }
 ) => {
-  filters ??= {};
-  const browsingMode = useFiltersContext((state) => state.browsingMode);
-  const { data, ...rest } = trpc.image.getImagesByCategory.useInfiniteQuery(
-    { ...filters, browsingMode },
+  const { data, isLoading, ...rest } = trpc.image.getImagesForModelVersion.useQuery(
     {
-      getNextPageParam: (lastPage) => (!!lastPage ? lastPage.nextCursor : 0),
-      getPreviousPageParam: (firstPage) => (!!firstPage ? firstPage.nextCursor : 0),
-      trpc: { context: { skipBatch: true } },
-      keepPreviousData: true,
-      ...options,
-    }
+      id: modelVersionId,
+    },
+    options
   );
 
-  const categories = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data]);
+  const images = data?.[modelVersionId]?.images;
 
-  return { data, categories, ...rest };
+  const { items, loadingPreferences, hiddenCount } = useApplyHiddenPreferences({
+    type: 'images',
+    data: images,
+    isRefetching: rest.isRefetching,
+  });
+
+  return {
+    data,
+    flatData: images,
+    images: items,
+    removedImages: hiddenCount,
+    fetchedImages: images?.length,
+    isLoading: isLoading || loadingPreferences,
+    ...rest,
+  };
+};
+
+const CSAM_NOTIFICATION_ID = 'sending-report';
+
+export function useReportCsamImages(
+  options?: Parameters<typeof trpc.image.reportCsamImages.useMutation>[0]
+) {
+  const { onMutate, onSuccess, onError, onSettled, ...rest } = options ?? {};
+  const { mutateAsync, ...reportCsamImage } = trpc.image.reportCsamImages.useMutation({
+    async onMutate(...args) {
+      showNotification({
+        id: CSAM_NOTIFICATION_ID,
+        loading: true,
+        disallowClose: true,
+        autoClose: false,
+        message: 'Sending report...',
+      });
+      await onMutate?.(...args);
+    },
+    async onSuccess(...args) {
+      showSuccessNotification({
+        title: 'Image reported',
+        message: 'Your request has been received',
+      });
+      closeModal('confirm-csam');
+      await onSuccess?.(...args);
+    },
+    async onError(error, ...args) {
+      showErrorNotification({
+        error: new Error(error.message),
+        title: 'Unable to send report',
+        reason: error.message ?? 'An unexpected error occurred, please try again',
+      });
+      await onError?.(error, ...args);
+    },
+    async onSettled(...args) {
+      hideNotification(CSAM_NOTIFICATION_ID);
+      await onSettled?.(...args);
+    },
+    ...rest,
+  });
+
+  const mutate = (args: Parameters<typeof reportCsamImage.mutate>[0]) => {
+    openConfirmModal({
+      modalId: 'confirm-csam',
+      title: 'Report CSAM',
+      children: `Are you sure you want to report this as CSAM?`,
+      centered: true,
+      labels: { confirm: 'Yes', cancel: 'Cancel' },
+      confirmProps: { color: 'red', loading: reportCsamImage.isLoading },
+      closeOnConfirm: false,
+      onConfirm: () => reportCsamImage.mutate(args),
+    });
+  };
+
+  return { ...reportCsamImage, mutate };
+}
+
+export const useImageContestCollectionDetails = (
+  filters: { id: number },
+  options?: { enabled: boolean }
+) => {
+  const { data, ...rest } = trpc.image.getContestCollectionDetails.useQuery(
+    { ...filters },
+    { ...options }
+  );
+
+  return {
+    collectionItems: data?.collectionItems ?? [],
+    post: data?.post ?? null,
+    ...rest,
+  };
 };

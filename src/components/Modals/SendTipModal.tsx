@@ -9,7 +9,7 @@ import {
   Stack,
   Text,
 } from '@mantine/core';
-import { Currency } from '@prisma/client';
+import { Currency } from '~/shared/utils/prisma/enums';
 import { IconBolt } from '@tabler/icons-react';
 import React, { useState } from 'react';
 import { z } from 'zod';
@@ -18,9 +18,7 @@ import { BuzzTransactionButton } from '~/components/Buzz/BuzzTransactionButton';
 import { CurrencyBadge } from '~/components/Currency/CurrencyBadge';
 import { CurrencyIcon } from '~/components/Currency/CurrencyIcon';
 import { createContextModal } from '~/components/Modals/utils/createContextModal';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { Form, InputChipGroup, InputNumber, InputTextArea, useForm } from '~/libs/form';
-import { TransactionType } from '~/server/schema/buzz.schema';
 import { showErrorNotification } from '~/utils/notifications';
 import { numberWithCommas } from '~/utils/number-helpers';
 import { trpc } from '~/utils/trpc';
@@ -142,7 +140,7 @@ const { openModal, Modal } = createContextModal<{
   withCloseButton: false,
   Element: ({ context, props: { toUserId, entityId, entityType } }) => {
     const { classes } = useStyles();
-    const currentUser = useCurrentUser();
+    const queryUtils = trpc.useUtils();
 
     const [loading, setLoading] = useState(false);
 
@@ -151,7 +149,7 @@ const { openModal, Modal } = createContextModal<{
 
     const { conditionalPerformTransaction } = useBuzzTransaction({
       message: (requiredBalance: number) =>
-        `You don't have enough funds to perform this action. Required buzz: ${numberWithCommas(
+        `You don't have enough funds to perform this action. Required Buzz: ${numberWithCommas(
           requiredBalance
         )}. Buy or earn more buzz to perform this action.`,
       purchaseSuccessMessage: (purchasedBalance) => (
@@ -170,6 +168,7 @@ const { openModal, Modal } = createContextModal<{
       async onSuccess() {
         setLoading(false);
         handleClose();
+        await queryUtils.buzz.getBuzzAccount.invalidate();
       },
       onError(error) {
         showErrorNotification({
@@ -193,7 +192,7 @@ const { openModal, Modal } = createContextModal<{
         return tipUserMutation.mutate({
           toAccountId: toUserId,
           amount: amountToSend,
-          description,
+          description: description || null,
           entityId,
           entityType,
         });
@@ -232,7 +231,7 @@ const { openModal, Modal } = createContextModal<{
                 <Text size="xs" color="dimmed" transform="capitalize" weight={600}>
                   Available Buzz
                 </Text>
-                <UserBuzz iconSize={16} textSize="sm" withTooltip />
+                <UserBuzz iconSize={16} textSize="sm" accountType="user" withTooltip />
               </Group>
             </Badge>
             <CloseButton radius="xl" iconSize={22} onClick={handleClose} />

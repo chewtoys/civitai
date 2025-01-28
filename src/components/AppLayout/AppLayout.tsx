@@ -1,95 +1,153 @@
-import {
-  Affix,
-  AppShell,
-  Button,
-  Center,
-  Stack,
-  Text,
-  ThemeIcon,
-  Title,
-  useMantineTheme,
-} from '@mantine/core';
-import { IconBan } from '@tabler/icons-react';
-import { signOut } from 'next-auth/react';
-import React from 'react';
-
+import clsx from 'clsx';
+import React, { useEffect, useRef, useState } from 'react';
 import { AppFooter } from '~/components/AppLayout/AppFooter';
-import { AppHeader, RenderSearchComponentProps } from '~/components/AppLayout/AppHeader';
-import { AssistantButton } from '~/components/Assistant/AssistantButton';
+import { AppHeader, RenderSearchComponentProps } from '~/components/AppLayout/AppHeader/AppHeader';
+import { NotFound } from '~/components/AppLayout/NotFound';
+import { SubNav2 } from '~/components/AppLayout/SubNav';
+import { PageLoader } from '~/components/PageLoader/PageLoader';
+import { ScrollArea } from '~/components/ScrollArea/ScrollArea';
+import { useScrollAreaRef } from '~/components/ScrollArea/ScrollAreaContext';
+import { Announcements } from '~/components/Announcements/Announcements';
+import { ScrollAreaProps } from '~/components/ScrollArea/ScrollArea';
+import { AdhesiveAd } from '~/components/Ads/AdhesiveAd';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
-import { useDebouncedState, useWindowEvent } from '@mantine/hooks';
-import { getScrollPosition } from '~/utils/window-helpers';
+import { useRouter } from 'next/router';
 
-export function AppLayout({ children, navbar, renderSearchComponent }: Props) {
-  const theme = useMantineTheme();
-  const user = useCurrentUser();
-  const isBanned = !!user?.bannedAt;
-  const flags = useFeatureFlags();
+export function AppLayout({
+  children,
+  renderSearchComponent,
+  subNav = <SubNav2 />,
+  left,
+  right,
+  scrollable = true,
+  footer = <AppFooter />,
+  loading,
+  notFound,
+  announcements,
+}: {
+  children: React.ReactNode;
+  renderSearchComponent?: (opts: RenderSearchComponentProps) => React.ReactElement;
+  subNav?: React.ReactNode | null;
+  left?: React.ReactNode;
+  right?: React.ReactNode;
 
-  const [hasFooter, setHasFooter] = useDebouncedState(true, 200);
-
-  useWindowEvent('scroll', () => {
-    const scroll = getScrollPosition();
-    setHasFooter(scroll.y < 10);
-  });
+  scrollable?: boolean;
+  footer?: React.ReactNode | null;
+  loading?: boolean;
+  notFound?: boolean;
+  announcements?: boolean;
+}) {
+  const currentUser = useCurrentUser();
+  const router = useRouter();
 
   return (
-    <AppShell
-      padding="md"
-      header={!isBanned ? <AppHeader renderSearchComponent={renderSearchComponent} /> : undefined}
-      footer={<AppFooter />}
-      className={`theme-${theme.colorScheme}`}
-      navbar={navbar}
-      styles={{
-        body: {
-          display: 'block',
-          maxWidth: '100vw',
-        },
-        main: {
-          paddingLeft: 0,
-          paddingRight: 0,
-          paddingBottom: 61,
-          maxWidth: '100%',
-        },
-      }}
-    >
-      {!isBanned ? (
-        <>
-          {children}
-          {flags.assistant && (
-            <Affix
-              // @ts-ignore: ignoring cause target prop accepts string. See: https://v5.mantine.dev/core/portal#specify-target-dom-node
-              position={{ bottom: hasFooter ? 70 : 12, right: 12 }}
-              zIndex={199}
-              style={{ transition: 'bottom 300ms linear' }}
-            >
-              <AssistantButton mr={4} />
-            </Affix>
-          )}
-        </>
+    <div className="flex h-full flex-1 flex-col">
+      <AppHeader fixed={false} renderSearchComponent={renderSearchComponent} />
+      {loading ? (
+        <PageLoader />
+      ) : notFound ? (
+        <NotFound />
       ) : (
-        <Center py="xl">
-          <Stack align="center">
-            <ThemeIcon size={128} radius={100} color="red">
-              <IconBan size={80} />
-            </ThemeIcon>
-            <Title order={1} align="center">
-              You have been banned
-            </Title>
-            <Text size="lg" align="center">
-              This account has been banned and cannot access the site
-            </Text>
-            <Button onClick={() => signOut()}>Sign out</Button>
-          </Stack>
-        </Center>
+        <div className="flex flex-1 overflow-hidden">
+          {left}
+          <MainContent
+            subNav={subNav}
+            scrollable={scrollable}
+            footer={footer}
+            announcements={announcements}
+          >
+            {children}
+          </MainContent>
+          {right && (
+            <aside className="scroll-area relative border-l border-gray-3 dark:border-dark-4">
+              {right}
+            </aside>
+          )}
+        </div>
       )}
-    </AppShell>
+      {!currentUser?.isPaidMember && !router.asPath.includes('/moderator') && <AdhesiveAd />}
+    </div>
   );
 }
 
-type Props = {
+export function MainContent({
+  children,
+  subNav = <SubNav2 />,
+  footer = <AppFooter />,
+  scrollable = true,
+  announcements,
+  ...props
+}: {
   children: React.ReactNode;
-  navbar?: React.ReactElement;
-  renderSearchComponent?: (opts: RenderSearchComponentProps) => React.ReactElement;
-};
+  subNav?: React.ReactNode | null;
+  scrollable?: boolean;
+  footer?: React.ReactNode | null;
+  announcements?: boolean;
+} & ScrollAreaProps) {
+  return scrollable ? (
+    <ScrollArea {...props}>
+      <main className="flex-1">
+        {subNav && <SubNav>{subNav}</SubNav>}
+        {announcements && <Announcements />}
+        {children}
+      </main>
+      {footer}
+    </ScrollArea>
+  ) : (
+    <div className="no-scroll group flex flex-1 flex-col overflow-hidden">
+      <main className="flex flex-1 flex-col overflow-hidden">
+        {subNav && <SubNav>{subNav}</SubNav>}
+        {children}
+      </main>
+      {footer}
+    </div>
+  );
+}
+
+export function SubNav({
+  children,
+  className,
+  visible,
+  ...props
+}: { children: React.ReactNode; visible?: boolean } & React.HTMLProps<HTMLDivElement>) {
+  const lastScrollRef = useRef(0);
+  const lastDirectionChangeRef = useRef(0);
+  const lastScrollDirectionRef = useRef('up');
+  const [showNav, setShowNav] = useState(true);
+  useScrollAreaRef({
+    onScroll: (node) => {
+      const diff = node.scrollTop - lastScrollRef.current;
+      const scrollDirection = diff > 0 ? 'down' : 'up';
+      const lastScrollDirection = lastScrollDirectionRef.current;
+      if (scrollDirection !== lastScrollDirection) {
+        lastScrollDirectionRef.current = scrollDirection;
+        lastDirectionChangeRef.current = node.scrollTop;
+      }
+
+      const lastDirectionChangeDiff = node.scrollTop - lastDirectionChangeRef.current;
+
+      if (node.scrollTop < 100) setShowNav(true);
+      else if (lastDirectionChangeDiff > 100) setShowNav(false);
+      else if (lastDirectionChangeDiff < -100) setShowNav(true);
+
+      lastScrollRef.current = node.scrollTop;
+    },
+  });
+
+  useEffect(() => {
+    if (visible) setShowNav(true);
+  }, [visible]);
+
+  return (
+    <div
+      {...props}
+      className={clsx(
+        'sticky inset-x-0 top-0 z-50 mb-3 bg-gray-1 shadow transition-transform dark:bg-dark-6',
+        className
+      )}
+      style={!showNav ? { transform: 'translateY(-200%)' } : undefined}
+    >
+      {children}
+    </div>
+  );
+}

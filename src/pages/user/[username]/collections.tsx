@@ -1,4 +1,4 @@
-import { Box, Center, Group, Loader, Stack, Tabs } from '@mantine/core';
+import { Box, Center, Group, Loader, Stack } from '@mantine/core';
 import { useRouter } from 'next/router';
 
 import { NotFound } from '~/components/AppLayout/NotFound';
@@ -9,85 +9,76 @@ import { MasonryContainer } from '~/components/MasonryColumns/MasonryContainer';
 import { MasonryProvider } from '~/components/MasonryColumns/MasonryProvider';
 import { constants } from '~/server/common/constants';
 import { CollectionSort } from '~/server/common/enums';
-import { getFeatureFlags } from '~/server/services/feature-flags.service';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { trpc } from '~/utils/trpc';
-import React, { useMemo } from 'react';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import React from 'react';
 import { UserProfileLayout } from '~/components/Profile/old/OldProfileLayout';
+import { Page } from '~/components/AppLayout/Page';
+import { dbRead } from '~/server/db/client';
 
 export const getServerSideProps = createServerSideProps({
-  useSession: true,
-  resolver: async ({ ctx, session }) => {
-    const features = getFeatureFlags({ user: session?.user });
-    if (!features.profileCollections)
+  resolver: async ({ ctx, features }) => {
+    const username = ctx.query.username as string;
+    if (!features?.profileCollections)
       return {
-        redirect: {
-          destination: `/user/${ctx.query.username}`,
-          permanent: false,
-        },
+        redirect: { destination: `/user/${username}`, permanent: false },
+      };
+
+    const user = await dbRead.user.findUnique({ where: { username }, select: { bannedAt: true } });
+    if (user?.bannedAt)
+      return {
+        redirect: { destination: `/user/${username}`, permanent: true },
       };
   },
 });
 
-export default function UserCollectionsPage() {
+function UserCollectionsPage() {
   const router = useRouter();
   const { set, ...queryFilters } = useCollectionQueryParams();
   const sort = queryFilters.sort ?? constants.collectionFilterDefaults.sort;
-  const features = useFeatureFlags();
 
   const username = (router.query.username as string) ?? '';
-  const { data: creator, isLoading } = trpc.user.getCreator.useQuery({ username });
-
-  const Wrapper = useMemo(
-    () =>
-      ({ children }: { children: React.ReactNode }) =>
-        features.profileOverhaul ? (
-          <Box mt="md">{children}</Box>
-        ) : (
-          <Tabs.Panel value="/collections">{children}</Tabs.Panel>
-        ),
-    [features.profileOverhaul]
+  const { data: user, isLoading } = trpc.userProfile.get.useQuery(
+    { username },
+    { enabled: username !== constants.system.user.username }
   );
 
   // currently not showing any content if the username is undefined
-  if (!username || (!creator && !isLoading)) return <NotFound />;
+  if (!username || (!user && !isLoading)) return <NotFound />;
 
   if (isLoading) {
     return (
-      <Wrapper>
+      <Box mt="md">
         <Center>
           <Loader />
         </Center>
-      </Wrapper>
+      </Box>
     );
   }
 
   return (
-    <Wrapper>
+    <Box mt="md">
       <MasonryProvider
         columnWidth={constants.cardSizes.model}
         maxColumnCount={7}
         maxSingleColumnWidth={450}
       >
-        <MasonryContainer fluid>
+        <MasonryContainer p={0}>
           <Stack spacing="xs">
-            <Group spacing={8}>
+            <Group spacing={8} position="right">
               <SortFilter
                 type="collections"
+                variant="button"
                 value={sort}
                 onChange={(x) => set({ sort: x as CollectionSort })}
               />
             </Group>
-            <CollectionsInfinite
-              filters={{ ...queryFilters, sort, userId: creator?.id }}
-              enabled={!!creator}
-            />
+            <CollectionsInfinite filters={{ ...queryFilters, sort, userId: user.id }} />
           </Stack>
         </MasonryContainer>
       </MasonryProvider>
-    </Wrapper>
+    </Box>
   );
 }
 
-UserCollectionsPage.getLayout = UserProfileLayout;
+export default Page(UserCollectionsPage, { getLayout: UserProfileLayout });

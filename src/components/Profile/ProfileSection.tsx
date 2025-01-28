@@ -1,17 +1,8 @@
-import { InView } from 'react-intersection-observer';
-import {
-  AspectRatio,
-  createStyles,
-  Grid,
-  Group,
-  Skeleton,
-  Stack,
-  Text,
-  ThemeIcon,
-  useMantineTheme,
-} from '@mantine/core';
+import { AspectRatio, createStyles, Group, Skeleton, Stack, Text, ThemeIcon } from '@mantine/core';
 import { IconCloudOff } from '@tabler/icons-react';
+import React from 'react';
 import { UserWithProfile } from '~/types/router';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 type Props = {
   title: string;
@@ -44,7 +35,7 @@ export const useProfileSectionStyles = createStyles<
     return {
       title: {
         fontSize: '32px',
-        [theme.fn.smallerThan('sm')]: {
+        [containerQuery.smallerThan('sm')]: {
           fontSize: '24px',
         },
       },
@@ -100,36 +91,7 @@ export const useProfileSectionStyles = createStyles<
           content: '""',
           background: 'rgba(0,0,0, 0.3)',
           zIndex: 100,
-          backdropFilter: 'blur(8px)',
-        },
-      },
-      scrollGrid: {
-        ref: scrollGridRef,
-        display: 'grid',
-        columnGap: theme.spacing.md,
-        gridAutoRows: 0,
-        overflowY: 'hidden',
-        gridAutoFlow: 'column',
-        gridTemplateColumns: `repeat(${count}, ${widthCarousel})`,
-        gridTemplateRows: 'auto',
-        scrollSnapType: 'x mandatory',
-        overflowX: 'auto',
-        marginRight: -theme.spacing.md,
-        marginLeft: -theme.spacing.md,
-        paddingLeft: theme.spacing.md,
-        paddingBottom: theme.spacing.md,
-
-        '&::-webkit-scrollbar': {
-          background: 'transparent',
-          opacity: 0,
-          height: 8,
-        },
-        '&::-webkit-scrollbar-thumb': {
-          borderRadius: 4,
-        },
-
-        '& > *': {
-          scrollSnapAlign: 'center',
+          // backdropFilter: 'blur(8px)',
         },
       },
       grid: {
@@ -141,6 +103,7 @@ export const useProfileSectionStyles = createStyles<
         gridAutoRows: 0,
         overflow: 'hidden',
         marginTop: -theme.spacing.md,
+        paddingBottom: theme.spacing.md,
 
         '&::-webkit-scrollbar': {
           background: 'transparent',
@@ -155,7 +118,7 @@ export const useProfileSectionStyles = createStyles<
           marginTop: theme.spacing.md,
         },
 
-        [theme.fn.smallerThan('sm')]: {
+        [containerQuery.smallerThan('sm')]: {
           gridAutoFlow: 'column',
           gridTemplateColumns: `repeat(${count}, ${widthCarousel})`,
           gridTemplateRows: 'auto',
@@ -164,6 +127,7 @@ export const useProfileSectionStyles = createStyles<
           marginRight: -theme.spacing.md,
           marginLeft: -theme.spacing.md,
           paddingLeft: theme.spacing.md,
+          paddingRight: theme.spacing.md,
 
           '& > *': {
             scrollSnapAlign: 'center',
@@ -186,7 +150,6 @@ export const ProfileSectionPreview = ({
     rowCount,
     widthGrid: '280px',
   });
-
   return (
     <Stack spacing="md" w="100%" style={{ overflow: 'hidden' }}>
       <Skeleton width="33%" height={22} />

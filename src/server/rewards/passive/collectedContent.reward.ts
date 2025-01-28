@@ -1,10 +1,11 @@
-import { CollectionType } from '@prisma/client';
+import { CollectionType } from '~/shared/utils/prisma/enums';
 import { createBuzzEvent } from '../base.reward';
 
 const type = 'collectedContent' as const;
 const supported: CollectionType[] = ['Model', 'Image', 'Article'];
 export const collectedContentReward = createBuzzEvent({
   type,
+  toAccountType: 'user',
   includeTypes: supported.map((x) => `${type}:${x.toLowerCase()}`),
   description: 'Content that you posted was collected by someone else',
   triggerDescription: 'For each time a user collects your content',
@@ -30,6 +31,9 @@ export const collectedContentReward = createBuzzEvent({
 
       input.ownerId = userId;
     }
+
+    // Don't reward the user for collecting their own content
+    if (input.ownerId === input.collectorId) return false;
 
     return {
       toUserId: input.ownerId,

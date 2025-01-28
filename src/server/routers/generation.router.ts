@@ -1,66 +1,75 @@
 import { getByIdSchema } from './../schema/base.schema';
 import {
-  bulkDeleteGeneratedImagesSchema,
   checkResourcesCoverageSchema,
-  createGenerationRequestSchema,
-  getGenerationRequestsSchema,
+  getGenerationDataSchema,
   getGenerationResourcesSchema,
+  // sendFeedbackSchema,
 } from '~/server/schema/generation.schema';
 import {
-  bulkDeleteGeneratedImages,
   checkResourcesCoverage,
-  createGenerationRequest,
-  deleteAllGenerationRequests,
-  deleteGeneratedImage,
-  deleteGenerationRequest,
-  getGenerationRequests,
+  getGenerationData,
   getGenerationResources,
-  getGenerationStatusMessage,
+  getGenerationStatus,
+  getUnavailableResources,
+  getUnstableResources,
+  // textToImage,
+  // textToImageTestRun,
+  toggleUnavailableResource,
 } from '~/server/services/generation/generation.service';
-import {
-  guardedProcedure,
-  isFlagProtected,
-  protectedProcedure,
-  publicProcedure,
-  router,
-} from '~/server/trpc';
+import { moderatorProcedure, publicProcedure, router } from '~/server/trpc';
 import { edgeCacheIt } from '~/server/middleware.trpc';
 import { CacheTTL } from '~/server/common/constants';
+import {
+  getWorkflowDefinitions,
+  setWorkflowDefinition,
+} from '~/server/services/orchestrator/comfy/comfy.utils';
+import { z } from 'zod';
+import { getGenerationEngines } from '~/server/services/generation/engines';
 
 export const generationRouter = router({
-  // #region [requests related]
-  getRequests: protectedProcedure
-    .input(getGenerationRequestsSchema)
-    .use(isFlagProtected('imageGeneration'))
-    .query(({ input, ctx }) => getGenerationRequests({ ...input, userId: ctx.user.id })),
-  createRequest: guardedProcedure
-    .input(createGenerationRequestSchema)
-    .use(isFlagProtected('imageGeneration'))
-    .mutation(({ input, ctx }) => createGenerationRequest({ ...input, userId: ctx.user.id })),
-  deleteRequest: protectedProcedure
-    .input(getByIdSchema)
-    .use(isFlagProtected('imageGeneration'))
-    .mutation(({ input, ctx }) => deleteGenerationRequest({ ...input, userId: ctx.user.id })),
-  deleteImage: protectedProcedure
-    .input(getByIdSchema)
-    .use(isFlagProtected('imageGeneration'))
-    .mutation(({ input, ctx }) => deleteGeneratedImage({ ...input, userId: ctx.user.id })),
-  bulkDeleteImages: protectedProcedure
-    .input(bulkDeleteGeneratedImagesSchema)
-    .use(isFlagProtected('imageGeneration'))
-    .mutation(({ input, ctx }) => bulkDeleteGeneratedImages({ ...input, userId: ctx.user.id })),
-  deleteAllRequests: protectedProcedure.mutation(({ ctx }) =>
-    deleteAllGenerationRequests({ userId: ctx.user.id })
+  getGenerationEngines: publicProcedure.query(() => getGenerationEngines()),
+  getWorkflowDefinitions: publicProcedure.query(({ ctx }) =>
+    getWorkflowDefinitions().then((res) =>
+      res
+        .filter((x) => {
+          if (x.status === 'disabled') return false;
+          if (x.status === 'mod-only' && !ctx.user?.isModerator) return false;
+          return true;
+        })
+        .map(({ type, key, name, features, description, selectable, label }) => ({
+          type,
+          key,
+          name,
+          features,
+          description,
+          selectable,
+          label,
+        }))
+    )
   ),
-  // #endregion
+  setWorkflowDefinition: moderatorProcedure
+    .input(z.any())
+    .mutation(({ input }) => setWorkflowDefinition(input.key, input)),
   getResources: publicProcedure
     .input(getGenerationResourcesSchema)
     .query(({ ctx, input }) => getGenerationResources({ ...input, user: ctx.user })),
+  getGenerationData: publicProcedure
+    .input(getGenerationDataSchema)
+    .query(({ input, ctx }) => getGenerationData({ query: input, user: ctx.user })),
   checkResourcesCoverage: publicProcedure
     .input(checkResourcesCoverageSchema)
     .use(edgeCacheIt({ ttl: CacheTTL.sm }))
     .query(({ input }) => checkResourcesCoverage(input)),
-  getStatusMessage: publicProcedure
+  getStatus: publicProcedure
+    .use(edgeCacheIt({ ttl: CacheTTL.xs }))
+    .query(() => getGenerationStatus()),
+  getUnstableResources: publicProcedure
     .use(edgeCacheIt({ ttl: CacheTTL.sm }))
-    .query(() => getGenerationStatusMessage()),
+    .query(() => getUnstableResources()),
+  getUnavailableResources: publicProcedure.query(() => getUnavailableResources()),
+  toggleUnavailableResource: moderatorProcedure
+    .input(getByIdSchema)
+    .mutation(({ input, ctx }) =>
+      toggleUnavailableResource({ ...input, isModerator: ctx.user.isModerator })
+    ),
 });

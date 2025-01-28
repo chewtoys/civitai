@@ -12,9 +12,10 @@ export const TextInputWrapper = forwardRef<HTMLInputElement, ClearableTextInputP
     const inputRef = useRef<HTMLInputElement>(null);
     const mergedRef = useMergedRef(ref, inputRef) as unknown;
 
-    const closeButton = props.value && (
+    const closeButton = props.value && props.type !== 'hidden' && (
       <CloseButton
         variant="transparent"
+        tabIndex={-1}
         onClick={() => {
           const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
             window.HTMLInputElement.prototype,
@@ -33,9 +34,10 @@ export const TextInputWrapper = forwardRef<HTMLInputElement, ClearableTextInputP
         ref={mergedRef as RefObject<HTMLInputElement>}
         {...props}
         rightSection={
-          (clearable || rightSection) && (
+          (clearable || rightSection) &&
+          props.type !== 'hidden' && (
             <Group spacing={4} noWrap>
-              {clearable && closeButton}
+              {clearable && !props.disabled && closeButton}
               {rightSection}
             </Group>
           )

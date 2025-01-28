@@ -1,17 +1,16 @@
 import { Box, Center, createStyles, Group, Stack, Text, Title } from '@mantine/core';
-import { MetricTimeframe } from '@prisma/client';
 import { InferGetServerSidePropsType } from 'next/types';
-import { PeriodFilter, SortFilter } from '~/components/Filters';
+import { SortFilter } from '~/components/Filters';
 import { MasonryContainer } from '~/components/MasonryColumns/MasonryContainer';
 import { MasonryProvider } from '~/components/MasonryColumns/MasonryProvider';
 import { Meta } from '~/components/Meta/Meta';
 import { ModelFiltersDropdown } from '~/components/Model/Infinite/ModelFiltersDropdown';
 import { ModelsInfinite } from '~/components/Model/Infinite/ModelsInfinite';
 import { useModelQueryParams } from '~/components/Model/model.utils';
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
 import { constants } from '~/server/common/constants';
-import { ModelSort } from '~/server/common/enums';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 import { trpc } from '~/utils/trpc';
 
 export const getServerSideProps = createServerSideProps({
@@ -28,8 +27,6 @@ export default function TagPage({
   tagname,
 }: InferGetServerSidePropsType<typeof getServerSideProps>) {
   const { set, ...queryFilters } = useModelQueryParams();
-  const sort = queryFilters.sort ?? ModelSort.HighestRated;
-  const period = queryFilters.period ?? MetricTimeframe.AllTime;
 
   const { data = [] } = trpc.tag.getTagWithModelCount.useQuery({ name: tagname });
   const [tag] = data;
@@ -40,8 +37,8 @@ export default function TagPage({
   return (
     <>
       <Meta
-        title={`${tag?.name} Stable Diffusion AI Models | Civitai`}
-        description={`Browse ${tag?.name} Stable Diffusion models, checkpoints, hypernetworks, textual inversions, embeddings, Aesthetic Gradients, and LORAs`}
+        title={`${tag?.name} Stable Diffusion & Flux AI Models | Civitai`}
+        description={`Browse ${tag?.name} Stable Diffusion & Flux models, checkpoints, hypernetworks, textual inversions, embeddings, Aesthetic Gradients, and LORAs`}
         links={[{ href: `${env.NEXT_PUBLIC_BASE_URL}/tag/${tagname}`, rel: 'canonical' }]}
       />
       {tag && (
@@ -63,16 +60,17 @@ export default function TagPage({
         maxColumnCount={7}
         maxSingleColumnWidth={450}
       >
-        <MasonryContainer fluid>
+        <MasonryContainer>
           <Stack spacing="xs">
-            <Group position="apart">
-              <SortFilter type="models" value={sort} onChange={(x) => set({ sort: x as any })} />
-              <Group spacing="xs">
-                <PeriodFilter type="models" value={period} onChange={(x) => set({ period: x })} />
-                <ModelFiltersDropdown />
-              </Group>
+            <Group position="right">
+              <SortFilter type="models" variant="button" />
+              <ModelFiltersDropdown size="sm" compact />
             </Group>
-            <ModelsInfinite filters={{ ...queryFilters, sort, period }} />
+            <ModelsInfinite
+              filters={{ ...queryFilters, followed: false, hidden: false }}
+              showEof
+              showAds
+            />
           </Stack>
         </MasonryContainer>
       </MasonryProvider>
@@ -87,7 +85,7 @@ const useStyles = createStyles((theme) => ({
     paddingBottom: theme.spacing.xl * 2,
     backgroundColor: theme.colorScheme === 'dark' ? theme.colors.dark[8] : theme.colors.gray[1],
 
-    [`@media (max-width: ${theme.breakpoints.xs}px)`]: {
+    [containerQuery.smallerThan('xs')]: {
       paddingTop: theme.spacing.md,
       paddingBottom: theme.spacing.md,
     },
@@ -99,23 +97,23 @@ const useStyles = createStyles((theme) => ({
   },
   wrapper: {
     alignItems: 'flex-start',
-    [`@media (max-width: ${theme.breakpoints.xs}px)`]: {
+    [containerQuery.smallerThan('xs')]: {
       alignItems: 'center',
     },
   },
   outsideImage: {
     display: 'none',
-    [`@media (max-width: ${theme.breakpoints.xs}px)`]: {
+    [containerQuery.smallerThan('xs')]: {
       display: 'block',
     },
   },
   insideImage: {
-    [`@media (max-width: ${theme.breakpoints.xs}px)`]: {
+    [containerQuery.smallerThan('xs')]: {
       display: 'none',
     },
   },
   card: {
-    [`@media (max-width: ${theme.breakpoints.xs}px)`]: {
+    [containerQuery.smallerThan('xs')]: {
       width: '100%',
     },
   },

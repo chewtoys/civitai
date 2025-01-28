@@ -2,30 +2,37 @@ import {
   Button,
   ButtonProps,
   Center,
-  Grid,
   List,
   Paper,
   Stack,
   Text,
   Title,
   createStyles,
+  Group,
 } from '@mantine/core';
 import {
   IconArrowRight,
   IconBarbell,
+  IconBarcode,
+  IconBrush,
   IconCoin,
   IconCoins,
   IconHighlight,
   IconMoneybag,
   IconShoppingBag,
   IconShoppingCart,
-  IconUsers,
 } from '@tabler/icons-react';
 import React from 'react';
 import { MouseEvent } from 'react';
-import { useBuzz } from '~/components/Buzz/useBuzz';
 import { CurrencyIcon } from '~/components/Currency/CurrencyIcon';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
+import { dialogStore } from '~/components/Dialog/dialogStore';
+import { generationPanel } from '~/store/generation.store';
+import dynamic from 'next/dynamic';
+const RedeemCodeModal = dynamic(() =>
+  import('~/components/RedeemableCode/RedeemCodeModal').then((x) => x.RedeemCodeModal)
+);
 
 const useStyles = createStyles((theme) => ({
   featureCard: {
@@ -34,16 +41,16 @@ const useStyles = createStyles((theme) => ({
 }));
 
 const getEarnings = (): (FeatureCardProps & { key: string })[] => [
-  {
-    key: 'referrals',
-    icon: <IconUsers size={32} />,
-    title: 'Referrals',
-    description: 'You & your friends can earn more Buzz!',
-    btnProps: {
-      href: '/user/account#referrals',
-      children: 'Invite a friend',
-    },
-  },
+  // {
+  //   key: 'referrals',
+  //   icon: <IconUsers size={32} />,
+  //   title: 'Referrals',
+  //   description: 'You & your friends can earn more Buzz!',
+  //   btnProps: {
+  //     href: '/user/account#referrals',
+  //     children: 'Invite a friend',
+  //   },
+  // },
   {
     key: 'bounties',
     icon: <IconMoneybag size={32} />,
@@ -74,6 +81,18 @@ const getEarnings = (): (FeatureCardProps & { key: string })[] => [
       children: 'Create post',
     },
   },
+  {
+    key: 'redeem',
+    icon: <IconBarcode size={32} />,
+    title: 'Redeem a code',
+    description: 'Purchased a Buzz card? Redeem it to get your Buzz!',
+    btnProps: {
+      onClick: () => {
+        dialogStore.trigger({ component: RedeemCodeModal });
+      },
+      children: 'Redeem code',
+    },
+  },
 ];
 
 export const EarningBuzz = ({ asList, withCTA }: Props) => {
@@ -82,31 +101,38 @@ export const EarningBuzz = ({ asList, withCTA }: Props) => {
   return (
     <Stack spacing={20}>
       <Stack spacing={4}>
-        <Title order={2}>Earn Buzz</Title>
+        <Group spacing="xs" align="center">
+          <Title order={2}>Earn Buzz</Title>
+          <Button
+            compact
+            size="xs"
+            mt={4}
+            onClick={() => {
+              dialogStore.trigger({ component: RedeemCodeModal });
+            }}
+            variant="outline"
+          >
+            Redeem Code
+          </Button>
+        </Group>
         <Text>Need some Buzz? Here&rsquo;s how you can earn it</Text>
       </Stack>
       {asList ? (
         <FeatureList data={earnings} />
       ) : (
-        <Grid gutter={20}>
+        <ContainerGrid gutter={20}>
           {earnings.map((item) => (
-            <Grid.Col key={item.key} xs={12} md={3}>
+            <ContainerGrid.Col key={item.key} xs={12} sm={4} md={3}>
               <FeatureCard {...item} withCTA={withCTA ?? item.withCTA} />
-            </Grid.Col>
+            </ContainerGrid.Col>
           ))}
-        </Grid>
+        </ContainerGrid>
       )}
     </Stack>
   );
 };
 
-const getSpendings = ({
-  username,
-  balance,
-}: {
-  username: string;
-  balance: number;
-}): (FeatureCardProps & { key: string })[] => [
+const getSpendings = ({ userId }: { userId?: number }): (FeatureCardProps & { key: string })[] => [
   {
     key: 'train',
     icon: <IconBarbell size={32} />,
@@ -118,21 +144,21 @@ const getSpendings = ({
       rightIcon: <IconArrowRight size={14} />,
     },
   },
-  // {
-  //   key: 'generate',
-  //   icon: <IconBrush size={32} />,
-  //   title: 'Generate Images',
-  //   description: 'Use any of our models to create',
-  //   btnProps: {
-  //     component: 'button',
-  //     onClick: (e: MouseEvent<HTMLElement>) => {
-  //       e.preventDefault();
-  //       open();
-  //     },
-  //     children: 'Generate now',
-  //     rightIcon: <IconArrowRight size={14} />,
-  //   },
-  // },
+  {
+    key: 'generate',
+    icon: <IconBrush size={32} />,
+    title: 'Generate',
+    description: 'Create using thousands of community resources.',
+    btnProps: {
+      component: 'button',
+      onClick: (e: MouseEvent<HTMLElement>) => {
+        e.preventDefault();
+        generationPanel.open();
+      },
+      children: 'Generate now',
+      rightIcon: <IconArrowRight size={14} />,
+    },
+  },
   {
     key: 'tip',
     icon: <IconCoins size={32} />,
@@ -159,14 +185,23 @@ const getSpendings = ({
     key: 'showcase',
     icon: <IconHighlight size={32} />,
     title: 'Get showcased',
-    description: 'Boost your model to our homepage',
+    description: 'Get your content featured on our homepage',
     btnProps: {
       target: '_blank',
       rel: 'noreferrer nofollow',
-      href: `https://forms.clickup.com/8459928/f/825mr-8431/V3OV7JWR6SQFUYT7ON?Civitai%20Username=${encodeURIComponent(
-        username ?? ''
-      )}&Buzz%20Available=${balance ?? 0}`,
-      children: 'Contact us',
+      href: `https://civitai.retool.com/form/cdf269fb-c9b1-4da4-8601-6367c2358a36?userId=${userId}`,
+      children: 'Apply Now',
+      rightIcon: <IconArrowRight size={14} />,
+    },
+  },
+  {
+    key: 'badges',
+    icon: <IconShoppingBag size={32} />,
+    title: 'Shop badges and cosmetics',
+    description: 'Make your profile stand out!',
+    btnProps: {
+      href: '/shop',
+      children: 'Get some!',
       rightIcon: <IconArrowRight size={14} />,
     },
   },
@@ -180,26 +215,12 @@ const getSpendings = ({
       children: 'COMING SOON',
     },
   },
-  {
-    key: 'badges',
-    icon: <IconShoppingBag size={32} />,
-    title: 'Shop badges and cosmetics',
-    description: 'Make your profile stand out!',
-    btnProps: {
-      disabled: true,
-      children: 'COMING SOON',
-    },
-  },
 ];
 
 export const SpendingBuzz = ({ asList, withCTA }: Props) => {
   const currentUser = useCurrentUser();
-  const { balance } = useBuzz();
   // const open = useGenerationStore((state) => state.open);
-  const spendings = getSpendings({
-    username: currentUser?.username ?? '',
-    balance: balance ?? 0,
-  });
+  const spendings = getSpendings({ userId: currentUser?.id });
 
   return (
     <Stack spacing={20}>
@@ -210,13 +231,13 @@ export const SpendingBuzz = ({ asList, withCTA }: Props) => {
       {asList ? (
         <FeatureList data={spendings} />
       ) : (
-        <Grid gutter={20}>
+        <ContainerGrid gutter={20}>
           {spendings.map((item) => (
-            <Grid.Col key={item.key} xs={12} md={3}>
+            <ContainerGrid.Col key={item.key} xs={12} sm={4} md={3}>
               <FeatureCard {...item} withCTA={withCTA ?? item.withCTA} />
-            </Grid.Col>
+            </ContainerGrid.Col>
           ))}
-        </Grid>
+        </ContainerGrid>
       )}
     </Stack>
   );

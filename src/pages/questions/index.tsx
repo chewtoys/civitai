@@ -1,34 +1,32 @@
 import { Container, Stack, Title, Group, Button, Badge, Alert, Text } from '@mantine/core';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 
 import { Meta } from '~/components/Meta/Meta';
 import { Questions } from '~/components/Questions/Questions.Provider';
-import { constants } from '~/server/common/constants';
-import { parseCookies } from '~/providers/CookiesProvider';
 import { openContextModal } from '@mantine/modals';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { createServerSideProps } from '~/server/utils/server-side-helpers';
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
+import { NotFound } from '~/components/AppLayout/NotFound';
 
-export const getServerSideProps = createServerSideProps({
-  useSSG: true,
-  resolver: async ({ ssg, ctx }) => {
-    const page = ctx.query.page ? Number(ctx.query.page) : 1;
-    const {
-      sort = constants.questionFilterDefaults.sort,
-      period = constants.questionFilterDefaults.period,
-      status,
-    } = parseCookies(ctx.req.cookies).questions;
+// export const getServerSideProps = createServerSideProps({
+//   useSSG: true,
+//   resolver: async ({ ssg, ctx }) => {
+//     const page = ctx.query.page ? Number(ctx.query.page) : 1;
+//     const {
+//       sort = constants.questionFilterDefaults.sort,
+//       period = constants.questionFilterDefaults.period,
+//       status,
+//     } = parseCookies(ctx.req.cookies).questions;
 
-    await ssg?.question.getPaged.prefetch({
-      page,
-      limit: constants.questionFilterDefaults.limit,
-      sort,
-      period,
-      status,
-    });
-  },
-});
+//     await ssg?.question.getPaged.prefetch({
+//       page,
+//       limit: constants.questionFilterDefaults.limit,
+//       sort,
+//       period,
+//       status,
+//     });
+//   },
+// });
 
 const openModal = () =>
   openContextModal({
@@ -41,6 +39,7 @@ const openModal = () =>
 export default function QuestionsList() {
   const currentUser = useCurrentUser();
   const isMuted = currentUser?.muted ?? false;
+  if (!currentUser?.isModerator) return <NotFound />;
 
   return (
     <>

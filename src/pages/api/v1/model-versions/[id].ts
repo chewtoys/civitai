@@ -1,10 +1,10 @@
-import { ModelHashType, ModelModifier } from '@prisma/client';
+import { ModelHashType, ModelModifier } from '~/shared/utils/prisma/enums';
 import { NextApiRequest, NextApiResponse } from 'next';
 import { z } from 'zod';
 
 import { getEdgeUrl } from '~/client-utils/cf-images-utils';
 import { isProd } from '~/env/other';
-import { getDownloadFilename } from '~/pages/api/download/models/[modelVersionId]';
+import { getDownloadFilename } from '~/server/services/file.service';
 import { createModelFileDownloadUrl } from '~/server/common/model-helpers';
 import { dbRead } from '~/server/db/client';
 import {
@@ -13,27 +13,42 @@ import {
 } from '~/server/selectors/modelVersion.selector';
 import { getImagesForModelVersion } from '~/server/services/image.service';
 import { getVaeFiles } from '~/server/services/model.service';
-import { PublicEndpoint } from '~/server/utils/endpoint-helpers';
+import { MixedAuthEndpoint } from '~/server/utils/endpoint-helpers';
 import { getPrimaryFile } from '~/server/utils/model-helpers';
+import { reduceToBasicFileMetadata } from '~/server/services/model-file.service';
+import { Session } from 'next-auth';
+import { stringifyAIR } from '~/utils/string-helpers';
+import { safeDecodeURIComponent } from '~/utils/string-helpers';
 
 const hashesAsObject = (hashes: { type: ModelHashType; hash: string }[]) =>
   hashes.reduce((acc, { type, hash }) => ({ ...acc, [type]: hash }), {});
 
 const schema = z.object({ id: z.preprocess((val) => Number(val), z.number()) });
-export default PublicEndpoint(async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default MixedAuthEndpoint(async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse,
+  user: Session['user'] | undefined
+) {
   const results = schema.safeParse(req.query);
   if (!results.success)
     return res.status(400).json({ error: `Invalid id: ${results.error.flatten().fieldErrors.id}` });
 
   const { id } = results.data;
   if (!id) return res.status(400).json({ error: 'Missing modelVersionId' });
+  const status = user?.isModerator ? undefined : 'Published';
+
+  console.time('get-version-details');
 
   const modelVersion = await dbRead.modelVersion.findFirst({
-    where: { id, status: 'Published' },
+    where: { id, status },
     select: getModelVersionApiSelect,
   });
 
+  console.timeEnd('get-version-details');
+
+  console.time('res-model-version-details');
   await resModelVersionDetails(req, res, modelVersion);
+  console.timeEnd('res-model-version-details');
 });
 
 export async function prepareModelVersionResponse(
@@ -41,8 +56,10 @@ export async function prepareModelVersionResponse(
   baseUrl: URL,
   images?: AsyncReturnType<typeof getImagesForModelVersion>
 ) {
-  const { files, model, rank, vaeId, ...version } = modelVersion;
+  const { files, model, metrics, vaeId, ...version } = modelVersion;
+  console.time('get-vae-files');
   const vae = !!vaeId ? await getVaeFiles({ vaeIds: [vaeId] }) : [];
+  console.timeEnd('get-vae-files');
   files.push(...vae);
   const castedFiles = files as Array<
     Omit<(typeof files)[number], 'metadata'> & { metadata: FileMetadata }
@@ -50,32 +67,42 @@ export async function prepareModelVersionResponse(
   const primaryFile = getPrimaryFile(castedFiles);
   if (!primaryFile) return null;
 
+  console.time('images');
   images ??= await getImagesForModelVersion({
     modelVersionIds: [version.id],
     include: ['meta'],
     imagesPerVersion: 10,
   });
+  console.timeEnd('images');
   const includeDownloadUrl = model.mode !== ModelModifier.Archived;
   const includeImages = model.mode !== ModelModifier.TakenDown;
 
   return {
     ...version,
+    air: stringifyAIR({
+      baseModel: version.baseModel,
+      type: model.type,
+      modelId: version.modelId,
+      id: version.id,
+    }),
     stats: {
-      downloadCount: rank?.downloadCountAllTime ?? 0,
-      ratingCount: rank?.ratingCountAllTime ?? 0,
-      rating: Number(rank?.ratingAllTime?.toFixed(2) ?? 0),
+      downloadCount: metrics[0]?.downloadCount ?? 0,
+      ratingCount: metrics[0]?.ratingCount ?? 0,
+      rating: Number(metrics[0]?.rating?.toFixed(2) ?? 0),
+      thumbsUpCount: metrics[0]?.thumbsUpCount ?? 0,
     },
     model: { ...model, mode: model.mode == null ? undefined : model.mode },
     files: includeDownloadUrl
-      ? castedFiles.map(({ hashes, url, visibility, ...file }) => ({
+      ? castedFiles.map(({ hashes, url, visibility, metadata, modelVersionId, ...file }) => ({
           ...file,
+          metadata: reduceToBasicFileMetadata(metadata),
           hashes: hashesAsObject(hashes),
-          name: getDownloadFilename({ model, modelVersion: version, file }),
+          name: safeDecodeURIComponent(getDownloadFilename({ model, modelVersion: version, file })),
           primary: primaryFile.id === file.id,
           downloadUrl: `${baseUrl.origin}${createModelFileDownloadUrl({
             versionId: version.id,
             type: file.type,
-            meta: file.metadata,
+            meta: metadata,
             primary: primaryFile.id === file.id,
           })}`,
         }))

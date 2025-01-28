@@ -1,46 +1,37 @@
 import React, { forwardRef } from 'react';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
-import {
-  AutocompleteItem,
-  Badge,
-  Center,
-  Group,
-  Rating,
-  Stack,
-  Text,
-  ThemeIcon,
-} from '@mantine/core';
+import { AutocompleteItem, Badge, Center, Group, Stack, Text, ThemeIcon } from '@mantine/core';
 import { MediaHash } from '~/components/ImageHash/ImageHash';
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
-import {
-  IconBrush,
-  IconDownload,
-  IconHeart,
-  IconMessageCircle2,
-  IconPhotoOff,
-} from '@tabler/icons-react';
+import { IconBrush, IconDownload, IconMessageCircle2, IconPhotoOff } from '@tabler/icons-react';
 import { Highlight } from 'react-instantsearch';
 import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
 import { IconBadge } from '~/components/IconBadge/IconBadge';
 import { abbreviateNumber } from '~/utils/number-helpers';
-import { Hit } from 'instantsearch.js';
-import { ModelSearchIndexRecord } from '~/server/search-index/models.search-index';
 import {
   useSearchItemStyles,
   ViewMoreItem,
 } from '~/components/AutocompleteSearch/renderItems/common';
-import { StarRating } from '~/components/StartRating/StarRating';
+import { truncate } from 'lodash-es';
+import { ImageMetaProps } from '~/server/schema/image.schema';
+import { constants } from '~/server/common/constants';
+import { SearchIndexDataMap } from '~/components/Search/search.utils2';
+import { getIsSafeBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
+import { getDisplayName } from '~/utils/string-helpers';
+import { ThumbsUpIcon } from '~/components/ThumbsIcon/ThumbsIcon';
 
 export const ModelSearchItem = forwardRef<
   HTMLDivElement,
-  AutocompleteItem & { hit: Hit<ModelSearchIndexRecord & { image: any }> }
+  AutocompleteItem & { hit: SearchIndexDataMap['models'][number] }
 >(({ value, hit, ...props }, ref) => {
   const features = useFeatureFlags();
   const { classes, theme } = useSearchItemStyles();
 
   if (!hit) return <ViewMoreItem ref={ref} value={value} {...props} />;
 
-  const { image: coverImage, user, nsfw, type, category, metrics, version } = hit;
+  const { images, user, type, category, metrics, version, nsfw } = hit;
+  const coverImage = images[0];
+  const alt = coverImage.name;
 
   return (
     <Group ref={ref} {...props} key={hit.id} spacing="md" align="flex-start" noWrap>
@@ -54,13 +45,14 @@ export const ModelSearchItem = forwardRef<
         }}
       >
         {coverImage ? (
-          nsfw || coverImage.nsfw !== 'None' ? (
+          !getIsSafeBrowsingLevel(coverImage.nsfwLevel) ? (
             <MediaHash {...coverImage} cropFocus="top" />
           ) : (
             <EdgeMedia
               src={coverImage.url}
               name={coverImage.name ?? coverImage.id.toString()}
               type={coverImage.type}
+              alt={alt}
               anim={false}
               width={450}
               style={{
@@ -97,15 +89,12 @@ export const ModelSearchItem = forwardRef<
               NSFW
             </Badge>
           )}
-          <Badge size="xs">{type}</Badge>
-          {category && <Badge size="xs">{category.name}</Badge>}
+          <Badge size="xs">{getDisplayName(type)}</Badge>
+          {category && <Badge size="xs">{getDisplayName(category.name)}</Badge>}
         </Group>
         <Group spacing={4}>
-          <IconBadge icon={<StarRating value={metrics.rating} size={12} />}>
-            {abbreviateNumber(metrics.ratingCount)}
-          </IconBadge>
-          <IconBadge icon={<IconHeart size={12} stroke={2.5} />}>
-            {abbreviateNumber(metrics.favoriteCount)}
+          <IconBadge icon={<ThumbsUpIcon size={12} />}>
+            {abbreviateNumber(metrics.thumbsUpCount)}
           </IconBadge>
           <IconBadge icon={<IconMessageCircle2 size={12} stroke={2.5} />}>
             {abbreviateNumber(metrics.commentCount)}

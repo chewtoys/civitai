@@ -1,47 +1,31 @@
-import { Button, ButtonProps, Card } from '@mantine/core';
+import { Button, ButtonProps } from '@mantine/core';
 import { IconMessageChatbot, IconX } from '@tabler/icons-react';
+import { AssistantChat } from '~/components/Assistant/AssistantChat';
+import { env } from '~/env/client';
+import { isProd } from '~/env/other';
 import { useState } from 'react';
-import { env } from '~/env/client.mjs';
 
 const WIDTH = 320;
 const HEIGHT = 500;
 export function AssistantButton({ ...props }: ButtonProps) {
-  const [opened, setOpened] = useState(false);
-  if (!env.NEXT_PUBLIC_GPTT_UUID) return null;
+  const [open, setOpen] = useState(false);
+  if (!env.NEXT_PUBLIC_GPTT_UUID && isProd) return null;
 
   return (
     <>
-      <Card
-        style={{ display: opened ? 'block' : 'none' }}
-        shadow="md"
-        withBorder
-        radius={16}
-        sx={{
-          position: 'absolute',
-          bottom: '100%',
-          marginBottom: 4,
-          right: 0,
-          width: WIDTH,
-          zIndex: 200,
-          overflow: 'hidden',
-          height: HEIGHT,
-        }}
-        p={0}
-      >
-        <iframe
-          src={`https://app.gpt-trainer.com/gpt-trainer-widget/${env.NEXT_PUBLIC_GPTT_UUID}`}
-          width={WIDTH + 1}
-          height={HEIGHT}
-          style={{ margin: -1, background: 'transparent' }}
-        />
-      </Card>
+      {open && (
+        <div className="absolute bottom-full right-0 mb-1">
+          <AssistantChat width={WIDTH} height={HEIGHT} />
+        </div>
+      )}
       <Button
+        component="span"
         px="xs"
         {...props}
-        onClick={() => setOpened((x) => !x)}
-        color={opened ? 'gray' : 'blue'}
+        color={open ? 'gray' : 'blue'}
+        onClick={() => setOpen((o) => !o)}
       >
-        {opened ? <IconX size={20} stroke={2.5} /> : <IconMessageChatbot size={20} stroke={2.5} />}
+        {open ? <IconX size={20} stroke={2.5} /> : <IconMessageChatbot size={20} stroke={2.5} />}
       </Button>
     </>
   );

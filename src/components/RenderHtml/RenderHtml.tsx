@@ -5,7 +5,8 @@ import {
 } from '@mantine/core';
 import { useMemo } from 'react';
 
-import { needsColorSwap, sanitizeHtml } from '~/utils/html-helpers';
+import { DEFAULT_ALLOWED_ATTRIBUTES, needsColorSwap, sanitizeHtml } from '~/utils/html-helpers';
+import { containerQuery } from '~/utils/mantine-css-helpers';
 
 const useStyles = createStyles((theme) => ({
   htmlRenderer: {
@@ -39,11 +40,11 @@ const useStyles = createStyles((theme) => ({
         flexGrow: 1,
       },
 
-      [theme.fn.smallerThan('md')]: {
+      [containerQuery.smallerThan('md')]: {
         height: 649,
       },
 
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         height: 681,
 
         '& > iframe': {
@@ -88,13 +89,40 @@ export function RenderHtml({ html, withMentions = false, ...props }: Props) {
   html = useMemo(
     () =>
       sanitizeHtml(html, {
-        parseStyleAttributes: false,
+        parseStyleAttributes: true,
+        allowedAttributes: {
+          ...DEFAULT_ALLOWED_ATTRIBUTES,
+          div: ['data-youtube-video', 'data-type', 'style'],
+        },
+        allowedStyles: {
+          div: {
+            height: [/^\d+px$/],
+          },
+        },
         transformTags: {
+          div: function (tagName, attribs) {
+            if (attribs['data-type'] !== 'strawPoll') delete attribs.style;
+            return {
+              tagName,
+              attribs,
+            };
+          },
           span: function (tagName, attribs) {
             const dataType = attribs['data-type'];
             const isMention = dataType === 'mention';
             const style = attribs['style'];
-            const hexColor = style?.match(/color:#([0-9a-f]{6})/)?.[1];
+            let hexColor = style?.match(/color:#([0-9a-f]{6})/)?.[1];
+            const [, r, g, b] = style?.match(/color:rgba?\((\d+), (\d+), (\d+),? ?(\d+)?\)/) ?? [];
+            const rgbColors = [r, g, b]
+              .map((color) => {
+                const value = parseInt(color, 10);
+                if (isNaN(value)) return '';
+                return value.toString(16).padStart(2, '0');
+              })
+              .filter(Boolean);
+
+            if (rgbColors.length === 3) hexColor = rgbColors.join('');
+
             const needsSwap = hexColor
               ? needsColorSwap({ hexColor, colorScheme: theme.colorScheme, threshold: 0.2 })
               : false;
@@ -122,6 +150,15 @@ export function RenderHtml({ html, withMentions = false, ...props }: Props) {
                         : style,
                   },
                 };
+          },
+          a: function (tagName, attribs) {
+            if (typeof window !== 'undefined' && attribs.href)
+              attribs.href = attribs.href.replace('//civitai.com', `//${location.host}`);
+
+            return {
+              tagName,
+              attribs,
+            };
           },
         },
       }),

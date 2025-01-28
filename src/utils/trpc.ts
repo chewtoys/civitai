@@ -1,20 +1,33 @@
 // src/utils/trpc.ts
 import { QueryClient } from '@tanstack/react-query';
-import { httpBatchLink, httpLink, loggerLink, splitLink, TRPCLink } from '@trpc/client';
+import { httpLink, loggerLink, splitLink, TRPCLink } from '@trpc/client';
 import { createTRPCNext } from '@trpc/next';
 import superjson from 'superjson';
 import type { AppRouter } from '~/server/routers';
 import { isDev } from '~/env/other';
-import { isAuthed } from '~/components/CivitaiWrapped/CivitaiSessionProvider';
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
+import { showErrorNotification } from '~/utils/notifications';
+import { removeEmpty } from '~/utils/object-helpers';
+
+type RequestHeaders = {
+  'x-client-date': string;
+  'x-client': string;
+  'x-client-version'?: string;
+  'x-fingerprint'?: string;
+};
 
 const url = '/api/trpc';
+const headers: RequestHeaders = {
+  'x-client-version': process.env.version,
+  'x-client-date': Date.now().toString(),
+  'x-client': 'web',
+};
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
-      retry: 2,
+      retry: 1,
       staleTime: Infinity,
     },
   },
@@ -22,10 +35,27 @@ export const queryClient = new QueryClient({
 
 const authedCacheBypassLink: TRPCLink<AppRouter> = () => {
   return ({ next, op }) => {
-    if (isAuthed && op.input) (op.input as any).authed = true;
-    return next(op);
+    const isAuthed = typeof window !== undefined ? window.isAuthed : false;
+    const authed = removeEmpty({ authed: isAuthed || undefined });
+    const input = { ...(op.input as any), ...authed };
+
+    return next({ ...op, input });
   };
 };
+
+/**
+ * Get headers for each request
+ * @see https://trpc.io/docs/v10/client/headers
+ */
+function getHeaders() {
+  if (typeof window === 'undefined') return headers;
+  const fingerprint = window.localStorage.getItem('fingerprint') ?? '';
+
+  return {
+    ...headers,
+    'x-fingerprint': fingerprint ? JSON.parse(fingerprint) : undefined,
+  };
+}
 
 export const trpc = createTRPCNext<AppRouter>({
   config() {
@@ -40,15 +70,36 @@ export const trpc = createTRPCNext<AppRouter>({
             (opts.direction === 'down' && opts.result instanceof Error),
         }),
         splitLink({
-          condition: (op) => op.context.skipBatch === true,
+          // do not batch post requests
+          condition: (op) => (op.type === 'query' ? op.context.skipBatch === true : true),
           // when condition is true, use normal request
-          true: httpLink({ url }),
+          true: httpLink({ url, headers: getHeaders }),
           // when condition is false, use batching
-          // false: httpBatchLink({ url, maxURLLength: 2083 }),
-          false: httpLink({ url }), // Let's disable batching for now
+          // false: unstable_httpBatchStreamLink({ url, maxURLLength: 2083 }),
+          false: httpLink({ url, headers: getHeaders }), // Let's disable batching for now
         }),
       ],
     };
   },
   ssr: false,
 });
+
+export const handleTRPCError = (
+  error: any,
+  message = 'There was an error while performing your request'
+) => {
+  try {
+    // If failed in the FE - TRPC error is a JSON string that contains an array of errors.
+    const parsedError = JSON.parse(error.message);
+    showErrorNotification({
+      title: message,
+      error: parsedError,
+    });
+  } catch (e) {
+    // Report old error as is:
+    showErrorNotification({
+      title: message,
+      error: new Error(error.message),
+    });
+  }
+};

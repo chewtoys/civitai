@@ -1,23 +1,31 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Dialog, dialogStore, useDialogStore } from '~/components/Dialog/dialogStore';
 import trieMemoize from 'trie-memoize';
+import { Freeze } from '~/components/Freeze/Freeze';
 
 type DialogState = {
   opened: boolean;
   onClose: () => void;
+  zIndex?: number;
+  target?: string | HTMLElement;
+  focused?: 'true';
 };
 
-const DialogContext = createContext<DialogState>({ opened: false, onClose: () => undefined });
+const DialogContext = createContext<DialogState>({
+  opened: false,
+  onClose: () => undefined,
+});
 export const useDialogContext = () => useContext(DialogContext);
 
-const DialogProviderInner = ({ dialog }: { dialog: Dialog }) => {
+const DialogProviderInner = ({ dialog, index }: { dialog: Dialog; index: number }) => {
   const [opened, setOpened] = useState(false);
 
   const Dialog = dialog.component;
-  const onClose = () => {
+
+  function onClose() {
     dialog.options?.onClose?.();
     dialogStore.closeById(dialog.id);
-  };
+  }
 
   useEffect(() => {
     setTimeout(() => {
@@ -26,7 +34,14 @@ const DialogProviderInner = ({ dialog }: { dialog: Dialog }) => {
   }, []);
 
   return (
-    <DialogContext.Provider value={{ opened, onClose }}>
+    <DialogContext.Provider
+      value={{
+        opened,
+        onClose,
+        zIndex: 300 + index,
+        target: dialog.target,
+      }}
+    >
       <Dialog {...dialog.props} />
     </DialogContext.Provider>
   );
@@ -37,12 +52,14 @@ export const DialogProvider = () => {
   return (
     <>
       {dialogs.map((dialog, i) => (
-        <div key={dialog.id.toString()}>{createRenderElement(dialog)}</div>
+        <Freeze freeze={dialogs.length !== i + 1} key={dialog.id.toString()}>
+          {createRenderElement(dialog, i)}
+        </Freeze>
       ))}
     </>
   );
 };
 
-const createRenderElement = trieMemoize([WeakMap], (dialog) => (
-  <DialogProviderInner dialog={dialog} />
+const createRenderElement = trieMemoize([WeakMap, {}, {}], (dialog, index) => (
+  <DialogProviderInner dialog={dialog} index={index} />
 ));

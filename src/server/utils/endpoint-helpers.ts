@@ -1,24 +1,16 @@
+import { Partner } from '~/shared/utils/prisma/models';
+import { TRPCError } from '@trpc/server';
+import { getHTTPStatusCodeFromError } from '@trpc/server/http';
 import { NextApiRequest, NextApiResponse } from 'next';
+import { Session, SessionUser } from 'next-auth';
+import { withAxiom, Logger } from '@civitai/next-axiom';
+import { env } from '~/env/server';
 import { dbRead } from '~/server/db/client';
-import { env } from '~/env/server.mjs';
-import { Partner } from '@prisma/client';
 import { getServerAuthSession } from '~/server/utils/get-server-auth-session';
 import { generateSecretHash } from '~/server/utils/key-generator';
-import { isMaintenanceMode } from '~/env/other';
-import { Session, SessionUser } from 'next-auth';
-import { AxiomAPIRequest, withAxiom } from 'next-axiom';
+import { isDefined } from '~/utils/type-guards';
 
-export function handleMaintenanceMode(req: NextApiRequest, res: NextApiResponse) {
-  if (isMaintenanceMode) {
-    res.status(503);
-    if (req.headers['content-type'] == 'application/json')
-      res.json({ error: `We're performing maintenance check back soon` });
-    else res.redirect('/');
-    return true;
-  }
-
-  return false;
-}
+type AxiomAPIRequest = NextApiRequest & { log: Logger };
 
 export function TokenSecuredEndpoint(
   token: string,
@@ -49,12 +41,32 @@ export function WebhookEndpoint(
 const PUBLIC_CACHE_MAX_AGE = 300;
 const PUBLIC_CACHE_STALE_WHILE_REVALIDATE = PUBLIC_CACHE_MAX_AGE / 2;
 
-const addCorsHeaders = (
+const allowedOrigins = [
+  env.NEXTAUTH_URL,
+  ...env.TRPC_ORIGINS,
+  env.NEXT_PUBLIC_SERVER_DOMAIN_GREEN,
+  env.NEXT_PUBLIC_SERVER_DOMAIN_BLUE,
+  env.NEXT_PUBLIC_SERVER_DOMAIN_RED,
+]
+  .filter(isDefined)
+  .map((origin) => {
+    if (!origin.startsWith('http')) return `https://${origin}`;
+    return origin;
+  });
+export const addCorsHeaders = (
   req: NextApiRequest,
   res: NextApiResponse,
-  allowedMethods: string[] = ['GET']
+  allowedMethods: string[] = ['GET'],
+  { allowCredentials = false }: { allowCredentials?: boolean } = {}
 ) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (allowCredentials) {
+    const origin = req.headers.origin;
+    const allowedOrigin = allowedOrigins.find((o) => origin?.startsWith(o)) ?? allowedOrigins[0];
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
   res.setHeader('Access-Control-Allow-Headers', '*');
   res.setHeader('Access-Control-Allow-Methods', allowedMethods.join(', '));
   if (req.method === 'OPTIONS') {
@@ -71,12 +83,10 @@ const addPublicCacheHeaders = (req: NextApiRequest, res: NextApiResponse) => {
 };
 
 export function PublicEndpoint(
-  handler: (req: AxiomAPIRequest, res: NextApiResponse) => Promise<void>,
+  handler: (req: AxiomAPIRequest, res: NextApiResponse) => Promise<void | NextApiResponse>,
   allowedMethods: string[] = ['GET']
 ) {
   return withAxiom(async (req: AxiomAPIRequest, res: NextApiResponse) => {
-    if (handleMaintenanceMode(req, res)) return;
-
     const shouldStop = addCorsHeaders(req, res, allowedMethods);
     addPublicCacheHeaders(req, res);
     if (shouldStop) return;
@@ -85,13 +95,15 @@ export function PublicEndpoint(
 }
 
 export function AuthedEndpoint(
-  handler: (req: AxiomAPIRequest, res: NextApiResponse, user: SessionUser) => Promise<void>,
+  handler: (
+    req: AxiomAPIRequest,
+    res: NextApiResponse,
+    user: SessionUser
+  ) => Promise<void | NextApiResponse>,
   allowedMethods: string[] = ['GET']
 ) {
   return withAxiom(async (req: AxiomAPIRequest, res: NextApiResponse) => {
-    if (handleMaintenanceMode(req, res)) return;
-
-    const shouldStop = addCorsHeaders(req, res, allowedMethods);
+    const shouldStop = addCorsHeaders(req, res, allowedMethods, { allowCredentials: true });
     if (shouldStop) return;
 
     if (!req.method || !allowedMethods.includes(req.method))
@@ -112,8 +124,6 @@ export function MixedAuthEndpoint(
   allowedMethods: string[] = ['GET']
 ) {
   return withAxiom(async (req: AxiomAPIRequest, res: NextApiResponse) => {
-    if (handleMaintenanceMode(req, res)) return;
-
     if (!req.method || !allowedMethods.includes(req.method))
       return res.status(405).json({ error: 'Method not allowed' });
 
@@ -131,8 +141,6 @@ export function PartnerEndpoint(
   allowedMethods: string[] = ['GET']
 ) {
   return withAxiom(async (req: AxiomAPIRequest, res: NextApiResponse) => {
-    if (handleMaintenanceMode(req, res)) return;
-
     if (!req.method || !allowedMethods.includes(req.method))
       return res.status(405).json({ error: 'Method not allowed' });
 
@@ -147,7 +155,7 @@ export function PartnerEndpoint(
 }
 
 export function ModEndpoint(
-  handler: (req: AxiomAPIRequest, res: NextApiResponse) => Promise<void>,
+  handler: (req: AxiomAPIRequest, res: NextApiResponse, user: SessionUser) => Promise<void>,
   allowedMethods: string[] = ['GET']
 ) {
   return withAxiom(async (req: AxiomAPIRequest, res: NextApiResponse) => {
@@ -155,9 +163,22 @@ export function ModEndpoint(
       return res.status(405).json({ error: 'Method not allowed' });
 
     const session = await getServerAuthSession({ req, res });
-    const { isModerator, bannedAt } = session?.user ?? {};
-    if (!isModerator || bannedAt) return res.status(401).json({ error: 'Unauthorized' });
+    if (!session || !session.user?.isModerator || !!session.user.bannedAt)
+      return res.status(401).json({ error: 'Unauthorized' });
 
-    await handler(req, res);
+    await handler(req, res, session.user);
   });
+}
+
+export function handleEndpointError(res: NextApiResponse, e: unknown) {
+  if (e instanceof TRPCError) {
+    const apiError = e as TRPCError;
+    const status = getHTTPStatusCodeFromError(apiError);
+    const parsedError = JSON.parse(apiError.message);
+
+    return res.status(status).json(parsedError);
+  } else {
+    const error = e as Error;
+    return res.status(500).json({ message: 'An unexpected error occurred', error: error.message });
+  }
 }

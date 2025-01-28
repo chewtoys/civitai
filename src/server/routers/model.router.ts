@@ -1,38 +1,45 @@
 import { z } from 'zod';
-
-import { env } from '~/env/server.mjs';
-import { BrowsingMode } from '~/server/common/enums';
 import {
   changeModelModifierHandler,
+  copyGalleryBrowsingLevelHandler,
   declineReviewHandler,
   deleteModelHandler,
   findResourcesToAssociateHandler,
   getAssociatedResourcesCardDataHandler,
+  getAvailableTrainingModelsHandler,
   getDownloadCommandHandler,
   getModelByHashesHandler,
+  getModelCollectionShowcaseHandler,
   getModelDetailsForReviewHandler,
+  getModelGallerySettingsHandler,
   getModelHandler,
+  getModelOwnerHandler,
   getModelReportDetailsHandler,
   getModelsInfiniteHandler,
   getModelsPagedSimpleHandler,
-  getModelsWithVersionsHandler,
+  getModelTemplateFieldsHandler,
+  getModelTemplateFromBountyHandler,
   getModelVersionsHandler,
-  getModelWithVersionsHandler,
   getMyDraftModelsHandler,
   getMyTrainingModelsHandler,
+  getSimpleModelsInfiniteHandler,
   publishModelHandler,
   reorderModelVersionsHandler,
   requestReviewHandler,
   restoreModelHandler,
+  setModelCollectionShowcaseHandler,
+  toggleCheckpointCoverageHandler,
   toggleModelLockHandler,
   unpublishModelHandler,
+  updateGallerySettingsHandler,
   upsertModelHandler,
 } from '~/server/controllers/model.controller';
 import { dbRead } from '~/server/db/client';
-import { cacheIt, edgeCacheIt } from '~/server/middleware.trpc';
+import { applyUserPreferences, cacheIt, edgeCacheIt } from '~/server/middleware.trpc';
 import { getAllQuerySchema, getByIdSchema } from '~/server/schema/base.schema';
 import {
   changeModelModifierSchema,
+  copyGallerySettingsSchema,
   declineReviewSchema,
   deleteModelSchema,
   findResourcesToAssociateSchema,
@@ -40,29 +47,36 @@ import {
   getAllModelsSchema,
   getAssociatedResourcesSchema,
   getDownloadSchema,
-  getModelsByCategorySchema,
   getModelsWithCategoriesSchema,
   getModelVersionsSchema,
+  getSimpleModelsInfiniteSchema,
+  limitOnly,
+  migrateResourceToCollectionSchema,
   modelByHashesInput,
-  ModelInput,
   modelUpsertSchema,
   publishModelSchema,
   reorderModelVersionsSchema,
   setAssociatedResourcesSchema,
+  setModelCollectionShowcaseSchema,
   setModelsCategorySchema,
+  toggleCheckpointCoverageSchema,
   toggleModelLockSchema,
   unpublishModelSchema,
+  updateGallerySettingsSchema,
 } from '~/server/schema/model.schema';
 import {
   getAllModelsWithCategories,
   getAssociatedResourcesSimple,
-  getModelsByCategory,
+  getAvailableModelsByUserId,
+  getFeaturedModels,
+  getRecentlyManuallyAdded,
+  getRecentlyRecommended,
   getSimpleModelWithVersions,
+  migrateResourceToCollection,
   rescanModel,
   setAssociatedResources,
   setModelsCategory,
 } from '~/server/services/model.service';
-import { getAllHiddenForUser, getHiddenTagsForUser } from '~/server/services/user-cache.service';
 import {
   guardedProcedure,
   middleware,
@@ -71,9 +85,7 @@ import {
   publicProcedure,
   router,
 } from '~/server/trpc';
-import { throwAuthorizationError, throwBadRequestError } from '~/server/utils/errorHandling';
-import { prepareFile } from '~/utils/file-helpers';
-import { checkFileExists, getS3Client } from '~/utils/s3-utils';
+import { throwAuthorizationError } from '~/server/utils/errorHandling';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -96,78 +108,49 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   });
 });
 
-const checkFilesExistence = middleware(async ({ input, ctx, next }) => {
-  if (!ctx.user) throw throwAuthorizationError();
-
-  const { modelVersions } = input as ModelInput;
-  const files = modelVersions.flatMap(({ files }) => files?.map(prepareFile) ?? []);
-  const s3 = getS3Client();
-
-  for (const file of files) {
-    if (!file.url || !file.url.includes(env.S3_UPLOAD_BUCKET)) continue;
-    const fileExists = await checkFileExists(file.url, s3);
-    if (!fileExists)
-      throw throwBadRequestError(`File ${file.name} could not be found. Please re-upload.`, {
-        file,
-      });
-  }
-
-  return next({
-    ctx: { user: ctx.user },
-  });
-});
-
-const applyUserPreferences = middleware(async ({ input, ctx, next }) => {
+const skipEdgeCache = middleware(async ({ input, ctx, next }) => {
   const _input = input as GetAllModelsOutput;
-  _input.browsingMode ??= ctx.browsingMode;
-  if (_input.browsingMode !== BrowsingMode.All) {
-    const hidden = await getAllHiddenForUser({ userId: ctx.user?.id });
-    _input.excludedImageTagIds = [
-      ...hidden.tags.moderatedTags,
-      ...hidden.tags.hiddenTags,
-      ...(_input.excludedImageTagIds ?? []),
-    ];
-    _input.excludedTagIds = [...hidden.tags.hiddenTags, ...(_input.excludedTagIds ?? [])];
-    _input.excludedIds = [...hidden.models, ...(_input.excludedIds ?? [])];
-    _input.excludedUserIds = [...hidden.users, ...(_input.excludedUserIds ?? [])];
-    _input.excludedImageIds = [...hidden.images, ...(_input.excludedImageIds ?? [])];
-    if (_input.browsingMode === BrowsingMode.SFW) {
-      const systemHidden = await getHiddenTagsForUser({ userId: -1 });
-      _input.excludedImageTagIds = [
-        ...systemHidden.moderatedTags,
-        ...systemHidden.hiddenTags,
-        ...(_input.excludedImageTagIds ?? []),
-      ];
-      _input.excludedTagIds = [...systemHidden.hiddenTags, ...(_input.excludedTagIds ?? [])];
-    }
-  }
 
   return next({
-    ctx: { user: ctx.user },
+    ctx: { user: ctx.user, cache: { ...ctx.cache, skip: _input.favorites || _input.hidden } },
   });
 });
 
 export const modelRouter = router({
   getById: publicProcedure.input(getByIdSchema).query(getModelHandler),
+  getOwner: publicProcedure.input(getByIdSchema).query(getModelOwnerHandler),
   getAll: publicProcedure
     .input(getAllModelsSchema.extend({ page: z.never().optional() }))
-    // .use(applyUserPreferences)
-    .use(edgeCacheIt({ ttl: 60, tags: (input) => ['models'] }))
+    .use(skipEdgeCache)
+    .use(edgeCacheIt({ ttl: 60 }))
     .query(getModelsInfiniteHandler),
   getAllPagedSimple: publicProcedure
-    .input(getAllModelsSchema)
+    .input(getAllModelsSchema.extend({ cursor: z.never().optional() }))
     .use(cacheIt({ ttl: 60 }))
     .query(getModelsPagedSimpleHandler),
-  getAllWithVersions: publicProcedure
-    .input(getAllModelsSchema.extend({ cursor: z.never().optional() }))
-    .use(applyUserPreferences)
-    .query(getModelsWithVersionsHandler),
-  getByIdWithVersions: publicProcedure.input(getByIdSchema).query(getModelWithVersionsHandler),
+  getAllInfiniteSimple: guardedProcedure
+    .input(getSimpleModelsInfiniteSchema)
+    .query(getSimpleModelsInfiniteHandler),
   getVersions: publicProcedure.input(getModelVersionsSchema).query(getModelVersionsHandler),
   getMyDraftModels: protectedProcedure.input(getAllQuerySchema).query(getMyDraftModelsHandler),
   getMyTrainingModels: protectedProcedure
     .input(getAllQuerySchema)
     .query(getMyTrainingModelsHandler),
+  getMyAvailableModels: protectedProcedure.query(({ ctx }) =>
+    getAvailableModelsByUserId({ userId: ctx.user.id })
+  ),
+  getAvailableTrainingModels: protectedProcedure
+    .input(limitOnly)
+    .query(getAvailableTrainingModelsHandler),
+  getRecentlyManuallyAdded: protectedProcedure
+    .input(limitOnly)
+    .query(({ ctx, input }) => getRecentlyManuallyAdded({ userId: ctx.user.id, ...input })),
+  getRecentlyRecommended: protectedProcedure
+    .input(limitOnly)
+    .query(({ ctx, input }) => getRecentlyRecommended({ userId: ctx.user.id, ...input })),
+  getFeaturedModels: publicProcedure
+    .input(limitOnly)
+    .query(({ input }) => getFeaturedModels({ ...input })),
   upsert: guardedProcedure.input(modelUpsertSchema).mutation(upsertModelHandler),
   delete: protectedProcedure
     .input(deleteModelSchema)
@@ -186,7 +169,7 @@ export const modelRouter = router({
   getModelDetailsForReview: publicProcedure
     .input(getByIdSchema)
     .query(getModelDetailsForReviewHandler),
-  restore: protectedProcedure.input(getByIdSchema).mutation(restoreModelHandler),
+  restore: moderatorProcedure.input(getByIdSchema).mutation(restoreModelHandler),
   getDownloadCommand: protectedProcedure.input(getDownloadSchema).query(getDownloadCommandHandler),
   reorderVersions: protectedProcedure
     .input(reorderModelVersionsSchema)
@@ -203,23 +186,21 @@ export const modelRouter = router({
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(requestReviewHandler),
-  declineReview: protectedProcedure.input(declineReviewSchema).mutation(declineReviewHandler),
+  declineReview: protectedProcedure
+    .input(declineReviewSchema)
+    .use(isOwnerOrModerator)
+    .mutation(declineReviewHandler),
   changeMode: protectedProcedure
     .input(changeModelModifierSchema)
     .use(isOwnerOrModerator)
     .mutation(changeModelModifierHandler),
-  getByCategory: publicProcedure
-    .input(getModelsByCategorySchema)
-    .use(applyUserPreferences)
-    .use(cacheIt())
-    .query(({ input, ctx }) => getModelsByCategory({ ...input, user: ctx.user })),
   getWithCategoriesSimple: publicProcedure
     .input(getModelsWithCategoriesSchema)
     .query(({ input }) => getAllModelsWithCategories(input)),
   setCategory: protectedProcedure
     .input(setModelsCategorySchema)
     .mutation(({ input, ctx }) => setModelsCategory({ ...input, userId: ctx.user?.id })),
-  findResourcesToAssociate: publicProcedure
+  findResourcesToAssociate: protectedProcedure
     .input(findResourcesToAssociateSchema)
     .query(findResourcesToAssociateHandler),
   getAssociatedResourcesCardData: publicProcedure
@@ -234,4 +215,31 @@ export const modelRouter = router({
     .mutation(({ input, ctx }) => setAssociatedResources(input, ctx.user)),
   rescan: moderatorProcedure.input(getByIdSchema).mutation(({ input }) => rescanModel(input)),
   getModelsByHash: publicProcedure.input(modelByHashesInput).mutation(getModelByHashesHandler),
+  getTemplateFields: guardedProcedure.input(getByIdSchema).query(getModelTemplateFieldsHandler),
+  getModelTemplateFieldsFromBounty: guardedProcedure
+    .input(getByIdSchema)
+    .query(getModelTemplateFromBountyHandler),
+  getGallerySettings: publicProcedure.input(getByIdSchema).query(getModelGallerySettingsHandler),
+  updateGallerySettings: guardedProcedure
+    .input(updateGallerySettingsSchema)
+    .use(isOwnerOrModerator)
+    .mutation(updateGallerySettingsHandler),
+  toggleCheckpointCoverage: moderatorProcedure
+    .input(toggleCheckpointCoverageSchema)
+    .mutation(toggleCheckpointCoverageHandler),
+  copyGallerySettings: guardedProcedure
+    .input(copyGallerySettingsSchema)
+    .use(isOwnerOrModerator)
+    .mutation(copyGalleryBrowsingLevelHandler),
+  getCollectionShowcase: publicProcedure
+    .input(getByIdSchema)
+    .query(getModelCollectionShowcaseHandler),
+  setCollectionShowcase: protectedProcedure
+    .input(setModelCollectionShowcaseSchema)
+    .use(isOwnerOrModerator)
+    .mutation(setModelCollectionShowcaseHandler),
+  migrateToCollection: guardedProcedure
+    .input(migrateResourceToCollectionSchema)
+    .use(isOwnerOrModerator)
+    .mutation(({ input }) => migrateResourceToCollection(input)),
 });

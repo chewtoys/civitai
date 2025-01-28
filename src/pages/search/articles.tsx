@@ -1,32 +1,35 @@
 import { Stack, Text, Box, Center, Loader, Title, ThemeIcon, Anchor } from '@mantine/core';
-import { useInfiniteHits, useInstantSearch } from 'react-instantsearch';
+import { useInstantSearch } from 'react-instantsearch';
 
 import {
+  BrowsingLevelFilter,
   ClearRefinements,
   SearchableMultiSelectRefinementList,
   SortBy,
 } from '~/components/Search/CustomSearchComponents';
-import { useMemo } from 'react';
 import { SearchHeader } from '~/components/Search/SearchHeader';
-import { ArticleSearchIndexRecord } from '~/server/search-index/articles.search-index';
 import { ArticleCard } from '~/components/Cards/ArticleCard';
 import { IconCloudOff } from '@tabler/icons-react';
 import { TimeoutLoader } from '~/components/Search/TimeoutLoader';
-import Link from 'next/link';
-import { SearchLayout, useSearchLayoutStyles } from '~/components/Search/SearchLayout';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
-import { applyUserPreferencesArticles } from '~/components/Search/search.utils';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { SearchLayout } from '~/components/Search/SearchLayout';
 import { ARTICLES_SEARCH_INDEX } from '~/server/common/constants';
 import { ArticlesSearchIndexSortBy } from '~/components/Search/parsers/article.parser';
 import { InViewLoader } from '~/components/InView/InViewLoader';
+import { useInfiniteHitsTransformed } from '~/components/Search/search.utils2';
+import { MasonryGrid } from '~/components/MasonryColumns/MasonryGrid';
+import { NoContent } from '~/components/NoContent/NoContent';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import { Redirect } from '~/components/Redirect/Redirect';
 
 export default function ArticlesSearch() {
+  const { articles } = useFeatureFlags();
+
+  if (!articles) return <Redirect url="/" />;
+
   return (
     <SearchLayout.Root>
-      <SearchLayout.Filters>
-        <RenderFilters />
-      </SearchLayout.Filters>
       <SearchLayout.Content>
         <SearchHeader />
         <ArticlesHitList />
@@ -38,6 +41,7 @@ export default function ArticlesSearch() {
 const RenderFilters = () => {
   return (
     <>
+      <BrowsingLevelFilter attributeName="nsfwLevel" />
       <SortBy
         title="Sort articles by"
         items={[
@@ -62,35 +66,22 @@ const RenderFilters = () => {
 };
 
 export function ArticlesHitList() {
-  const { hits, showMore, isLastPage } = useInfiniteHits<ArticleSearchIndexRecord>();
+  const { hits, showMore, isLastPage } = useInfiniteHitsTransformed<'articles'>();
   const { status } = useInstantSearch();
-  const { classes } = useSearchLayoutStyles();
-  const currentUser = useCurrentUser();
-  const {
-    tags: hiddenTags,
-    users: hiddenUsers,
-    isLoading: loadingPreferences,
-  } = useHiddenPreferencesContext();
 
-  const articles = useMemo(() => {
-    return applyUserPreferencesArticles<ArticleSearchIndexRecord>({
-      items: hits,
-      hiddenTags,
-      hiddenUsers,
-      currentUserId: currentUser?.id,
-    });
-  }, [hits, hiddenTags, hiddenUsers, currentUser]);
-
-  const hiddenItems = hits.length - articles.length;
+  const { loadingPreferences, items, hiddenCount } = useApplyHiddenPreferences({
+    type: 'articles',
+    data: hits,
+  });
 
   if (hits.length === 0) {
     const NotFound = (
       <Box>
         <Center>
           <Stack spacing="md" align="center" maw={800}>
-            {hiddenItems > 0 && (
+            {hiddenCount > 0 && (
               <Text color="dimmed">
-                {hiddenItems} articles have been hidden due to your settings.
+                {hiddenCount} articles have been hidden due to your settings.
               </Text>
             )}
             <ThemeIcon size={128} radius={100} sx={{ opacity: 0.5 }}>
@@ -105,7 +96,7 @@ export function ArticlesHitList() {
             </Text>
             <Text>
               Why not{' '}
-              <Link href="/articles/create" passHref>
+              <Link legacyBehavior href="/articles/create" passHref>
                 <Anchor target="_blank">write your own!</Anchor>
               </Link>
             </Text>
@@ -148,20 +139,10 @@ export function ArticlesHitList() {
 
   return (
     <Stack>
-      {hiddenItems > 0 && (
-        <Text color="dimmed">{hiddenItems} articles have been hidden due to your settings.</Text>
+      {hiddenCount > 0 && (
+        <Text color="dimmed">{hiddenCount} articles have been hidden due to your settings.</Text>
       )}{' '}
-      <Box
-        className={classes.grid}
-        style={{
-          // Overwrite default sizing here.
-          gridTemplateColumns: `repeat(auto-fill, minmax(300px, 1fr))`,
-        }}
-      >
-        {articles.map((hit) => {
-          return <ArticleCard key={hit.id} data={hit} />;
-        })}
-      </Box>
+      <MasonryGrid data={items} render={ArticleCard} itemId={(x) => x.id} empty={<NoContent />} />
       {hits.length > 0 && !isLastPage && (
         <InViewLoader
           loadFn={showMore}
@@ -178,5 +159,16 @@ export function ArticlesHitList() {
 }
 
 ArticlesSearch.getLayout = function getLayout(page: React.ReactNode) {
-  return <SearchLayout indexName={ARTICLES_SEARCH_INDEX}>{page}</SearchLayout>;
+  return (
+    <SearchLayout
+      indexName={ARTICLES_SEARCH_INDEX}
+      leftSidebar={
+        <SearchLayout.Filters>
+          <RenderFilters />
+        </SearchLayout.Filters>
+      }
+    >
+      {page}
+    </SearchLayout>
+  );
 };

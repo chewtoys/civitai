@@ -17,7 +17,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { UniqueIdentifier } from '@dnd-kit/core';
 import { IconArrowsMaximize, IconInfoCircle } from '@tabler/icons-react';
-import { MediaType } from '@prisma/client';
+import { MediaType } from '~/shared/utils/prisma/enums';
 
 //TODO - handle what to display when there is an error
 type Props = {
@@ -29,7 +29,8 @@ type Props = {
 } & React.ComponentPropsWithoutRef<'div'>;
 
 export const ImageUploadPreview = forwardRef<HTMLDivElement, Props>(
-  ({ image, children, isPrimary, disabled, id, ...props }, ref) => { //eslint-disable-line
+  ({ image, children, isPrimary, disabled, id, ...props }, ref) => {
+    //eslint-disable-line
     const { classes, cx } = useStyles({ isPrimary });
     const [ready, setReady] = useState(false);
 
@@ -42,6 +43,7 @@ export const ImageUploadPreview = forwardRef<HTMLDivElement, Props>(
       transform: CSS.Transform.toString(transform),
       transition,
       cursor: isDragging ? 'grabbing' : !isDisabled ? 'pointer' : 'auto',
+      touchAction: 'none',
     };
 
     if (!image) return null;

@@ -1,6 +1,6 @@
 import {
-  Container,
   createStyles,
+  Divider,
   Group,
   Stack,
   Text,
@@ -9,16 +9,26 @@ import {
   UnstyledButton,
 } from '@mantine/core';
 
-import { createContext, Dispatch, SetStateAction, useContext, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { AppLayout } from '~/components/AppLayout/AppLayout';
 import { IconChevronsLeft } from '@tabler/icons-react';
 import { routing } from '~/components/Search/useSearchState';
 import { instantMeiliSearch } from '@meilisearch/instant-meilisearch';
-import { env } from '~/env/client.mjs';
+import { env } from '~/env/client';
 import { SearchIndex } from '~/components/Search/parsers/base';
 import { Configure, InstantSearch, InstantSearchProps } from 'react-instantsearch';
 import { CustomSearchBox } from '~/components/Search/CustomSearchComponents';
-import { RenderSearchComponentProps } from '~/components/AppLayout/AppHeader';
+import { RenderSearchComponentProps } from '~/components/AppLayout/AppHeader/AppHeader';
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { useRouter } from 'next/router';
+import { useTrackEvent } from '../TrackView/track.utils';
+import { z } from 'zod';
+import { ScrollArea } from '~/components/ScrollArea/ScrollArea';
+import { MasonryProvider } from '~/components/MasonryColumns/MasonryProvider';
+import { MasonryContainer } from '~/components/MasonryColumns/MasonryContainer';
+import { constants } from '~/server/common/constants';
+import { useIsMobile } from '~/hooks/useIsMobile';
+import { useLocalStorage } from '@mantine/hooks';
 
 const SIDEBAR_SIZE = 377;
 
@@ -38,7 +48,7 @@ const searchClient: InstantSearchProps['searchClient'] = {
 // #region [ImageGuardContext]
 type SearchLayoutState = {
   sidebarOpen: boolean;
-  setSidebarOpen: Dispatch<SetStateAction<boolean>>;
+  setSidebarOpen: (value: boolean) => void;
 };
 
 const SearchLayoutCtx = createContext<SearchLayoutState>({} as any);
@@ -48,58 +58,42 @@ export const useSearchLayout = () => {
   return context;
 };
 
-const useStyles = createStyles((theme, _, getRef) => {
-  const sidebarRef = getRef('sidebar');
-  const contentRef = getRef('content');
-
+const useStyles = createStyles((theme) => {
   return {
     sidebar: {
-      ref: sidebarRef,
-      height: 'calc(100vh - 2 * var(--mantine-header-height, 50px))',
-      position: 'fixed',
-      left: -SIDEBAR_SIZE,
-      top: 'var(--mantine-header-height,50px)',
+      height: '100%',
+      marginLeft: `-${SIDEBAR_SIZE}px`,
       width: `${SIDEBAR_SIZE}px`,
-      overflowY: 'auto',
-      padding: theme.spacing.md,
-      transition: 'transform 200ms ease',
-      borderRight: '2px solid',
+
+      transition: 'margin 200ms ease',
+      borderRight: '1px solid',
       borderColor: theme.colorScheme === 'dark' ? theme.colors.dark[5] : theme.colors.gray[1],
-      zIndex: 200,
       background: theme.colorScheme === 'dark' ? theme.colors.dark[7] : theme.colors.gray[0],
+      display: 'flex',
+      flexDirection: 'column',
 
-      [theme.fn.smallerThan('sm')]: {
+      [containerQuery.smallerThan('sm')]: {
         top: 0,
-        height: '100vh',
-        left: '-100vw',
-        width: '100vw',
-        position: 'fixed',
+        left: 0,
+        zIndex: 200,
+        height: '100%',
+        width: '100%',
+        marginLeft: `-100%`,
+        position: 'absolute',
+        border: 'none',
       },
     },
 
-    content: {
-      ref: contentRef,
-      width: '100%',
-      paddingLeft: 0,
-      // TODO: Performance wise - padding left is not the best route here.
-      // We should probably use a transform instead
-      transition: 'padding-left 200ms ease',
+    scrollable: {
+      padding: theme.spacing.md,
+      overflowY: 'auto',
+      flex: 1,
     },
 
-    sidebarOpen: {
-      [`& .${sidebarRef}`]: {
-        transform: `translate(${SIDEBAR_SIZE}px, 0)`,
-        [theme.fn.smallerThan('sm')]: {
-          transform: `translate(100vw, 0)`,
-          paddingBottom: theme.spacing.xl,
-        },
-      },
-      [`& .${contentRef}`]: {
-        paddingLeft: `${SIDEBAR_SIZE}px`,
-        [theme.fn.smallerThan('sm')]: {
-          paddingLeft: 0,
-        },
-      },
+    root: { height: '100%', width: '100%', display: 'flex' },
+
+    active: {
+      marginLeft: '0 !important',
     },
   };
 });
@@ -108,15 +102,46 @@ function renderSearchComponent(props: RenderSearchComponentProps) {
   return <CustomSearchBox {...props} />;
 }
 
+const searchQuerySchema = z
+  .object({
+    query: z.string().trim().optional(),
+    sortBy: z.string().optional(),
+  })
+  .passthrough();
+
 export function SearchLayout({
   children,
   indexName,
+  leftSidebar,
 }: {
   children: React.ReactNode;
   indexName: SearchIndex;
+  leftSidebar?: React.ReactNode;
 }) {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const isMobile = useIsMobile();
+  const [sidebarOpenLocalStorage, setSidebarOpenLocalStorage] = useLocalStorage({
+    key: `search-sidebar`,
+    defaultValue: true,
+  });
+  const [sidebarOpenState, setSidebarOpenState] = useState(false);
+  const sidebarOpen = isMobile ? sidebarOpenState : sidebarOpenLocalStorage;
+  const setSidebarOpen = (value: boolean) => {
+    setSidebarOpenState(value);
+    setSidebarOpenLocalStorage(value);
+  };
+
   const ctx = useMemo(() => ({ sidebarOpen, setSidebarOpen }), [sidebarOpen]);
+
+  const router = useRouter();
+  const { trackSearch } = useTrackEvent();
+
+  useEffect(() => {
+    const result = searchQuerySchema.safeParse(router.query);
+    if (!result.success) return;
+
+    const { query, sortBy: index, ...filters } = result.data;
+    if (query && index) trackSearch({ query, index, filters });
+  }, [router.query]);
 
   return (
     <SearchLayoutCtx.Provider value={ctx}>
@@ -126,33 +151,35 @@ export function SearchLayout({
         searchClient={searchClient}
         indexName={indexName}
         routing={routing}
+        future={{ preserveSharedStateOnUnmount: true }}
       >
         <Configure hitsPerPage={50} attributesToHighlight={[]} />
-        <AppLayout renderSearchComponent={renderSearchComponent}>{children}</AppLayout>
+        <AppLayout
+          renderSearchComponent={renderSearchComponent}
+          scrollable={isMobile ? !sidebarOpen : true}
+          left={leftSidebar}
+        >
+          {children}
+        </AppLayout>
       </InstantSearch>
     </SearchLayoutCtx.Provider>
   );
 }
 
 SearchLayout.Root = function Root({ children }: { children: React.ReactNode }) {
-  const { classes, cx } = useStyles();
-  const { sidebarOpen } = useSearchLayout();
+  const { classes } = useStyles();
 
-  return (
-    <Container fluid className={cx({ [classes.sidebarOpen]: sidebarOpen })}>
-      {children}
-    </Container>
-  );
+  return <div className={classes.root}>{children}</div>;
 };
 
 SearchLayout.Filters = function Filters({ children }: { children: React.ReactNode }) {
-  const { classes } = useStyles();
+  const { classes, cx } = useStyles();
   const { sidebarOpen, setSidebarOpen } = useSearchLayout();
   const { classes: searchLayoutClasses } = useSearchLayoutStyles();
 
   return (
-    <Stack className={classes.sidebar}>
-      <Group>
+    <aside className={cx(classes.sidebar, { [classes.active]: sidebarOpen })}>
+      <Group px="md" py="xs">
         <Tooltip label="Filters & sorting" position="bottom" withArrow>
           <UnstyledButton onClick={() => setSidebarOpen(!sidebarOpen)}>
             <ThemeIcon
@@ -168,28 +195,40 @@ SearchLayout.Filters = function Filters({ children }: { children: React.ReactNod
         </Tooltip>
         <Text size="lg">Filters &amp; sorting</Text>
       </Group>
-      {children}
-    </Stack>
+      <Divider />
+      <ScrollArea className="h-full p-4">{children}</ScrollArea>
+    </aside>
   );
 };
 
+const maxColumnCount = 7;
 SearchLayout.Content = function Content({ children }: { children: React.ReactNode }) {
-  const { classes } = useStyles();
-  return <Stack className={classes.content}>{children}</Stack>;
+  return (
+    <MasonryProvider
+      columnWidth={constants.cardSizes.model}
+      maxColumnCount={maxColumnCount}
+      maxSingleColumnWidth={450}
+      className="flex-1"
+    >
+      <MasonryContainer p={0}>
+        <Stack>{children}</Stack>
+      </MasonryContainer>
+    </MasonryProvider>
+  );
 };
 
 export const useSearchLayoutStyles = createStyles((theme) => ({
   grid: {
     display: 'grid',
     gridTemplateColumns: `repeat(auto-fill, minmax(250px, 1fr))`,
-    columnGap: theme.spacing.md,
+    gap: theme.spacing.md,
     gridTemplateRows: `auto 1fr`,
     overflow: 'hidden',
-    marginTop: -theme.spacing.md,
+    // marginTop: -theme.spacing.md,
 
-    '& > *': {
-      marginTop: theme.spacing.md,
-    },
+    // '& > *': {
+    //   marginTop: theme.spacing.md,
+    // },
   },
 
   filterButton: {

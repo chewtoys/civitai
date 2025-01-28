@@ -1,3 +1,27 @@
+import { createContext, useCallback, useContext, useRef } from 'react';
+import { z } from 'zod';
+import { createStore, useStore } from 'zustand';
+import { devtools } from 'zustand/middleware';
+import { constants } from '~/server/common/constants';
+import {
+  ArticleSort,
+  BountySort,
+  BountyStatus,
+  ClubSort,
+  CollectionSort,
+  ImageSort,
+  MarkerSort,
+  MarkerType,
+  ModelSort,
+  PostSort,
+  QuestionSort,
+  QuestionStatus,
+  ThreadSort,
+  ToolSort,
+} from '~/server/common/enums';
+import { periodModeSchema } from '~/server/schema/base.schema';
+import { getInfiniteBountySchema } from '~/server/schema/bounty.schema';
+import { getInfiniteClubSchema } from '~/server/schema/club.schema';
 import {
   CheckpointType,
   ImageGenerationProcess,
@@ -5,35 +29,9 @@ import {
   MetricTimeframe,
   ModelStatus,
   ModelType,
-} from '@prisma/client';
-import { createContext, useCallback, useContext, useRef } from 'react';
-import { z } from 'zod';
-import { createStore, useStore } from 'zustand';
-import { devtools } from 'zustand/middleware';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { constants } from '~/server/common/constants';
-import {
-  ArticleSort,
-  BountySort,
-  BountyStatus,
-  BrowsingMode,
-  CollectionSort,
-  ImageSort,
-  ModelSort,
-  PostSort,
-  QuestionSort,
-  QuestionStatus,
-} from '~/server/common/enums';
-import { periodModeSchema } from '~/server/schema/base.schema';
-import { getInfiniteBountySchema } from '~/server/schema/bounty.schema';
-import { setCookie } from '~/utils/cookies-helpers';
+  ToolType,
+} from '~/shared/utils/prisma/enums';
 import { removeEmpty } from '~/utils/object-helpers';
-
-type BrowsingModeSchema = z.infer<typeof browsingModeSchema>;
-const browsingModeSchema = z.nativeEnum(BrowsingMode).default(BrowsingMode.NSFW);
-
-export type ViewMode = z.infer<typeof viewModeSchema>;
-const viewModeSchema = z.enum(['categories', 'feed']);
 
 export type ModelFilterSchema = z.infer<typeof modelFilterSchema>;
 const modelFilterSchema = z.object({
@@ -43,13 +41,15 @@ const modelFilterSchema = z.object({
   types: z.nativeEnum(ModelType).array().optional(),
   checkpointType: z.nativeEnum(CheckpointType).optional(),
   baseModels: z.enum(constants.baseModels).array().optional(),
-  browsingMode: z.nativeEnum(BrowsingMode).optional(),
   status: z.nativeEnum(ModelStatus).array().optional(),
   earlyAccess: z.boolean().optional(),
-  view: viewModeSchema.default('feed'),
   supportsGeneration: z.boolean().optional(),
+  fromPlatform: z.boolean().optional(),
   followed: z.boolean().optional(),
+  archived: z.boolean().optional(),
+  hidden: z.boolean().optional(),
   fileFormats: z.enum(constants.modelFileFormats).array().optional(),
+  pending: z.boolean().optional(),
 });
 
 type QuestionFilterSchema = z.infer<typeof questionFilterSchema>;
@@ -65,17 +65,27 @@ const imageFilterSchema = z.object({
   periodMode: periodModeSchema.optional(),
   sort: z.nativeEnum(ImageSort).default(ImageSort.MostReactions),
   generation: z.nativeEnum(ImageGenerationProcess).array().optional(),
-  view: viewModeSchema.default('feed'),
-  excludeCrossPosts: z.boolean().optional(),
-  types: z.array(z.nativeEnum(MediaType)).optional(),
+  types: z.array(z.nativeEnum(MediaType)).default([MediaType.image]),
   withMeta: z.boolean().optional(),
+  fromPlatform: z.boolean().optional(),
+  hideAutoResources: z.boolean().optional(),
+  hideManualResources: z.boolean().optional(),
+  notPublished: z.boolean().optional(),
+  scheduled: z.boolean().optional(),
   hidden: z.boolean().optional(),
   followed: z.boolean().optional(),
+  tools: z.number().array().optional(),
+  techniques: z.number().array().optional(),
+  baseModels: z.enum(constants.baseModels).array().optional(),
+  remixesOnly: z.boolean().optional(),
+  nonRemixesOnly: z.boolean().optional(),
 });
 
+type ModelImageFilterSchema = z.infer<typeof modelImageFilterSchema>;
 const modelImageFilterSchema = imageFilterSchema.extend({
   sort: z.nativeEnum(ImageSort).default(ImageSort.Newest), // Default sort for model images should be newest
   period: z.nativeEnum(MetricTimeframe).default(MetricTimeframe.AllTime), //Default period for model details should be all time
+  types: z.array(z.nativeEnum(MediaType)).default([]),
 });
 
 type PostFilterSchema = z.infer<typeof postFilterSchema>;
@@ -83,7 +93,6 @@ const postFilterSchema = z.object({
   period: z.nativeEnum(MetricTimeframe).default(MetricTimeframe.Week),
   periodMode: periodModeSchema,
   sort: z.nativeEnum(PostSort).default(PostSort.MostReactions),
-  view: viewModeSchema.default('feed'),
   followed: z.boolean().optional(),
 });
 
@@ -92,7 +101,6 @@ const articleFilterSchema = z.object({
   period: z.nativeEnum(MetricTimeframe).default(MetricTimeframe.Month),
   periodMode: periodModeSchema,
   sort: z.nativeEnum(ArticleSort).default(ArticleSort.MostBookmarks),
-  view: viewModeSchema.default('feed'),
   followed: z.boolean().optional(),
 });
 
@@ -122,45 +130,79 @@ const bountyFilterSchema = z
     })
   );
 
-export type CookiesState = {
-  browsingMode: BrowsingModeSchema;
-};
+type ClubFilterSchema = z.infer<typeof clubFilterSchema>;
+const clubFilterSchema = z
+  .object({
+    sort: z.nativeEnum(ClubSort).default(ClubSort.Newest),
+  })
+  .merge(
+    getInfiniteClubSchema.omit({
+      sort: true,
+      limit: true,
+      cursor: true,
+      nsfw: true,
+    })
+  );
+
+type VideoFilterSchema = z.infer<typeof videoFilterSchema>;
+const videoFilterSchema = imageFilterSchema;
+
+type ThreadFilterSchema = z.infer<typeof threadFilterSchema>;
+const threadFilterSchema = z.object({
+  sort: z.nativeEnum(ThreadSort).default(ThreadSort.Newest),
+});
+
+export type MarkerFilterSchema = z.infer<typeof markerFilterSchema>;
+const markerFilterSchema = z.object({
+  sort: z.nativeEnum(MarkerSort).default(MarkerSort.Newest),
+  marker: z.nativeEnum(MarkerType).optional(),
+  tags: z.string().array().optional(),
+});
+
+type ToolFilterSchema = z.infer<typeof toolFilterSchema>;
+const toolFilterSchema = z.object({
+  sort: z.nativeEnum(ToolSort).default(ToolSort.Newest),
+  type: z.nativeEnum(ToolType).optional(),
+});
 
 type StorageState = {
   models: ModelFilterSchema;
   questions: QuestionFilterSchema;
   images: ImageFilterSchema;
-  modelImages: ImageFilterSchema;
+  modelImages: ModelImageFilterSchema;
   posts: PostFilterSchema;
   articles: ArticleFilterSchema;
   collections: CollectionFilterSchema;
   bounties: BountyFilterSchema;
+  clubs: ClubFilterSchema;
+  videos: VideoFilterSchema;
+  threads: ThreadFilterSchema;
+  markers: MarkerFilterSchema;
+  tools: ToolFilterSchema;
 };
 export type FilterSubTypes = keyof StorageState;
-export type ViewAdjustableTypes = 'models' | 'images' | 'posts' | 'articles';
 
 const periodModeTypes = ['models', 'images', 'posts', 'articles', 'bounties'] as const;
 export type PeriodModeType = (typeof periodModeTypes)[number];
 export const hasPeriodMode = (type: string) => periodModeTypes.includes(type as PeriodModeType);
 
-type FilterState = CookiesState & StorageState;
+type FilterState = StorageState;
 export type FilterKeys<K extends keyof FilterState> = keyof Pick<FilterState, K>;
 
 type StoreState = FilterState & {
-  setBrowsingMode: (browsingMode: BrowsingMode) => void;
   setModelFilters: (filters: Partial<ModelFilterSchema>) => void;
   setQuestionFilters: (filters: Partial<QuestionFilterSchema>) => void;
   setImageFilters: (filters: Partial<ImageFilterSchema>) => void;
-  setModelImageFilters: (filters: Partial<ImageFilterSchema>) => void;
+  setModelImageFilters: (filters: Partial<ModelImageFilterSchema>) => void;
   setPostFilters: (filters: Partial<PostFilterSchema>) => void;
   setArticleFilters: (filters: Partial<ArticleFilterSchema>) => void;
   setCollectionFilters: (filters: Partial<CollectionFilterSchema>) => void;
   setBountyFilters: (filters: Partial<BountyFilterSchema>) => void;
-};
-
-type CookieStorageSchema = Record<keyof CookiesState, { key: string; schema: z.ZodTypeAny }>;
-const cookieKeys: CookieStorageSchema = {
-  browsingMode: { key: 'mode', schema: browsingModeSchema },
+  setClubFilters: (filters: Partial<ClubFilterSchema>) => void;
+  setVideoFilters: (filters: Partial<VideoFilterSchema>) => void;
+  setThreadFilters: (filters: Partial<ThreadFilterSchema>) => void;
+  setMarkerFilters: (filters: Partial<MarkerFilterSchema>) => void;
+  setToolFilters: (filters: Partial<ToolFilterSchema>) => void;
 };
 
 type LocalStorageSchema = Record<keyof StorageState, { key: string; schema: z.AnyZodObject }>;
@@ -173,16 +215,11 @@ const localStorageSchemas: LocalStorageSchema = {
   articles: { key: 'article-filters', schema: articleFilterSchema },
   collections: { key: 'collections-filters', schema: collectionFilterSchema },
   bounties: { key: 'bounties-filters', schema: bountyFilterSchema },
-};
-
-export const parseFilterCookies = (cookies: Partial<{ [key: string]: string }>) => {
-  return Object.entries(cookieKeys).reduce<Record<string, unknown>>((acc, [key, storage]) => {
-    const cookieValue = cookies[storage.key];
-    const parsedValue = cookieValue ? deserializeJSON(cookieValue) : undefined;
-    const result = storage.schema.safeParse(parsedValue);
-    const value = result.success ? result.data : storage.schema.parse(undefined);
-    return { ...acc, [key]: value };
-  }, {}) as CookiesState;
+  clubs: { key: 'clubs-filters', schema: clubFilterSchema },
+  videos: { key: 'videos-filters', schema: videoFilterSchema },
+  threads: { key: 'thread-filters', schema: threadFilterSchema },
+  markers: { key: 'marker-filters', schema: markerFilterSchema },
+  tools: { key: 'tool-filters', schema: toolFilterSchema },
 };
 
 const getInitialValues = <TSchema extends z.AnyZodObject>({
@@ -229,15 +266,10 @@ function handleLocalStorageChange<TKey extends keyof StorageState>({
 }
 
 type FilterStore = ReturnType<typeof createFilterStore>;
-const createFilterStore = (initialValues: CookiesState) =>
+const createFilterStore = () =>
   createStore<StoreState>()(
     devtools((set) => ({
-      ...initialValues,
       ...getInitialLocalStorageValues(),
-      setBrowsingMode: (browsingMode) => {
-        setCookie(cookieKeys.browsingMode.key, browsingMode);
-        set({ browsingMode });
-      },
       setModelFilters: (data) =>
         set((state) => handleLocalStorageChange({ key: 'models', data, state })),
       setQuestionFilters: (data) =>
@@ -254,30 +286,30 @@ const createFilterStore = (initialValues: CookiesState) =>
         set((state) => handleLocalStorageChange({ key: 'collections', data, state })),
       setBountyFilters: (data) =>
         set((state) => handleLocalStorageChange({ key: 'bounties', data, state })),
+      setClubFilters: (data) =>
+        set((state) => handleLocalStorageChange({ key: 'clubs', data, state })),
+      setVideoFilters: (data) =>
+        set((state) => handleLocalStorageChange({ key: 'videos', data, state })),
+      setThreadFilters: (data) =>
+        set((state) => handleLocalStorageChange({ key: 'threads', data, state })),
+      setMarkerFilters: (data) =>
+        set((state) => handleLocalStorageChange({ key: 'markers', data, state })),
+      setToolFilters: (data) =>
+        set((state) => handleLocalStorageChange({ key: 'tools', data, state })),
     }))
   );
 
 const FiltersContext = createContext<FilterStore | null>(null);
+
 export function useFiltersContext<T>(selector: (state: StoreState) => T) {
   const store = useContext(FiltersContext);
   if (!store) throw new Error('Missing FiltersContext.Provider in the tree');
   return useStore(store, selector);
 }
 
-export const FiltersProvider = ({
-  children,
-  value,
-}: {
-  children: React.ReactNode;
-  value: CookiesState;
-}) => {
+export const FiltersProvider = ({ children }: { children: React.ReactNode }) => {
   const storeRef = useRef<FilterStore>();
-  const currentUser = useCurrentUser();
-  if (!storeRef.current)
-    storeRef.current = createFilterStore({
-      ...value,
-      browsingMode: !currentUser || !currentUser.showNsfw ? BrowsingMode.SFW : value.browsingMode,
-    });
+  if (!storeRef.current) storeRef.current = createFilterStore();
 
   return <FiltersContext.Provider value={storeRef.current}>{children}</FiltersContext.Provider>;
 };
@@ -311,6 +343,11 @@ export function useSetFilters(type: FilterSubTypes) {
           articles: state.setArticleFilters,
           collections: state.setCollectionFilters,
           bounties: state.setBountyFilters,
+          clubs: state.setClubFilters,
+          videos: state.setVideoFilters,
+          threads: state.setThreadFilters,
+          markers: state.setMarkerFilters,
+          tools: state.setToolFilters,
         }[type]),
       [type]
     )

@@ -1,7 +1,7 @@
-import { Box, Group, Stack, Tabs } from '@mantine/core';
-import { MetricTimeframe } from '@prisma/client';
+import { Box, Group, Stack } from '@mantine/core';
+import { MetricTimeframe } from '~/shared/utils/prisma/enums';
 import { useRouter } from 'next/router';
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 
 import { NotFound } from '~/components/AppLayout/NotFound';
 import { ArticlesInfinite } from '~/components/Article/Infinite/ArticlesInfinite';
@@ -17,23 +17,30 @@ import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { postgresSlugify } from '~/utils/string-helpers';
 import { FeedContentToggle } from '~/components/FeedContentToggle/FeedContentToggle';
 import { ArticleFiltersDropdown } from '~/components/Article/Infinite/ArticleFiltersDropdown';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { UserProfileLayout } from '~/components/Profile/old/OldProfileLayout';
+import { Page } from '~/components/AppLayout/Page';
+import { dbRead } from '~/server/db/client';
 
 export const getServerSideProps = createServerSideProps({
-  useSession: true,
   resolver: async ({ ctx, features }) => {
+    const username = ctx.query.username as string;
     if (!features?.articles)
       return {
         redirect: {
-          destination: `/user/${ctx.query.username}`,
+          destination: `/user/${username}`,
           permanent: false,
         },
+      };
+
+    const user = await dbRead.user.findUnique({ where: { username }, select: { bannedAt: true } });
+    if (user?.bannedAt)
+      return {
+        redirect: { destination: `/user/${username}`, permanent: true },
       };
   },
 });
 
-export default function UserArticlesPage() {
+function UserArticlesPage() {
   const currentUser = useCurrentUser();
   const router = useRouter();
   const {
@@ -50,29 +57,17 @@ export default function UserArticlesPage() {
     selfView ? query.section ?? 'published' : 'published'
   );
   const viewingPublished = section === 'published';
-  const features = useFeatureFlags();
-  const Wrapper = useMemo(
-    () =>
-      ({ children }: { children: React.ReactNode }) =>
-        features.profileOverhaul ? (
-          <Box mt="md">{children}</Box>
-        ) : (
-          <Tabs.Panel value="/articles">{children}</Tabs.Panel>
-        ),
-    [features.profileOverhaul]
-  );
-
   // currently not showing any content if the username is undefined
   if (!username) return <NotFound />;
 
   return (
-    <Wrapper>
+    <Box mt="md">
       <MasonryProvider
         columnWidth={constants.cardSizes.model}
         maxColumnCount={7}
         maxSingleColumnWidth={450}
       >
-        <MasonryContainer fluid>
+        <MasonryContainer p={0}>
           <Stack spacing="xs">
             <Group spacing={8} position="apart">
               {selfView && (
@@ -94,8 +89,10 @@ export default function UserArticlesPage() {
                     onChange={(x) => replace({ sort: x as ArticleSort })}
                   />
                   <ArticleFiltersDropdown
-                    query={{ ...query, followed }}
+                    query={{ ...query, period, followed }}
                     onChange={(filters) => replace(filters)}
+                    size="sm"
+                    compact
                   />
                 </Group>
               )}
@@ -107,7 +104,9 @@ export default function UserArticlesPage() {
                   sort,
                   period,
                   includeDrafts: !!currentUser?.isModerator,
+                  pending: true,
                 }}
+                showEmptyCta={selfView}
               />
             ) : (
               <UserDraftArticles />
@@ -115,8 +114,8 @@ export default function UserArticlesPage() {
           </Stack>
         </MasonryContainer>
       </MasonryProvider>
-    </Wrapper>
+    </Box>
   );
 }
 
-UserArticlesPage.getLayout = UserProfileLayout;
+export default Page(UserArticlesPage, { getLayout: UserProfileLayout });

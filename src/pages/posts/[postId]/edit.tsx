@@ -1,63 +1,51 @@
-import { Container, Grid, Stack, Title, Group, Badge } from '@mantine/core';
-import { useIsMutating } from '@tanstack/react-query';
-import { useRouter } from 'next/router';
+import { PostEditLayout } from '~/components/Post/EditV2/PostEditLayout';
+import { PostEdit } from '~/components/Post/EditV2/PostEdit';
+import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { getLoginLink } from '~/utils/login-helpers';
+import { z } from 'zod';
+import { getDbWithoutLag } from '~/server/db/db-helpers';
+import { Meta } from '~/components/Meta/Meta';
+import { Page } from '~/components/AppLayout/Page';
 
-import { DismissibleAlert } from '~/components/DismissibleAlert/DismissibleAlert';
-import { EditPostControls } from '~/components/Post/Edit/EditPostControls';
-import { EditPostDetail } from '~/components/Post/Edit/EditPostDetail';
-import { EditPostImages } from '~/components/Post/Edit/EditPostImages';
-import { useEditPostContext } from '~/components/Post/Edit/EditPostProvider';
-import { EditPostReviews } from '~/components/Post/Edit/EditPostReviews';
-import { EditPostTitle } from '~/components/Post/Edit/EditPostTitle';
-import { PostEditLayout } from '~/components/Post/Edit/PostEditLayout';
-import { ReorderImages } from '~/components/Post/Edit/ReorderImages';
+const paramsSchema = z.object({
+  postId: z.coerce.number(),
+});
 
-export default function PostEdit() {
-  const mutating = useIsMutating();
-  const router = useRouter();
-  const reviewing = router.query.reviewing ? router.query.reviewing === 'true' : undefined;
+export const getServerSideProps = createServerSideProps({
+  useSession: true,
+  resolver: async ({ session, ctx }) => {
+    const parsedParams = paramsSchema.safeParse(ctx.params);
+    if (!parsedParams.success) return { notFound: true };
 
-  const reorder = useEditPostContext((state) => state.reorder);
-  const tags = useEditPostContext((state) => state.tags);
+    if (!session) {
+      return {
+        redirect: {
+          destination: getLoginLink({ returnUrl: ctx.resolvedUrl, reason: 'post-images' }),
+          permanent: false,
+        },
+      };
+    }
 
-  return (
-    <Container>
-      {reviewing && !tags.length && (
-        <DismissibleAlert
-          id="complete-review"
-          title="Complete your review"
-          mx="auto"
-          maw={400}
-          mb="xl"
-          size="md"
-          color="blue"
-          emoji="⭐️"
-          content="To complete your review give your post a tag and hit publish."
-        />
-      )}
-      <Grid gutter={30}>
-        <Grid.Col md={4} sm={6} orderSm={2}>
-          <Stack>
-            <Group position="apart">
-              <Title size="sm">POST</Title>
-              <Badge color={mutating > 0 ? 'yellow' : 'green'} size="lg">
-                {mutating > 0 ? 'Saving' : 'Saved'}
-              </Badge>
-            </Group>
-            <EditPostControls />
-            <EditPostReviews />
-          </Stack>
-        </Grid.Col>
-        <Grid.Col md={8} sm={6} orderSm={1}>
-          <Stack>
-            <EditPostTitle />
-            <EditPostDetail />
-            {!reorder ? <EditPostImages /> : <ReorderImages />}
-          </Stack>
-        </Grid.Col>
-      </Grid>
-    </Container>
-  );
-}
+    const postId = parsedParams.data.postId;
+    const db = await getDbWithoutLag('post', postId);
+    const post = await db.post.findUnique({ where: { id: postId }, select: { userId: true } });
+    const isOwner = post?.userId === session.user?.id;
+    if (!isOwner && !session.user?.isModerator) return { notFound: true };
 
-PostEdit.getLayout = PostEditLayout;
+    return { props: { postId } };
+  },
+});
+
+export default Page(
+  function () {
+    return (
+      <>
+        <Meta deIndex />
+        <div className="container max-w-lg">
+          <PostEdit />
+        </div>
+      </>
+    );
+  },
+  { InnerLayout: PostEditLayout }
+);

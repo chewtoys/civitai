@@ -1,15 +1,13 @@
-import { MetricTimeframe } from '@prisma/client';
-import { useRouter } from 'next/router';
+import { MetricTimeframe } from '~/shared/utils/prisma/enums';
 import { useMemo } from 'react';
 import { z } from 'zod';
+import { useBrowsingLevelDebounced } from '~/components/BrowsingLevel/BrowsingLevelProvider';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
 import { useZodRouteParams } from '~/hooks/useZodRouteParams';
 
 import { useFiltersContext } from '~/providers/FiltersProvider';
 import { ArticleSort } from '~/server/common/enums';
-import {
-  GetArticlesByCategorySchema,
-  GetInfiniteArticlesSchema,
-} from '~/server/schema/article.schema';
+import { GetInfiniteArticlesSchema } from '~/server/schema/article.schema';
 import { removeEmpty } from '~/utils/object-helpers';
 import { trpc } from '~/utils/trpc';
 import { booleanString, numericString, numericStringArray } from '~/utils/zod-helpers';
@@ -53,41 +51,35 @@ export type ArticleQueryParams = z.output<typeof articleQueryParamSchema>;
 
 export const useQueryArticles = (
   filters?: Partial<GetInfiniteArticlesSchema>,
-  options?: { keepPreviousData?: boolean; enabled?: boolean }
+  options?: { keepPreviousData?: boolean; enabled?: boolean; applyHiddenPreferences?: boolean }
 ) => {
   filters ??= {};
-  const browsingMode = useFiltersContext((state) => state.browsingMode);
-  const { data, ...rest } = trpc.article.getInfinite.useInfiniteQuery(
-    { ...filters, browsingMode },
+  const { applyHiddenPreferences = true, ...queryOptions } = options ?? {};
+  const browsingLevel = useBrowsingLevelDebounced();
+  const { data, isLoading, ...rest } = trpc.article.getInfinite.useInfiniteQuery(
+    { ...filters, browsingLevel },
     {
       getNextPageParam: (lastPage) => lastPage.nextCursor,
       trpc: { context: { skipBatch: true } },
-      ...options,
+      ...queryOptions,
     }
   );
 
-  const articles = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data]);
+  const flatData = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data]);
+  const { items, loadingPreferences, hiddenCount } = useApplyHiddenPreferences({
+    type: 'articles',
+    data: flatData,
+    showHidden: !!filters.hidden,
+    disabled: !applyHiddenPreferences,
+    isRefetching: rest.isRefetching,
+  });
 
-  return { data, articles, ...rest };
-};
-
-export const useQueryArticleCategories = (
-  filters?: Partial<GetArticlesByCategorySchema>,
-  options?: { keepPreviousData?: boolean; enabled?: boolean }
-) => {
-  filters ??= {};
-  const browsingMode = useFiltersContext((state) => state.browsingMode);
-  const { data, ...rest } = trpc.article.getByCategory.useInfiniteQuery(
-    { ...filters, browsingMode },
-    {
-      getNextPageParam: (lastPage) => lastPage.nextCursor,
-      trpc: { context: { skipBatch: true } },
-      keepPreviousData: true,
-      ...options,
-    }
-  );
-
-  const categories = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data]);
-
-  return { data, categories, ...rest };
+  return {
+    data,
+    articles: items,
+    removedArticles: hiddenCount,
+    fetchedArticles: flatData?.length,
+    isLoading: isLoading || loadingPreferences,
+    ...rest,
+  };
 };

@@ -1,22 +1,27 @@
-import { MetricTimeframe } from '@prisma/client';
+import {
+  CheckpointType,
+  MetricTimeframe,
+  ModelStatus,
+  ModelType,
+} from '~/shared/utils/prisma/enums';
+import { isEqual } from 'lodash-es';
 import { useRouter } from 'next/router';
-import { useDeferredValue, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { z } from 'zod';
+import { useBrowsingLevelDebounced } from '~/components/BrowsingLevel/BrowsingLevelProvider';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
 import { useZodRouteParams } from '~/hooks/useZodRouteParams';
-import { ModelFilterSchema, useFiltersContext } from '~/providers/FiltersProvider';
+import { useFiltersContext } from '~/providers/FiltersProvider';
+import { constants } from '~/server/common/constants';
 import { ModelSort } from '~/server/common/enums';
 import { periodModeSchema } from '~/server/schema/base.schema';
-import { GetAllModelsInput, GetModelsByCategoryInput } from '~/server/schema/model.schema';
+import { GetAllModelsInput, ToggleCheckpointCoverageInput } from '~/server/schema/model.schema';
 import { usernameSchema } from '~/server/schema/user.schema';
 import { showErrorNotification } from '~/utils/notifications';
 import { removeEmpty } from '~/utils/object-helpers';
 import { postgresSlugify } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
-import { constants } from '~/server/common/constants';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { isDefined } from '~/utils/type-guards';
-import { isEqual } from 'lodash-es';
+import { booleanString, stringArray } from '~/utils/zod-helpers';
 
 const modelQueryParamSchema = z
   .object({
@@ -28,8 +33,10 @@ const modelQueryParamSchema = z
     username: usernameSchema.transform(postgresSlugify),
     tagname: z.string(),
     tag: z.string(),
-    favorites: z.coerce.boolean(),
-    hidden: z.coerce.boolean(),
+    favorites: booleanString(),
+    hidden: booleanString(),
+    archived: booleanString(),
+    followed: booleanString(),
     view: z.enum(['categories', 'feed']),
     section: z.enum(['published', 'draft', 'training']),
     collectionId: z.coerce.number(),
@@ -39,6 +46,24 @@ const modelQueryParamSchema = z
       (val) => (Array.isArray(val) ? val : [val]),
       z.array(z.enum(constants.baseModels))
     ),
+    clubId: z.coerce.number().optional(),
+    collectionTagId: z.coerce.number().optional(),
+    earlyAccess: booleanString().optional(),
+    types: z
+      .preprocess((val) => (Array.isArray(val) ? val : [val]), z.nativeEnum(ModelType).array())
+      .optional(),
+    checkpointType: z.nativeEnum(CheckpointType).optional(),
+    supportsGeneration: booleanString().optional(),
+    status: z
+      .preprocess((val) => (Array.isArray(val) ? val : [val]), z.nativeEnum(ModelStatus).array())
+      .optional(),
+    fileFormats: z
+      .preprocess(
+        (val) => (Array.isArray(val) ? val : [val]),
+        z.enum(constants.modelFileFormats).array()
+      )
+      .optional(),
+    fromPlatform: booleanString().optional(),
   })
   .partial();
 export type ModelQueryParams = z.output<typeof modelQueryParamSchema>;
@@ -92,93 +117,117 @@ export const useQueryModels = (
   filters?: Partial<Omit<GetAllModelsInput, 'page'>>,
   options?: { keepPreviousData?: boolean; enabled?: boolean }
 ) => {
-  filters ??= {};
-  const queryUtils = trpc.useContext();
-  const { data, isLoading, ...rest } = trpc.model.getAll.useInfiniteQuery(filters, {
-    getNextPageParam: (lastPage) => (!!lastPage ? lastPage.nextCursor : 0),
-    getPreviousPageParam: (firstPage) => (!!firstPage ? firstPage.nextCursor : 0),
-    trpc: { context: { skipBatch: true } },
-    keepPreviousData: true,
-    onError: (error) => {
-      filters ??= {}; // Just to prevent ts error
-      queryUtils.model.getAll.setInfiniteData(filters, (oldData) => oldData ?? data);
-      showErrorNotification({
-        title: 'Failed to fetch data',
-        error: new Error(`Something went wrong: ${error.message}`),
-      });
-    },
-    ...options,
-  });
-
-  const currentUser = useCurrentUser();
-  const {
-    models: hiddenModels,
-    images: hiddenImages,
-    tags: hiddenTags,
-    users: hiddenUsers,
-    isLoading: isLoadingHidden,
-  } = useHiddenPreferencesContext();
-  const models = useMemo(() => {
-    if (isLoadingHidden) return [];
-    const arr = data?.pages.flatMap((x) => (!!x ? x.items : [])) ?? [];
-    const filtered = arr
-      .filter((x) => {
-        if (x.user.id === currentUser?.id) return true;
-        if (hiddenUsers.get(x.user.id)) return false;
-        if (hiddenModels.get(x.id) && !filters?.hidden) return false;
-        for (const tag of x.tags) if (hiddenTags.get(tag)) return false;
-        return true;
-      })
-      .map(({ images, ...x }) => {
-        const filteredImages = images?.filter((i) => {
-          if (hiddenImages.get(i.id)) return false;
-          for (const tag of i.tags ?? []) {
-            if (hiddenTags.get(tag)) return false;
-          }
-          return true;
-        });
-
-        if (!filteredImages?.length) return null;
-
-        return {
-          ...x,
-          image: filteredImages[0],
-        };
-      })
-      .filter(isDefined);
-
-    return filtered;
-  }, [
-    data,
-    hiddenModels,
-    hiddenImages,
-    hiddenTags,
-    hiddenUsers,
-    currentUser,
-    isLoadingHidden,
-    filters?.hidden,
-  ]);
-
-  return { data, models, isLoading: isLoading || isLoadingHidden, ...rest };
-};
-
-export const useQueryModelCategories = (
-  filters?: Partial<GetModelsByCategoryInput>,
-  options?: { keepPreviousData?: boolean; enabled?: boolean }
-) => {
-  filters ??= {};
-  const browsingMode = useFiltersContext((state) => state.browsingMode);
-  const { data, ...rest } = trpc.model.getByCategory.useInfiniteQuery(
-    { ...filters, browsingMode },
+  const _filters = filters ?? {};
+  const queryUtils = trpc.useUtils();
+  const browsingLevel = useBrowsingLevelDebounced();
+  const { data, isLoading, ...rest } = trpc.model.getAll.useInfiniteQuery(
+    { ..._filters, browsingLevel },
     {
-      getNextPageParam: (lastPage) => lastPage.nextCursor,
+      getNextPageParam: (lastPage) => (!!lastPage ? lastPage.nextCursor : 0),
+      getPreviousPageParam: (firstPage) => (!!firstPage ? firstPage.nextCursor : 0),
       trpc: { context: { skipBatch: true } },
       keepPreviousData: true,
+      onError: (error) => {
+        queryUtils.model.getAll.setInfiniteData(
+          { ..._filters, browsingLevel },
+          (oldData) => oldData ?? data
+        );
+        showErrorNotification({
+          title: 'Failed to fetch data',
+          error: new Error(`Something went wrong: ${error.message}`),
+        });
+      },
       ...options,
     }
   );
 
-  const categories = useMemo(() => data?.pages.flatMap((x) => x.items) ?? [], [data]);
+  const flatData = useMemo(() => data?.pages.flatMap((x) => (!!x ? x.items : [])), [data]);
+  const { items, loadingPreferences } = useApplyHiddenPreferences({
+    type: 'models',
+    data: flatData,
+    showHidden: !!_filters.hidden,
+    showImageless: (_filters.status ?? []).includes(ModelStatus.Draft) || _filters.pending,
+    isRefetching: rest.isRefetching,
+    hiddenTags: _filters.excludedTagIds,
+  });
 
-  return { data, categories, ...rest };
+  return { data, models: items, isLoading: isLoading || loadingPreferences, ...rest };
+};
+
+export const useToggleCheckpointCoverageMutation = () => {
+  const queryUtils = trpc.useUtils();
+
+  const toggleMutation = trpc.model.toggleCheckpointCoverage.useMutation({
+    onSuccess: (_, { id, versionId }) => {
+      queryUtils.model.getById.setData({ id }, (old) => {
+        if (!old) return old;
+
+        return {
+          ...old,
+          modelVersions: old.modelVersions.map((v) =>
+            v.id === versionId ? { ...v, canGenerate: !v.canGenerate } : v
+          ),
+        };
+      });
+    },
+    onError: (error) => {
+      showErrorNotification({
+        title: 'Failed to toggle checkpoint coverage',
+        error: new Error(error.message),
+      });
+    },
+  });
+
+  const handleToggle = (data: ToggleCheckpointCoverageInput) => {
+    return toggleMutation.mutateAsync(data);
+  };
+
+  return { ...toggleMutation, toggle: handleToggle };
+};
+
+export const useModelShowcaseCollection = ({ modelId }: { modelId: number }) => {
+  const queryUtils = trpc.useUtils();
+
+  const { data: showcase, isLoading: loadingCollection } =
+    trpc.model.getCollectionShowcase.useQuery({ id: modelId });
+
+  const {
+    data,
+    models,
+    isLoading: loadingModels,
+    ...rest
+  } = useQueryModels(
+    {
+      collectionId: showcase?.id,
+      sort: ModelSort.Newest,
+      period: MetricTimeframe.AllTime,
+      periodMode: 'published',
+      limit: 10,
+    },
+    { enabled: !loadingCollection && !!showcase?.id, keepPreviousData: true }
+  );
+
+  const setShowcaseMutation = trpc.model.setCollectionShowcase.useMutation({
+    onSuccess: async () => {
+      await queryUtils.model.getCollectionShowcase.invalidate({ id: modelId });
+    },
+    onError: (error) => {
+      showErrorNotification({
+        title: 'Failed to set showcase collection',
+        error: new Error(error.message),
+      });
+    },
+  });
+  const handleSetShowcaseCollection = (collectionId: number) => {
+    return setShowcaseMutation.mutateAsync({ id: modelId, collectionId });
+  };
+
+  return {
+    ...rest,
+    collection: showcase,
+    items: models,
+    isLoading: loadingCollection || loadingModels,
+    setShowcaseCollection: handleSetShowcaseCollection,
+    settingShowcase: setShowcaseMutation.isLoading,
+  };
 };

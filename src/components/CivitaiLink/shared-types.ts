@@ -52,7 +52,9 @@ export type ResourceType =
   | 'Poses'
   | 'Other'
   | 'Wildcards'
-  | 'Workflows';
+  | 'Workflows'
+  | 'DoRA'
+  | 'Detection';
 
 type CommandBase = {
   id: string;

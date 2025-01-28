@@ -1,6 +1,6 @@
 import { createJob, getJobDate } from './job';
 import { dbWrite } from '~/server/db/client';
-import { redis } from '~/server/redis/client';
+import { redis, REDIS_KEYS } from '~/server/redis/client';
 import * as rewardImports from '~/server/rewards';
 import { BuzzEventLog } from '~/server/rewards/base.reward';
 import { clickhouse } from '~/server/clickhouse/client';
@@ -16,33 +16,27 @@ export const processRewards = createJob('rewards-process', '*/1 * * * *', async 
 
   const [lastUpdate, setLastUpdate] = await getJobDate('process-rewards');
   const now = new Date();
-  const chLastUpdate = dayjs(lastUpdate).toISOString();
-  const chNow = dayjs(now).toISOString();
 
   timers.optimized += await mergeUniqueEvents();
 
   // Get all records that need to be processed
-  const toProcessAll = await clickhouse
-    .query({
-      query: `
-      SELECT
-        type,
-        forId,
-        toUserId,
-        byUserId,
-        awardAmount,
-        status,
-        ip,
-        version,
-        transactionDetails
-      FROM buzzEvents
-      WHERE status = 'pending'
-        AND time >= parseDateTimeBestEffortOrNull('${chLastUpdate}')
-        AND time < parseDateTimeBestEffortOrNull('${chNow}')
-    `,
-      format: 'JSONEachRow',
-    })
-    .then((x) => x.json<BuzzEventLog[]>());
+  const toProcessAll = await clickhouse.$query<BuzzEventLog>`
+    SELECT
+      type,
+      forId,
+      toUserId,
+      byUserId,
+      awardAmount,
+      multiplier,
+      status,
+      ip,
+      version,
+      transactionDetails
+    FROM buzzEvents
+    WHERE status = 'pending'
+      AND time >= ${lastUpdate}
+      AND time < ${now}
+  `;
 
   for (const reward of rewards) {
     const toProcess = toProcessAll.filter((x) => reward.types.includes(x.type));
@@ -65,7 +59,7 @@ export const processRewards = createJob('rewards-process', '*/1 * * * *', async 
 });
 
 export const rewardsDailyReset = createJob('rewards-daily-reset', '0 0 * * *', async () => {
-  redis.del('buzz-events');
+  redis.del(REDIS_KEYS.BUZZ_EVENTS);
 });
 
 async function mergeUniqueEvents() {

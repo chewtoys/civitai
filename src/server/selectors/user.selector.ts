@@ -1,14 +1,17 @@
 import { Prisma } from '@prisma/client';
-import { imageSelect } from '~/server/selectors/image.selector';
+import { imageSelect, profileImageSelect } from '~/server/selectors/image.selector';
 
 export const simpleUserSelect = Prisma.validator<Prisma.UserSelect>()({
   id: true,
   username: true,
   deletedAt: true,
   image: true,
+  profilePicture: {
+    select: profileImageSelect,
+  },
 });
 
-const simpleUser = Prisma.validator<Prisma.UserArgs>()({
+const simpleUser = Prisma.validator<Prisma.UserDefaultArgs>()({
   select: simpleUserSelect,
 });
 
@@ -19,8 +22,9 @@ export const userWithCosmeticsSelect = Prisma.validator<Prisma.UserSelect>()({
   // TODO.leaderboard: uncomment when migration is done
   // leaderboardShowcase: true,
   cosmetics: {
-    where: { equippedAt: { not: null } },
+    where: { equippedAt: { not: null }, equippedToId: null },
     select: {
+      data: true,
       cosmetic: {
         select: {
           id: true,
@@ -34,7 +38,7 @@ export const userWithCosmeticsSelect = Prisma.validator<Prisma.UserSelect>()({
   },
 });
 
-const userWithCosmetics = Prisma.validator<Prisma.UserArgs>()({
+const userWithCosmetics = Prisma.validator<Prisma.UserDefaultArgs>()({
   select: userWithCosmeticsSelect,
 });
 
@@ -50,6 +54,8 @@ export const userWithProfileSelect = Prisma.validator<Prisma.UserSelect>()({
       equippedAt: true,
       cosmeticId: true,
       obtainedAt: true,
+      claimKey: true,
+      data: true,
       cosmetic: {
         select: {
           id: true,
@@ -58,6 +64,7 @@ export const userWithProfileSelect = Prisma.validator<Prisma.UserSelect>()({
           source: true,
           name: true,
           description: true,
+          videoUrl: true,
         },
       },
     },
@@ -75,15 +82,6 @@ export const userWithProfileSelect = Prisma.validator<Prisma.UserSelect>()({
       leaderboardId: true,
       leaderboardTitle: true,
       leaderboardCosmetic: true,
-    },
-  },
-  stats: {
-    select: {
-      ratingAllTime: true,
-      ratingCountAllTime: true,
-      downloadCountAllTime: true,
-      favoriteCountAllTime: true,
-      followerCountAllTime: true,
     },
   },
   profile: {

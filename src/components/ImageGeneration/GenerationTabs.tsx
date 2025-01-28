@@ -1,124 +1,149 @@
-import { createStyles, Badge, Card, Stack, Group, Button, StackProps } from '@mantine/core';
-import { IconBrush, IconListDetails, IconSlideshow, TablerIconsProps } from '@tabler/icons-react';
-import { Feed, FloatingFeedActions } from './Feed';
-import { Queue } from './Queue';
+import { Tooltip, ActionIcon, CloseButton, SegmentedControl } from '@mantine/core';
 import {
-  useGetGenerationRequests,
-  usePollGenerationRequests,
-} from '~/components/ImageGeneration/utils/generationRequestHooks';
-import { Generate } from '~/components/ImageGeneration/Generate';
-import { useGenerationStore } from '~/store/generation.store';
+  Icon,
+  IconArrowsDiagonal,
+  IconBrush,
+  IconGridDots,
+  IconProps,
+  IconClockHour9,
+  IconWifiOff,
+} from '@tabler/icons-react';
+import { Feed } from './Feed';
+import { Queue } from './Queue';
+import { GenerationPanelView, generationPanel, useGenerationStore } from '~/store/generation.store';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useScrollRestore } from '~/hooks/useScrollRestore';
-import { usePreserveVerticalScrollPosition } from '~/components/ImageGeneration/GenerationForm/generation.utils';
+import React, { ForwardRefExoticComponent, RefAttributes } from 'react';
+import { useRouter } from 'next/router';
+import { GeneratedImageActions } from '~/components/ImageGeneration/GeneratedImageActions';
+import { SignalStatusNotification } from '~/components/Signals/SignalsProvider';
+import { ScrollArea } from '~/components/ScrollArea/ScrollArea';
+import { GenerationForm } from '~/components/Generate/GenerationForm';
+import { ChallengeIndicator } from '~/components/Challenges/ChallengeIndicator';
+import { useIsClient } from '~/providers/IsClientProvider';
 
-export default function GenerationTabs({ wrapperProps }: { wrapperProps?: StackProps }) {
-  const { classes } = useStyles();
+export default function GenerationTabs({ fullScreen }: { fullScreen?: boolean }) {
+  const router = useRouter();
   const currentUser = useCurrentUser();
+
+  const isGeneratePage = router.pathname.startsWith('/generate');
+  const isImageFeedSeparate = isGeneratePage && !fullScreen;
 
   const view = useGenerationStore((state) => state.view);
   const setView = useGenerationStore((state) => state.setView);
+  if (isImageFeedSeparate && view === 'generate') setView('queue');
 
-  const result = useGetGenerationRequests();
-  const pendingProcessingCount = usePollGenerationRequests(result.requests);
+  const View = isImageFeedSeparate ? tabs.generate.Component : tabs[view].Component;
+  const tabEntries = Object.entries(tabs).filter(([key]) =>
+    isImageFeedSeparate ? key !== 'generate' : true
+  );
 
-  type Tabs = Record<
-    typeof view,
-    {
-      Icon: (props: TablerIconsProps) => JSX.Element;
-      header?: () => JSX.Element;
-      render: () => JSX.Element;
-      label: React.ReactNode;
-      // defaultPosition: 'top' | 'bottom';
-    }
-  >;
-
-  const tabs: Tabs = {
-    generate: {
-      Icon: IconBrush,
-      render: () => <Generate />,
-      label: <>Generate</>,
-      // defaultPosition: 'top',
-    },
-    queue: {
-      Icon: IconListDetails,
-      render: () => <Queue {...result} />,
-      label: (
-        <Group spacing={4}>
-          Queue{' '}
-          {pendingProcessingCount > 0 && (
-            <Badge color="red" variant="filled" size="xs">
-              {pendingProcessingCount}
-            </Badge>
-          )}
-        </Group>
-      ),
-      // defaultPosition: 'top',
-    },
-    feed: {
-      Icon: IconSlideshow,
-      header: () => (
-        <FloatingFeedActions images={result.images}>
-          {({ selected, render }) => (selected.length ? <Card radius={0}>{render}</Card> : <></>)}
-        </FloatingFeedActions>
-      ),
-      render: () => (
-        <Stack spacing={0} p="md">
-          <Feed {...result} />
-        </Stack>
-      ),
-      label: <>Feed</>,
-      // defaultPosition: 'top',
-    },
-  };
-
-  const { setRef, node } = useScrollRestore({
-    key: view,
-    // defaultPosition: tabs[view].defaultPosition,
-  });
-
-  // usePreserveVerticalScrollPosition({
-  //   data: result.requests,
-  //   node,
-  // });
-
-  const header = tabs[view].header;
-  const render = tabs[view].render;
+  const isClient = useIsClient();
+  if (!isClient) return null;
 
   return (
-    <Stack h="100%" style={{ overflow: 'hidden' }} spacing={0} {...wrapperProps}>
-      {header && <div>{header()}</div>}
-      <div ref={setRef} style={{ flexGrow: 1, overflowY: 'auto' }}>
-        {render()}
+    <>
+      <SignalStatusNotification
+        icon={<IconWifiOff size={20} stroke={2} />}
+        // title={(status) => `Connection status: ${status}`}
+        radius={0}
+      >
+        {(status) => (
+          <p className="leading-4">
+            <span className="font-medium">
+              {status === 'reconnecting' ? 'Reconnecting' : 'Disconnected'}
+            </span>
+            : image generation results paused
+          </p>
+        )}
+      </SignalStatusNotification>
+      <div className="flex w-full flex-col gap-2 p-3">
+        <div className="flex w-full items-center justify-between gap-2">
+          <div className="relative flex-1">
+            <ChallengeIndicator />
+          </div>
+          {currentUser && tabEntries.length > 1 && (
+            <SegmentedControl
+              // TODO.briant: this fixes the issue with rendering the SegmentedControl
+              key={tabEntries.map(([, item]) => item.label).join('-')}
+              className="shrink-0"
+              sx={{ overflow: 'visible' }}
+              data={tabEntries.map(([key, { Icon, label }]) => ({
+                label: (
+                  <Tooltip label={label} position="bottom" color="dark" openDelay={200} offset={10}>
+                    <Icon size={16} />
+                  </Tooltip>
+                ),
+                value: key,
+              }))}
+              onChange={(key: GenerationPanelView) => setView(key)}
+              value={view}
+            />
+          )}
+          <div className="flex flex-1 justify-end">
+            {!fullScreen && !isGeneratePage && (
+              <Tooltip label="Maximize">
+                <ActionIcon
+                  size="lg"
+                  onClick={() => router.push('/generate')}
+                  variant="transparent"
+                >
+                  <IconArrowsDiagonal size={20} />
+                </ActionIcon>
+              </Tooltip>
+            )}
+            <CloseButton
+              onClick={isGeneratePage ? () => history.go(-1) : generationPanel.close}
+              size="lg"
+              variant="transparent"
+            />
+          </div>
+        </div>
+        {view !== 'generate' && !isGeneratePage && <GeneratedImageActions />}
       </div>
-
-      {currentUser && (
-        <Group spacing={0} grow className={classes.tabsList}>
-          {Object.entries(tabs).map(([key, { Icon, label }], index) => (
-            <Button
-              key={index}
-              data-autofocus={index === 0}
-              onClick={() => setView(key as any)}
-              variant={key === view ? 'filled' : 'default'}
-              radius={0}
-              sx={{ height: 54 }}
-            >
-              <Stack align="center" spacing={4}>
-                <Icon size={16} />
-                {label}
-              </Stack>
-            </Button>
-          ))}
-        </Group>
-      )}
-    </Stack>
+      <View />
+    </>
   );
 }
 
-const useStyles = createStyles((theme) => ({
-  tabsList: {
-    borderTop: `1px solid ${
-      theme.colorScheme === 'dark' ? theme.colors.dark[4] : theme.colors.gray[2]
-    }`,
+type Tabs = Record<
+  GenerationPanelView,
+  {
+    Icon: ForwardRefExoticComponent<IconProps & RefAttributes<Icon>>;
+    label: string;
+    Component: React.FC;
+  }
+>;
+
+const tabs: Tabs = {
+  generate: {
+    Icon: IconBrush,
+    label: 'Generate',
+    Component: GenerationForm,
   },
-}));
+  queue: {
+    Icon: IconClockHour9,
+    label: 'Queue',
+    Component: ScrollableQueue,
+  },
+  feed: {
+    Icon: IconGridDots,
+    label: 'Feed',
+    Component: ScrollableFeed,
+  },
+};
+
+function ScrollableQueue() {
+  return (
+    <ScrollArea scrollRestore={{ key: 'queue' }}>
+      <Queue />
+    </ScrollArea>
+  );
+}
+
+function ScrollableFeed() {
+  return (
+    <ScrollArea scrollRestore={{ key: 'feed' }}>
+      <Feed />
+    </ScrollArea>
+  );
+}

@@ -26,6 +26,7 @@ export function SelectWrapper<T extends string | number>({
   onChange,
   presets,
   label,
+  disabled,
   ...props
 }: SelectWrapperProps<T>) {
   const initialType =
@@ -47,7 +48,7 @@ export function SelectWrapper<T extends string | number>({
   });
 
   const parsedValue = useMemo(
-    () => (value !== undefined && value !== null ? String(value) : undefined),
+    () => (value !== undefined && value !== null ? String(value) : null),
     [value]
   );
 
@@ -57,7 +58,7 @@ export function SelectWrapper<T extends string | number>({
   );
 
   const handleChange = (value: string) => {
-    const returnValue = initialType === 'number' ? Number(value) : value;
+    const returnValue = initialType === 'number' && value != null ? Number(value) : value;
     setSelectedPreset(returnValue as string);
     onChange?.(returnValue as T);
   };
@@ -72,11 +73,13 @@ export function SelectWrapper<T extends string | number>({
       defaultValue={parsedDefaultValue}
       rightSection={loading ? <Loader size={16} /> : null}
       styles={{ label: hasPresets ? { width: '100%', marginBottom: 5 } : undefined }}
+      disabled={disabled}
       label={
         hasPresets ? (
           <Group spacing={8} position="apart" noWrap>
             {label}
             <PresetOptions
+              disabled={disabled}
               color="blue"
               options={presets}
               value={selectedPreset}

@@ -1,7 +1,10 @@
-import { ReportReason, ReportStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { ModelStatus, ReportReason, ReportStatus } from '~/shared/utils/prisma/enums';
 import { TRPCError } from '@trpc/server';
-
+import { v4 as uuid } from 'uuid';
+import { NotificationCategory } from '~/server/common/enums';
 import { Context } from '~/server/createContext';
+import { reportAcceptedReward } from '~/server/rewards';
 import { GetByIdInput } from '~/server/schema/base.schema';
 import {
   CommentUpsertInput,
@@ -20,12 +23,16 @@ import {
   updateCommentReportStatusByReason,
 } from '~/server/services/comment.service';
 import { createNotification } from '~/server/services/notification.service';
+import { amIBlockedByUser } from '~/server/services/user.service';
 import {
   throwAuthorizationError,
   throwDbError,
   throwNotFoundError,
 } from '~/server/utils/errorHandling';
 import { DEFAULT_PAGE_SIZE } from '~/server/utils/pagination-helpers';
+import { dbRead } from '../db/client';
+import { hasEntityAccess } from '../services/common.service';
+import { throwOnBlockedLinkDomain } from '~/server/services/blocklist.service';
 
 export const getCommentsInfiniteHandler = async ({
   input,
@@ -43,6 +50,19 @@ export const getCommentsInfiniteHandler = async ({
     select: getAllCommentsSelect,
   });
 
+  const commentIds = comments.map((c) => c.id);
+  if (commentIds.length === 0) return { comments: [], nextCursor: undefined };
+
+  const counts = await dbRead.$queryRaw<{ id: number; count: number }[]>`
+    SELECT
+      c."parentId" as id,
+      COUNT(c.id) as count
+    FROM "Comment" c
+    WHERE c."parentId" IN (${Prisma.join(commentIds)})
+    GROUP BY c."parentId"
+  `;
+  const countsMap = Object.fromEntries(counts.map((c) => [c.id, Number(c.count)]));
+
   let nextCursor: number | undefined;
   if (comments.length > input.limit) {
     const nextItem = comments.pop();
@@ -51,7 +71,10 @@ export const getCommentsInfiniteHandler = async ({
 
   return {
     nextCursor,
-    comments,
+    comments: comments.map((c) => ({
+      ...c,
+      _count: { comments: countsMap[c.id] ?? 0 },
+    })),
   };
 };
 
@@ -77,7 +100,44 @@ export const upsertCommentHandler = async ({
   input: CommentUpsertInput;
 }) => {
   try {
+    await throwOnBlockedLinkDomain(input.content);
     const { ownerId, locked } = ctx;
+    const { modelId } = input;
+
+    // Get model and at least 2 version to confirm access.
+    // If model has 1 version, check access to that version. Otherwise, ignore.
+    const model = await dbRead.model.findUnique({
+      where: { id: modelId },
+      select: {
+        id: true,
+        modelVersions: {
+          take: 2,
+          select: { id: true },
+          where: { status: ModelStatus.Published },
+          orderBy: { index: 'asc' },
+        },
+      },
+    });
+
+    const [version] = model?.modelVersions ?? [];
+
+    if (!version) {
+      throw throwNotFoundError(`This model has no versions.`);
+    }
+    if (model?.modelVersions.length === 1) {
+      // Only cgheck access if model has 1 version. Otherwise, we can't be sure that the user has access to the latest version.
+      const [access] = await hasEntityAccess({
+        entityType: 'ModelVersion',
+        entityIds: [version.id],
+        userId: ctx.user.id,
+        isModerator: ctx.user.isModerator,
+      });
+
+      if (!access?.hasAccess) {
+        throw throwAuthorizationError("You do not have access to this model's latest version.");
+      }
+    }
+
     const comment = await createOrUpdateComment({ ...input, ownerId, locked });
 
     if (!input.commentId) {
@@ -154,6 +214,14 @@ export const getCommentHandler = async ({ input, ctx }: { input: GetByIdInput; c
       user: ctx.user,
     });
     if (!comment) throw throwNotFoundError(`No comment with id ${input.id}`);
+
+    if (ctx.user && !ctx.user.isModerator) {
+      const blocked = await amIBlockedByUser({
+        userId: ctx.user.id,
+        targetUserId: comment.user.id,
+      });
+      if (blocked) throw throwNotFoundError();
+    }
 
     return comment;
   } catch (error) {
@@ -244,23 +312,32 @@ export const setTosViolationHandler = async ({
   ctx: DeepNonNullable<Context>;
 }) => {
   try {
-    const { user } = ctx;
+    const { user, ip, fingerprint } = ctx;
     const { id } = input;
     if (!user.isModerator) throw throwAuthorizationError('Only moderators can set TOS violation');
 
     const updatedComment = await updateCommentById({ id, data: { tosViolation: true } });
     if (!updatedComment) throw throwNotFoundError(`No comment with id ${id}`);
 
-    await updateCommentReportStatusByReason({
+    // Update all reports with this comment id to actioned
+    const affectedReports = await updateCommentReportStatusByReason({
       id: updatedComment.id,
       reason: ReportReason.TOSViolation,
       status: ReportStatus.Actioned,
     });
+    // Reward users for accepted reports
+    for (const report of affectedReports) {
+      reportAcceptedReward.apply(
+        { userId: report.userId, reportId: report.id },
+        { ip, fingerprint }
+      );
+    }
 
-    // Create notifications in the background
-    createNotification({
+    await createNotification({
       userId: updatedComment.user.id,
       type: 'tos-violation',
+      category: NotificationCategory.System,
+      key: `tos-violation:comment:${uuid()}`,
       details: { modelName: updatedComment.model.name, entity: 'comment' },
     }).catch((error) => {
       // Print out any errors

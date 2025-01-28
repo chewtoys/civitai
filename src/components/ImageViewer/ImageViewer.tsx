@@ -1,39 +1,54 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  Dispatch,
-  SetStateAction,
-} from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { z } from 'zod';
 import { useRouter } from 'next/router';
 import { useHotkeys } from '@mantine/hooks';
 import { ImageDetailByProps } from '~/components/Image/Detail/ImageDetailByProps';
-import { ImageGenerationProcess, MediaType, NsfwLevel } from '@prisma/client';
+import { MediaType } from '~/shared/utils/prisma/enums';
 import { SimpleUser } from '~/server/selectors/user.selector';
-import { ImageGuardConnect } from '~/components/ImageGuard/ImageGuard';
 import { ImageMetaProps } from '~/server/schema/image.schema';
+import { Modal } from '@mantine/core';
+import { NsfwLevel } from '~/server/common/enums';
+import { ContentDecorationCosmetic, WithClaimKey } from '~/server/selectors/cosmetic.selector';
+import { removeEmpty } from '~/utils/object-helpers';
 
+type ImageGuardConnect = {
+  entityType:
+    | 'model'
+    | 'modelVersion'
+    | 'review'
+    | 'user'
+    | 'post'
+    | 'collectionItem'
+    | 'collection'
+    | 'bounty'
+    | 'bountyEntry'
+    | 'club'
+    | 'article';
+  entityId: string | number;
+};
+
+// TODO - if we're going to have a common image interface, let's define it elsewhere
 export interface ImageProps {
   id: number;
-  nsfw: NsfwLevel;
   url: string;
   name: string | null;
-  meta: ImageMetaProps | null;
+  meta?: ImageMetaProps | null;
   hash: string | null;
-  generationProcess: ImageGenerationProcess | null;
   width: number | null;
   height: number | null;
   createdAt: Date | null;
   type: MediaType;
   imageNsfw?: boolean;
+  nsfwLevel: NsfwLevel;
   postId?: number | null;
   needsReview?: string | null;
   userId?: number;
   user?: SimpleUser;
-  tags?: Array<{ id: number }>;
+  cosmetic?: WithClaimKey<ContentDecorationCosmetic> | null;
+  tags?: Array<{ id: number }> | number[];
+  metadata?: MixedObject | null;
+  publishedAt?: Date | null;
+  thumbnailUrl?: string | null;
 }
 
 type ImageViewerState = {
@@ -43,7 +58,6 @@ type ImageViewerState = {
   nextImageId: number | null;
   prevImageId: number | null;
   onClose: () => void;
-  setOnDeleteImage: Dispatch<SetStateAction<((imageId: number) => void) | undefined>>;
   onSetImage: (imageId: number) => void;
   setEntityId: (entityId: number | null) => void;
   setEntityType: (entityType: ImageGuardConnect['entityType']) => void;
@@ -61,12 +75,9 @@ const imageViewerQueryParams = z
     imageId: z.coerce.number(),
   })
   .partial();
-export const ImageViewer = ({ children }: { children: React.ReactElement }) => {
+export const ImageViewer = ({ children }: { children: React.ReactNode }) => {
   const router = useRouter();
 
-  const [onDeleteImage, setOnDeleteImage] = useState<((imageId: number) => void) | undefined>(
-    undefined
-  );
   const [activeImageId, setActiveImageId] = useState<number | null>(null);
   const [images, setImages] = useState<ImageProps[]>([]);
   const [entityId, setEntityId] = useState<number | null>(null);
@@ -121,17 +132,10 @@ export const ImageViewer = ({ children }: { children: React.ReactElement }) => {
     }
   };
   const onClose = () => {
-    router.replace(
-      {
-        pathname: router.pathname,
-        query: {
-          ...router.query,
-          imageId: undefined,
-        },
-      },
-      undefined,
-      { shallow: true }
-    );
+    if (!activeImageId) return;
+
+    const query = removeEmpty({ ...router.query, imageId: undefined });
+    router.replace({ pathname: router.pathname, query }, undefined, { shallow: true });
   };
 
   useHotkeys([['Escape', onClose]]);
@@ -145,7 +149,7 @@ export const ImageViewer = ({ children }: { children: React.ReactElement }) => {
         setActiveImageId(res.data.imageId ?? null);
       }
     }
-  }, [router?.query]);
+  }, [router.query]);
 
   const activeImageRecord = images.find((i) => i.id === activeImageId);
 
@@ -161,15 +165,15 @@ export const ImageViewer = ({ children }: { children: React.ReactElement }) => {
         onClose,
         setEntityType,
         setEntityId,
-        setOnDeleteImage,
       }}
     >
       {activeImageId && (
-        <div
-          style={{
-            position: 'fixed',
-            zIndex: 999,
-          }}
+        <Modal
+          opened={!!activeImageId}
+          onClose={() => setActiveImageId(null)}
+          withCloseButton={false}
+          fullScreen
+          padding={0}
         >
           <ImageDetailByProps
             imageId={activeImageId}
@@ -179,11 +183,10 @@ export const ImageViewer = ({ children }: { children: React.ReactElement }) => {
             onSetImage={onSetImage}
             image={activeImageRecord}
             // Attempts to have a few fallbacks to go to. Nothing major.
-            entityId={entityId || activeImageRecord?.postId || activeImageId}
-            entityType={entityType || 'post'}
-            onDeleteImage={onDeleteImage}
+            connectId={entityId || activeImageRecord?.postId || activeImageId}
+            connectType={entityType || 'post'}
           />
-        </div>
+        </Modal>
       )}
       {children}
     </ImageViewerCtx.Provider>

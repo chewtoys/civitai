@@ -1,24 +1,28 @@
 import { Menu, MenuProps } from '@mantine/core';
 import { openConfirmModal } from '@mantine/modals';
 import { IconEdit, IconHome, IconPencil, IconTrash } from '@tabler/icons-react';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useRouter } from 'next/router';
 import { useMemo } from 'react';
 import { triggerRoutedDialog } from '~/components/Dialog/RoutedDialogProvider';
 import { ReportMenuItem } from '~/components/MenuItems/ReportMenuItem';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { openContext } from '~/providers/CustomModalsProvider';
 import { HomeBlockMetaSchema } from '~/server/schema/home-block.schema';
 import { ReportEntity } from '~/server/schema/report.schema';
 import { CollectionContributorPermissionFlags } from '~/server/services/collection.service';
 import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
 import { trpc } from '~/utils/trpc';
+import { ToggleSearchableMenuItem } from '../../MenuItems/ToggleSearchableMenuItem';
+import { CollectionMode } from '~/shared/utils/prisma/enums';
+import { openReportModal } from '~/components/Dialog/dialog-registry';
+import { CollectionFollowAction } from './CollectionFollow';
 
 export function CollectionContextMenu({
   collectionId,
   ownerId,
   permissions,
   children,
+  mode,
   ...menuProps
 }: Props) {
   const queryUtils = trpc.useContext();
@@ -46,8 +50,10 @@ export function CollectionContextMenu({
                 message: 'Your collection has been deleted',
               });
 
-              if (atDetailsPage) await router.push('/collections');
               await queryUtils.collection.getInfinite.invalidate();
+              await queryUtils.collection.getAllUser.invalidate();
+
+              if (atDetailsPage) await router.push('/collections');
             },
             onError(error) {
               showErrorNotification({
@@ -63,7 +69,9 @@ export function CollectionContextMenu({
 
   // Using this query might be more performant all together as there is a high likelyhood
   // that it's been preloaded by the user.
-  const { data: homeBlocks = [] } = trpc.homeBlock.getHomeBlocks.useQuery();
+  const { data: homeBlocks = [] } = trpc.homeBlock.getHomeBlocks.useQuery(undefined, {
+    trpc: { context: { skipBatch: true } },
+  });
   const collectionHomeBlock = useMemo(() => {
     if (!currentUser) {
       return null;
@@ -106,11 +114,35 @@ export function CollectionContextMenu({
     }
   };
 
+  const isBookmarkCollection = mode === CollectionMode.Bookmark;
+
   return (
     <Menu {...menuProps} withArrow>
       <Menu.Target>{children}</Menu.Target>
       <Menu.Dropdown>
-        {(isOwner || isMod) && (
+        {permissions && (
+          <Menu.Item>
+            <CollectionFollowAction
+              // @ts-ignore eslint-disable-next-line
+              variant="transparent"
+              collectionId={collectionId}
+              permissions={permissions}
+              p={0}
+              pl={0}
+              pr={0}
+              py={0}
+              h={14}
+              w="100%"
+              align="left"
+              style={{
+                display: 'flex',
+                alignItems: 'start',
+              }}
+            />
+          </Menu.Item>
+        )}
+
+        {!isBookmarkCollection && (isOwner || isMod) && (
           <>
             <Menu.Item
               color="red"
@@ -147,8 +179,8 @@ export function CollectionContextMenu({
             {collectionHomeBlock ? 'Remove from my home' : 'Add to my home'}
           </Menu.Item>
         )}
-        {permissions?.manage && (
-          <Link href={`/collections/${collectionId}/review`} passHref>
+        {!isBookmarkCollection && permissions?.manage && (
+          <Link legacyBehavior href={`/collections/${collectionId}/review`} passHref>
             <Menu.Item component="a" icon={<IconPencil size={14} stroke={1.5} />}>
               Review items
             </Menu.Item>
@@ -159,12 +191,19 @@ export function CollectionContextMenu({
             label="Report collection"
             loginReason="report-content"
             onReport={() =>
-              openContext('report', {
+              openReportModal({
                 entityType: ReportEntity.Collection,
                 // Explicitly cast to number because we know it's not undefined
                 entityId: collectionId,
               })
             }
+          />
+        )}
+        {!isBookmarkCollection && (
+          <ToggleSearchableMenuItem
+            entityType="Collection"
+            entityId={collectionId}
+            key="toggle-searchable-menu-item"
           />
         )}
       </Menu.Dropdown>
@@ -177,4 +216,5 @@ type Props = MenuProps & {
   ownerId: number;
   children: React.ReactNode;
   permissions?: CollectionContributorPermissionFlags;
+  mode?: CollectionMode | null;
 };

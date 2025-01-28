@@ -2,7 +2,6 @@ import {
   ActionIcon,
   Button,
   Container,
-  Grid,
   Group,
   Paper,
   Stack,
@@ -22,9 +21,10 @@ import { IconArrowLeft, IconCheck, IconLock, IconX } from '@tabler/icons-react';
 import { slugit } from '~/utils/string-helpers';
 import { useRouter } from 'next/router';
 import { useMemo } from 'react';
-import { TagTarget } from '@prisma/client';
+import { TagTarget } from '~/shared/utils/prisma/enums';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import Link from 'next/link';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
 
 const schema = upsertQuestionSchema.extend({ tags: z.string().array().nullish() });
 
@@ -99,7 +99,7 @@ export function QuestionForm({ question }: { question?: QuestionDetailProps }) {
           </ThemeIcon>
           <Title order={1}>Restricted Area</Title>
           <Text size="xl">
-            You are not able to create/edit a question because your account has been muted
+            You are not able to create/edit a question because your account has been restricted
           </Text>
           <Link href="/">
             <Button>Go back home</Button>
@@ -117,8 +117,8 @@ export function QuestionForm({ question }: { question?: QuestionDetailProps }) {
         <Title order={3}>{question ? 'Editing question' : 'Ask a question'}</Title>
       </Group>
       <Form form={form} onSubmit={handleSubmit}>
-        <Grid gutter="xl">
-          <Grid.Col lg={8}>
+        <ContainerGrid gutter="xl">
+          <ContainerGrid.Col lg={8}>
             <Paper radius="md" p="xl" withBorder>
               <Stack>
                 <InputText name="title" label="Title" withAsterisk />
@@ -130,8 +130,8 @@ export function QuestionForm({ question }: { question?: QuestionDetailProps }) {
                 />
               </Stack>
             </Paper>
-          </Grid.Col>
-          <Grid.Col lg={4}>
+          </ContainerGrid.Col>
+          <ContainerGrid.Col lg={4}>
             <Paper radius="md" p="xl" withBorder>
               <Stack>
                 <InputMultiSelect
@@ -160,8 +160,8 @@ export function QuestionForm({ question }: { question?: QuestionDetailProps }) {
                 </Group>
               </Stack>
             </Paper>
-          </Grid.Col>
-        </Grid>
+          </ContainerGrid.Col>
+        </ContainerGrid>
       </Form>
     </Container>
   );

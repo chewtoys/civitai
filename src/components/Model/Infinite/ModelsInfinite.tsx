@@ -1,89 +1,79 @@
-import { Center, Loader, LoadingOverlay, Stack, Text, ThemeIcon } from '@mantine/core';
+import { Button, Center, Group, Loader, LoadingOverlay } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconCloudOff } from '@tabler/icons-react';
 import { isEqual } from 'lodash-es';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
 import { useEffect } from 'react';
-
+import { useBrowsingLevelDebounced } from '~/components/BrowsingLevel/BrowsingLevelProvider';
 import { ModelCard } from '~/components/Cards/ModelCard';
+import { ModelCardContextProvider } from '~/components/Cards/ModelCardContext';
 import { EndOfFeed } from '~/components/EndOfFeed/EndOfFeed';
-import { MasonryColumns } from '~/components/MasonryColumns/MasonryColumns';
-import { MasonryRenderItemProps } from '~/components/MasonryColumns/masonry.types';
-import { AmbientModelCard } from '~/components/Model/Infinite/AmbientModelCard';
-import {
-  ModelQueryParams,
-  UseQueryModelReturn,
-  useModelFilters,
-  useQueryModels,
-} from '~/components/Model/model.utils';
+import { InViewLoader } from '~/components/InView/InViewLoader';
+import { MasonryGrid } from '~/components/MasonryColumns/MasonryGrid';
+import { ModelQueryParams, useModelFilters, useQueryModels } from '~/components/Model/model.utils';
+import { NoContent } from '~/components/NoContent/NoContent';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { ModelFilterSchema } from '~/providers/FiltersProvider';
 import { removeEmpty } from '~/utils/object-helpers';
-import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
-import { NoContent } from '~/components/NoContent/NoContent';
-import { MasonryGrid } from '~/components/MasonryColumns/MasonryGrid';
-import { ModelCardContextProvider } from '~/components/Cards/ModelCardContext';
-import { InViewLoader } from '~/components/InView/InViewLoader';
 
 type InfiniteModelsProps = {
   filters?: Partial<Omit<ModelQueryParams, 'view'> & Omit<ModelFilterSchema, 'view'>>;
+  disableStoreFilters?: boolean;
   showEof?: boolean;
+  showAds?: boolean;
+  showEmptyCta?: boolean;
 };
 
 export function ModelsInfinite({
   filters: filterOverrides = {},
   showEof = false,
+  disableStoreFilters = false,
+  showAds,
+  showEmptyCta,
 }: InfiniteModelsProps) {
-  const features = useFeatureFlags();
   const modelFilters = useModelFilters();
+  const currentUser = useCurrentUser();
 
-  const filters = removeEmpty({ ...modelFilters, ...filterOverrides });
+  const pending = currentUser !== null && filterOverrides.username === currentUser.username;
+
+  const filters = removeEmpty({
+    ...(disableStoreFilters ? filterOverrides : { ...modelFilters, ...filterOverrides }),
+    pending,
+  });
   const [debouncedFilters, cancel] = useDebouncedValue(filters, 500);
 
-  const { models, isLoading, fetchNextPage, hasNextPage, isRefetching } = useQueryModels(
-    debouncedFilters,
-    { keepPreviousData: true }
-  );
+  const browsingLevel = useBrowsingLevelDebounced();
+  const { models, isLoading, fetchNextPage, hasNextPage, isRefetching, isFetching } =
+    useQueryModels({ ...debouncedFilters, browsingLevel });
 
   //#region [useEffect] cancel debounced filters
   useEffect(() => {
     if (isEqual(filters, debouncedFilters)) cancel();
-  }, [cancel, debouncedFilters, filters]);
+  }, [debouncedFilters, filters]);
   //#endregion
 
   return (
-    <ModelCardContextProvider useModelVersionRedirect={(filters?.baseModels ?? []).length > 0}>
+    <ModelCardContextProvider
+      useModelVersionRedirect={(filters?.baseModels ?? []).length > 0 || !!filters?.clubId}
+    >
       {isLoading ? (
         <Center p="xl">
           <Loader size="xl" />
         </Center>
       ) : !!models.length ? (
-        <div style={{ position: 'relative' }}>
+        <div className="relative">
           <LoadingOverlay visible={isRefetching ?? false} zIndex={9} />
-          {features.modelCardV2 ? (
-            <MasonryGrid
-              data={models}
-              render={ModelCard}
-              itemId={(x) => x.id}
-              empty={<NoContent />}
-            />
-          ) : (
-            <MasonryColumns
-              data={models}
-              imageDimensions={(data) => {
-                const width = data.image?.width ?? 450;
-                const height = data.image?.height ?? 450;
-                return { width, height };
-              }}
-              adjustHeight={({ imageRatio, height }) => height + (imageRatio >= 1 ? 60 : 0)}
-              maxItemHeight={600}
-              render={AmbientModelCard}
-              itemId={(data) => data.id}
-            />
-          )}
+          <MasonryGrid
+            data={models}
+            render={ModelCard}
+            itemId={(x) => x.id}
+            empty={<NoContent />}
+            withAds={showAds}
+          />
 
           {hasNextPage && (
             <InViewLoader
               loadFn={fetchNextPage}
-              loadCondition={!isRefetching}
+              loadCondition={!isFetching}
               style={{ gridColumn: '1/-1' }}
             >
               <Center p="xl" sx={{ height: 36 }} mt="md">
@@ -94,17 +84,20 @@ export function ModelsInfinite({
           {!hasNextPage && showEof && <EndOfFeed />}
         </div>
       ) : (
-        <Stack align="center" py="lg">
-          <ThemeIcon size={128} radius={100}>
-            <IconCloudOff size={80} />
-          </ThemeIcon>
-          <Text size={32} align="center">
-            No results found
-          </Text>
-          <Text align="center">
-            {"Try adjusting your search or filters to find what you're looking for"}
-          </Text>
-        </Stack>
+        <NoContent py="lg">
+          {showEmptyCta && (
+            <Group>
+              <Link href="/models/create">
+                <Button variant="default" radius="xl">
+                  Upload a Model
+                </Button>
+              </Link>
+              <Link href="/models/train">
+                <Button radius="xl">Train a LoRA</Button>
+              </Link>
+            </Group>
+          )}
+        </NoContent>
       )}
     </ModelCardContextProvider>
   );

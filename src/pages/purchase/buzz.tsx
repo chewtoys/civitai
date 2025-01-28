@@ -5,7 +5,6 @@ import {
   Text,
   Alert,
   Group,
-  Grid,
   List,
   Center,
   Divider,
@@ -13,7 +12,7 @@ import {
 } from '@mantine/core';
 import { useRouter } from 'next/router';
 import { CurrencyIcon } from '~/components/Currency/CurrencyIcon';
-import { Currency } from '@prisma/client';
+import { Currency } from '~/shared/utils/prisma/enums';
 import { BUZZ_FEATURE_LIST } from '~/server/common/constants';
 import { z } from 'zod';
 import { BuzzPurchase } from '~/components/Buzz/BuzzPurchase';
@@ -21,6 +20,32 @@ import { enterFall, jelloVertical } from '~/libs/animations';
 import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
 import React, { useState } from 'react';
 import { CurrencyBadge } from '~/components/Currency/CurrencyBadge';
+import { ContainerGrid } from '~/components/ContainerGrid/ContainerGrid';
+import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { env } from '~/env/client';
+import { getLoginLink } from '~/utils/login-helpers';
+
+export const getServerSideProps = createServerSideProps({
+  useSession: true,
+  resolver: async ({ features, session, ctx }) => {
+    if (!session)
+      return {
+        redirect: {
+          destination: getLoginLink({ returnUrl: ctx.resolvedUrl, reason: 'purchase-buzz' }),
+          permanent: false,
+        },
+      };
+
+    if (!features?.canBuyBuzz)
+      return {
+        redirect: {
+          destination: `https://${env.NEXT_PUBLIC_SERVER_DOMAIN_GREEN}/purchase/buzz?sync-account=blue`,
+          statusCode: 302,
+          basePath: false,
+        },
+      };
+  },
+});
 
 const schema = z.object({
   returnUrl: z.string().optional(),
@@ -76,12 +101,21 @@ export default function PurchaseBuzz() {
         </Text>
         <Divider my="md" />
         <Center>
-          <Stack>
-            <Title order={3} align="center">
-              Where to go from here?
-            </Title>
-            <BuzzFeatures />
-          </Stack>
+          {minBuzzAmount ? (
+            <Stack>
+              <Text align="center" mt="lg">
+                You can now close this window and return to the previous window
+                <br /> to continue with your action!
+              </Text>
+            </Stack>
+          ) : (
+            <Stack>
+              <Title order={3} align="center">
+                Where to go from here?
+              </Title>
+              <BuzzFeatures />
+            </Stack>
+          )}
         </Center>
       </Container>
     );
@@ -89,20 +123,35 @@ export default function PurchaseBuzz() {
 
   return (
     <Container size="md" mb="lg">
+      {minBuzzAmount && (
+        <Alert radius="sm" color="info" mb="xl">
+          <Stack spacing={0}>
+            <Text>
+              The action you are trying to perform requires you to purchase a minimum of
+              <CurrencyBadge currency={Currency.BUZZ} unitAmount={minBuzzAmount} /> to continue.
+            </Text>
+
+            <Text>
+              Once you have purchased the required amount, you can close this window and return to
+              the previous site to continue with your action.
+            </Text>
+          </Stack>
+        </Alert>
+      )}
       <Alert radius="sm" color="yellow" style={{ zIndex: 10 }} mb="xl">
         <Group spacing="xs" noWrap position="center">
           <CurrencyIcon currency={Currency.BUZZ} size={24} />
           <Title order={2}>Buy Buzz now</Title>
         </Group>
       </Alert>
-      <Grid gutter={48}>
-        <Grid.Col xs={12} md={4}>
+      <ContainerGrid gutter={48}>
+        <ContainerGrid.Col xs={12} md={4}>
           <Stack>
             <Title order={2}>Buzz Benefits</Title>
             <BuzzFeatures />
           </Stack>
-        </Grid.Col>
-        <Grid.Col xs={12} md={8}>
+        </ContainerGrid.Col>
+        <ContainerGrid.Col xs={12} md={8}>
           <BuzzPurchase
             onPurchaseSuccess={handlePurchaseSuccess}
             minBuzzAmount={minBuzzAmount}
@@ -121,8 +170,8 @@ export default function PurchaseBuzz() {
                 : undefined
             }
           />
-        </Grid.Col>
-      </Grid>
+        </ContainerGrid.Col>
+      </ContainerGrid>
     </Container>
   );
 }

@@ -10,6 +10,7 @@ import {
 } from '@mantine/core';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PresetOptions, Props as PresetOptionsProps } from './PresetOptions';
+import clsx from 'clsx';
 
 export type NumberSliderProps = Omit<InputWrapperProps, 'children' | 'onChange'> & {
   value?: number;
@@ -22,6 +23,7 @@ export type NumberSliderProps = Omit<InputWrapperProps, 'children' | 'onChange'>
   numberProps?: Omit<NumberInputProps, 'value' | 'onChange' | 'min' | 'max' | 'step' | 'precision'>;
   reverse?: boolean;
   presets?: PresetOptionsProps['options'];
+  disabled?: boolean;
 };
 
 type State = {
@@ -44,9 +46,9 @@ export function NumberSlider({
   reverse,
   presets,
   label,
+  disabled,
   ...inputWrapperProps
 }: NumberSliderProps) {
-  const { classes, cx } = useStyles();
   const numberRef = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<State>({
     focused: false,
@@ -66,7 +68,7 @@ export function NumberSlider({
   };
 
   const precision = useMemo(
-    () => initialPrecision ?? step?.toString().split('.')[1].length,
+    () => initialPrecision ?? step?.toString().split('.')[1]?.length,
     [initialPrecision, step]
   );
 
@@ -126,9 +128,10 @@ export function NumberSlider({
           <Group spacing={8} position="apart" noWrap>
             {label}
             <PresetOptions
+              disabled={disabled}
               color="blue"
               options={presets}
-              value={state.selectedPreset}
+              value={value?.toString()}
               onChange={(value) => {
                 setState((current) => ({ ...current, selectedPreset: value }));
                 onChange?.(Number(value));
@@ -139,13 +142,13 @@ export function NumberSlider({
           label
         )
       }
-      className={cx(classes.fill, inputWrapperProps.className)}
+      className={clsx('flex flex-col', inputWrapperProps.className)}
       styles={{ label: hasPresets ? { width: '100%', marginBottom: 5 } : undefined }}
     >
-      <Group spacing="xs" style={reverse ? { flexDirection: 'row-reverse' } : undefined}>
+      <div className={clsx('mt-1 flex items-center gap-2', { ['flex-row-reverse']: reverse })}>
         <Slider
           {...sliderProps}
-          className={cx(classes.fill, sliderProps?.className)}
+          className={clsx('flex-1', sliderProps?.className)}
           min={min}
           max={max}
           step={step}
@@ -156,11 +159,12 @@ export function NumberSlider({
           onFocus={handleSliderFocus}
           label={(value) => (value && precision ? value.toFixed(precision) : value)}
           onChangeEnd={(value) => setState((current) => ({ ...current, changeEndValue: value }))}
+          disabled={disabled}
         />
         <NumberInput
           ref={numberRef}
           {...numberProps}
-          className={cx(classes.number, numberProps?.className)}
+          className={clsx('min-w-[60px] flex-[0]', numberProps?.className)}
           style={{
             ...numberProps?.style,
             minWidth: numberProps?.style?.minWidth ?? state.computedWidth,
@@ -173,8 +177,9 @@ export function NumberSlider({
           onChange={handleInputChange}
           onBlur={handleInputBlur}
           onFocus={handleInputFocus}
+          disabled={disabled}
         />
-      </Group>
+      </div>
     </Input.Wrapper>
   );
 }
@@ -188,8 +193,3 @@ const getComputedWidth = (elem: HTMLInputElement, min: number, max: number, prec
   const computed = getComputedStyle(elem);
   return `calc(${ch}ch + ${computed.paddingLeft} + ${computed.paddingRight} + ${computed.borderLeftWidth} + ${computed.borderRightWidth} + 6px)`;
 };
-
-const useStyles = createStyles(() => ({
-  fill: { flex: 1 },
-  number: { flex: 0, minWidth: 60 },
-}));

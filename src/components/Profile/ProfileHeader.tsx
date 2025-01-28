@@ -1,57 +1,27 @@
-import {
-  ActionIcon,
-  Alert,
-  AspectRatio,
-  Button,
-  createStyles,
-  Divider,
-  Group,
-  Stack,
-  Text,
-  ThemeIcon,
-  Tooltip,
-  useMantineTheme,
-} from '@mantine/core';
-import {
-  IconAlertCircle,
-  IconBellFilled,
-  IconMapPin,
-  IconPencilMinus,
-  IconRss,
-} from '@tabler/icons-react';
+import { Alert, createStyles, Group, Stack, Text, ThemeIcon } from '@mantine/core';
+import { IconBellFilled } from '@tabler/icons-react';
 
-import { RankBadge } from '~/components/Leaderboard/RankBadge';
-import { ContentClamp } from '~/components/ContentClamp/ContentClamp';
-import { sortDomainLinks } from '~/utils/domain-link';
-import { DomainIcon } from '~/components/DomainIcon/DomainIcon';
-import { FollowUserButton } from '~/components/FollowUserButton/FollowUserButton';
-import { UserStats } from '~/components/Profile/UserStats';
-import { TipBuzzButton } from '~/components/Buzz/TipBuzzButton';
-import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
-import { formatDate } from '~/utils/date-helpers';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { trpc } from '~/utils/trpc';
-import React, { useMemo, useState } from 'react';
-import { UserAvatar } from '~/components/UserAvatar/UserAvatar';
-import { CosmeticType } from '@prisma/client';
-import { useIsMobile } from '~/hooks/useIsMobile';
+import React, { useMemo } from 'react';
+
 import { constants } from '~/server/common/constants';
-import { ImageGuard } from '~/components/ImageGuard/ImageGuard';
 import { MediaHash } from '~/components/ImageHash/ImageHash';
-import { ImagePreview } from '~/components/ImagePreview/ImagePreview';
 import { ProfileSidebar } from '~/components/Profile/ProfileSidebar';
-import { AlertWithIcon } from '~/components/AlertWithIcon/AlertWithIcon';
 import { DaysFromNow } from '~/components/Dates/DaysFromNow';
-import ReactMarkdown from 'react-markdown';
+import { CustomMarkdown } from '~/components/Markdown/CustomMarkdown';
 import { ProfileNavigation } from '~/components/Profile/ProfileNavigation';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
-import { useHiddenPreferencesContext } from '~/providers/HiddenPreferencesProvider';
-import { isDefined } from '~/utils/type-guards';
+import { containerQuery } from '~/utils/mantine-css-helpers';
+import { useContainerSmallerThan } from '~/components/ContainerProvider/useContainerSmallerThan';
+import { useApplyHiddenPreferences } from '~/components/HiddenPreferences/useApplyHiddenPreferences';
+import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
+import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
+import { EdgeMedia } from '~/components/EdgeMedia/EdgeMedia';
 
 const useStyles = createStyles((theme) => ({
   message: {
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       borderRadius: 0,
       width: 'auto',
       marginLeft: '-16px',
@@ -72,7 +42,7 @@ const useStyles = createStyles((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
 
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       width: 'auto',
       marginLeft: '-16px',
       marginRight: '-16px',
@@ -88,7 +58,7 @@ const useStyles = createStyles((theme) => ({
     height: 0,
     paddingBottom: `${(constants.profile.coverImageAspectRatio * 100).toFixed(3)}%`,
 
-    [theme.fn.smallerThan('sm')]: {
+    [containerQuery.smallerThan('sm')]: {
       width: 'auto',
       borderRadius: 0,
       paddingBottom: `${(constants.profile.mobileCoverImageAspectRatio * 100).toFixed(3)}%`,
@@ -129,27 +99,23 @@ export function ProfileHeader({ username }: { username: string }) {
   const { data: user } = trpc.userProfile.get.useQuery({
     username,
   });
-  const isMobile = useIsMobile();
+  const isMobile = useContainerSmallerThan('sm');
   const { classes, cx } = useStyles();
-  const {
-    images: hiddenImages,
-    tags: hiddenTags,
-    isLoading: isLoadingHidden,
-  } = useHiddenPreferencesContext();
-  const currentUser = useCurrentUser();
 
-  const coverImage = useMemo(() => {
-    if (isLoadingHidden || !user?.profile?.coverImage) return null;
-    const coverImage = user.profile.coverImage;
-
-    if (user.id === currentUser?.id) return coverImage;
-
-    if (hiddenImages.get(coverImage.id)) return null;
-    for (const tag of coverImage.tags ?? []) {
-      if (hiddenTags.get(tag.id)) return null;
-    }
-    return coverImage;
-  }, [user, hiddenImages, hiddenTags, isLoadingHidden]);
+  const cover = user?.profile?.coverImage;
+  const images = useMemo(
+    () =>
+      cover
+        ? [cover].map((image) => ({ ...image, tagIds: image.tags.map((x) => x.id) }))
+        : undefined,
+    [cover]
+  );
+  const { items } = useApplyHiddenPreferences({
+    type: 'images',
+    data: images,
+    allowLowerLevels: true,
+  });
+  const image = items[0];
 
   if (!user) {
     return null;
@@ -158,41 +124,36 @@ export function ProfileHeader({ username }: { username: string }) {
   const { profile, stats } = user;
 
   const renderCoverImage = () => {
-    if (!coverImage) {
+    if (!image) {
       return null;
     }
 
     return (
       <div className={classes.coverImageWrapper}>
         <div className={classes.coverImage}>
-          <ImageGuard
-            images={[coverImage]}
-            connect={{ entityId: coverImage.id, entityType: 'user' }}
-            render={(image) => {
-              return (
-                <ImageGuard.Content>
-                  {({ safe }) => (
-                    <>
-                      {!safe ? (
-                        <MediaHash {...image} style={{ width: '100%', height: '100%' }} />
-                      ) : (
-                        <ImagePreview
-                          image={image}
-                          edgeImageProps={{ width: 1200 }}
-                          radius="md"
-                          style={{ width: '100%' }}
-                        />
-                      )}
-                      <div className={classes.coverImageNSFWActions}>
-                        <ImageGuard.ToggleConnect position="top-left" />
-                        <ImageGuard.Report />
-                      </div>
-                    </>
-                  )}
-                </ImageGuard.Content>
-              );
-            }}
-          />
+          <ImageGuard2 image={image}>
+            {(safe) => (
+              <>
+                {!safe ? (
+                  <MediaHash {...image} style={{ width: '100%', height: '100%' }} />
+                ) : (
+                  <EdgeMedia
+                    src={image.url}
+                    name={image.name ?? image.id.toString()}
+                    alt={image.name ?? undefined}
+                    type={image.type}
+                    width={Math.min(image.width ?? 1920, 1920)}
+                    style={{ maxWidth: '100%' }}
+                    className="w-full max-w-full absolute-center"
+                  />
+                )}
+                <div className={classes.coverImageNSFWActions}>
+                  <ImageGuard2.BlurToggle className="absolute left-2 top-2 z-10" />
+                  <ImageContextMenu image={image} className="absolute right-2 top-2 z-10" />
+                </div>
+              </>
+            )}
+          </ImageGuard2>
         </div>
       </div>
     );
@@ -216,14 +177,13 @@ export function ProfileHeader({ username }: { username: string }) {
           </ThemeIcon>
           <Stack spacing={0}>
             <Text>
-              <ReactMarkdown
+              <CustomMarkdown
                 rehypePlugins={[rehypeRaw, remarkGfm]}
                 allowedElements={['a', 'p']}
                 unwrapDisallowed
-                className="markdown-content"
               >
                 {profile.message}
-              </ReactMarkdown>
+              </CustomMarkdown>
             </Text>
             {profile.messageAddedAt && (
               <Text color="dimmed" size="xs">
@@ -238,24 +198,24 @@ export function ProfileHeader({ username }: { username: string }) {
 
   if (isMobile) {
     return (
-      <Stack spacing={0}>
-        <ProfileNavigation username={username} />
+      <div className="flex flex-col gap-3">
         {renderMessage()}
-        {renderCoverImage()}
-        <div
-          className={cx(classes.profileSection, {
-            [classes.profileSectionWithCoverImage]: !!coverImage,
-          })}
-        >
-          <ProfileSidebar username={username} />
+        <div className="flex flex-col">
+          {renderCoverImage()}
+          <div
+            className={cx(classes.profileSection, {
+              [classes.profileSectionWithCoverImage]: !!image,
+            })}
+          >
+            <ProfileSidebar username={username} />
+          </div>
         </div>
-      </Stack>
+      </div>
     );
   }
 
   return (
     <Stack>
-      <ProfileNavigation username={username} />
       {renderCoverImage()}
       {renderMessage()}
     </Stack>

@@ -1,35 +1,18 @@
 import { ActionIcon, Code, Group, Popover, Stack, Text, Tooltip } from '@mantine/core';
 import { useClipboard } from '@mantine/hooks';
-import { ModelType } from '@prisma/client';
 import { IconCheck, IconCopy, IconInfoSquareRounded } from '@tabler/icons-react';
 import { useMemo } from 'react';
-import { BaseModel, baseModelSets } from '~/server/common/constants';
+import { BaseModel } from '~/server/common/constants';
+import { ModelType } from '~/shared/utils/prisma/enums';
+import { stringifyAIR } from '~/utils/string-helpers';
 
-const typeUrnMap: Partial<Record<ModelType, string>> = {
-  [ModelType.AestheticGradient]: 'ag',
-  [ModelType.Checkpoint]: 'checkpoint',
-  [ModelType.Hypernetwork]: 'hypernet',
-  [ModelType.TextualInversion]: 'embedding',
-  [ModelType.MotionModule]: 'motion',
-  [ModelType.Upscaler]: 'upscaler',
-  [ModelType.VAE]: 'vae',
-  [ModelType.LORA]: 'lora',
-  [ModelType.LoCon]: 'lycoris',
-  [ModelType.Controlnet]: 'controlnet',
-};
-
-export const ModelURN = ({ baseModel, type, modelId, modelVersionId, full = false }: Props) => {
+export const ModelURN = ({ baseModel, type, modelId, modelVersionId, withCopy = true }: Props) => {
   const { copied, copy } = useClipboard();
-  const urnType = typeUrnMap[type];
-  const urnEcosystem = useMemo(() => {
-    return (
-      Object.entries(baseModelSets).find(([value]) => value.includes(baseModel))?.[0] ?? 'sd1'
-    ).toLowerCase();
-  }, [baseModel]);
-  if (!urnType) return null;
-
-  const shortUrn = `${modelId}@${modelVersionId}`;
-  const urn = `urn:air:${urnEcosystem}:${urnType}:civitai:${shortUrn}`;
+  const urn = useMemo(
+    () => stringifyAIR({ baseModel, type, modelId, id: modelVersionId }),
+    [baseModel, type, modelId, modelVersionId]
+  );
+  if (!urn) return null;
 
   return (
     <Group spacing={4}>
@@ -41,38 +24,47 @@ export const ModelURN = ({ baseModel, type, modelId, modelVersionId, full = fals
             lineHeight: 1.2,
             paddingLeft: 4,
             paddingRight: 4,
-            cursor: 'pointer',
+            cursor: withCopy ? 'pointer' : undefined,
           },
         }}
       >
-        {full ? (
-          <Code>
-            urn:air:{urnEcosystem}:{urnType}:civitai:
-          </Code>
+        <Code>civitai:</Code>
+
+        {withCopy ? (
+          <CopyTooltip copied={copied} label="Model ID">
+            <Code color="blue" onClick={() => copy(modelId)}>
+              {modelId}
+            </Code>
+          </CopyTooltip>
         ) : (
-          <Code>civitai:</Code>
+          <Tooltip label="Model ID">
+            <Code color="blue">{modelId}</Code>
+          </Tooltip>
         )}
-        <CopyTooltip copied={copied} label="Model ID">
-          <Code color="blue" onClick={() => copy(modelId)}>
-            {modelId}
-          </Code>
-        </CopyTooltip>
         <Code>@</Code>
-        <CopyTooltip copied={copied} label=" Version ID">
-          <Code color="blue" onClick={() => copy(modelVersionId)}>
-            {modelVersionId}
-          </Code>
-        </CopyTooltip>
+        {withCopy ? (
+          <CopyTooltip copied={copied} label="Version ID">
+            <Code color="blue" onClick={() => copy(modelVersionId)}>
+              {modelVersionId}
+            </Code>
+          </CopyTooltip>
+        ) : (
+          <Tooltip label="Version ID">
+            <Code color="blue">{modelVersionId}</Code>
+          </Tooltip>
+        )}
       </Group>
-      <ActionIcon
-        size="xs"
-        onClick={(e) => {
-          e.stopPropagation();
-          copy(full ? urn : shortUrn);
-        }}
-      >
-        {copied ? <IconCheck size="20" /> : <IconCopy size="20" />}
-      </ActionIcon>
+      {withCopy && (
+        <ActionIcon
+          size="xs"
+          onClick={(e) => {
+            e.stopPropagation();
+            copy(urn);
+          }}
+        >
+          {copied ? <IconCheck size="20" /> : <IconCopy size="20" />}
+        </ActionIcon>
+      )}
     </Group>
   );
 };
@@ -97,6 +89,7 @@ const urnParts = [
   { name: 'source', description: 'The resource source' },
   { name: 'id', description: 'The resource id at the source' },
 ];
+
 export function URNExplanation({ size }: { size?: number }) {
   return (
     <Popover width={300} withArrow withinPortal shadow="sm">
@@ -142,5 +135,5 @@ type Props = {
   type: ModelType;
   modelId: number;
   modelVersionId: number;
-  full?: boolean;
+  withCopy?: boolean;
 };

@@ -1,166 +1,299 @@
-import { Anchor, Button, Container, Group, Stack, Stepper, Text, Title } from '@mantine/core';
+import { Anchor, Button, Group, Stepper, Text, Title } from '@mantine/core';
+import { ModelUploadType, TrainingStatus } from '~/shared/utils/prisma/enums';
 import { IconArrowLeft } from '@tabler/icons-react';
-import Link from 'next/link';
-import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { NextLink as Link } from '~/components/NextLink/NextLink';
+import { NextRouter, useRouter } from 'next/router';
+import React, { useEffect } from 'react';
+import { NotFound } from '~/components/AppLayout/NotFound';
+import { PageLoader } from '~/components/PageLoader/PageLoader';
 
-import { PostEditWrapper } from '~/components/Post/Edit/PostEditLayout';
 import { Files, UploadStepActions } from '~/components/Resource/Files';
 import { FilesProvider } from '~/components/Resource/FilesProvider';
 import { ModelVersionUpsertForm } from '~/components/Resource/Forms/ModelVersionUpsertForm';
+import { PostUpsertForm2 } from '~/components/Resource/Forms/PostUpsertForm2';
+import TrainingSelectFile from '~/components/Resource/Forms/TrainingSelectFile';
 import { useS3UploadStore } from '~/store/s3-upload.store';
-import { ModelById } from '~/types/router';
+import { ModelById, ModelVersionById } from '~/types/router';
 import { trpc } from '~/utils/trpc';
 import { isNumber } from '~/utils/type-guards';
-import { PostUpsertForm } from '../Forms/PostUpsertForm';
 
-export function ModelVersionWizard({ data }: Props) {
-  const router = useRouter();
+const MAX_STEPS = 3;
 
-  const { id, versionId, step = '1' } = router.query;
-  const isNew = router.pathname.includes('/create');
-  const parsedStep = Array.isArray(step) ? Number(step[0]) : Number(step);
-
-  const [activeStep, setActiveStep] = useState<number>(parsedStep);
-
-  const { data: modelVersion } = trpc.modelVersion.getById.useQuery(
-    { id: Number(versionId), withFiles: true },
-    {
-      enabled: !!versionId,
-      placeholderData: {
-        model: { ...data },
-      },
-    }
-  );
-
+const CreateSteps = ({
+  step,
+  versionId,
+  modelData,
+  modelVersion,
+  goBack,
+  goNext,
+  router,
+  postId,
+}: {
+  step: number;
+  versionId?: string | string[];
+  modelData?: ModelVersionById['model'];
+  modelVersion?: ModelVersionById;
+  goBack: () => void;
+  goNext: () => void;
+  router: NextRouter;
+  postId: number | undefined;
+}) => {
   const { getStatus: getUploadStatus } = useS3UploadStore();
   const { uploading, error, aborted } = getUploadStatus(
     (file) => file.meta?.versionId === modelVersion?.id
   );
+  const editing = !!modelVersion?.id;
+
+  return (
+    <Stepper
+      active={step - 1}
+      onStepClick={(step) =>
+        router.replace(
+          `/models/${modelData?.id}/model-versions/${versionId}/wizard?step=${step + 1}`
+        )
+      }
+      allowNextStepsSelect={false}
+      size="sm"
+      classNames={{ steps: 'container max-w-sm' }}
+    >
+      <Stepper.Step label={editing ? 'Edit version' : 'Add version'}>
+        <div className="container flex max-w-sm flex-col gap-3">
+          <Title order={3}>{editing ? 'Edit version' : 'Add version'}</Title>
+          <ModelVersionUpsertForm
+            model={modelData}
+            version={modelVersion}
+            onSubmit={(result) => {
+              if (editing) return goNext();
+              router
+                .replace(`/models/${result?.modelId}/model-versions/${result?.id}/wizard?step=2`)
+                .then();
+            }}
+          >
+            {({ loading, canSave }) => (
+              <Group mt="xl" position="right">
+                <Button type="submit" loading={loading} disabled={!canSave}>
+                  Next
+                </Button>
+              </Group>
+            )}
+          </ModelVersionUpsertForm>
+        </div>
+      </Stepper.Step>
+      <Stepper.Step
+        label="Upload files"
+        loading={uploading > 0}
+        color={error + aborted > 0 ? 'red' : undefined}
+      >
+        <div className="container flex max-w-sm flex-col gap-3">
+          <Title order={3}>Upload files</Title>
+          <Files />
+          <UploadStepActions onBackClick={goBack} onNextClick={goNext} />
+        </div>
+      </Stepper.Step>
+      <Stepper.Step label={postId ? 'Edit post' : 'Create a post'}>
+        {modelVersion && modelData && (
+          <PostUpsertForm2
+            postId={postId}
+            modelVersionId={modelVersion.id}
+            modelId={modelData.id}
+          />
+        )}
+      </Stepper.Step>
+    </Stepper>
+  );
+};
+
+const TrainSteps = ({
+  step,
+  modelData,
+  modelVersion,
+  goBack,
+  goNext,
+  router,
+  postId,
+}: {
+  step: number;
+  modelData: ModelVersionById['model'];
+  modelVersion: ModelVersionById;
+  goBack: () => void;
+  goNext: () => void;
+  router: NextRouter;
+  postId: number | undefined;
+}) => {
+  return (
+    <Stepper
+      active={step - 1}
+      onStepClick={(step) =>
+        router.replace(
+          `/models/${modelData?.id}/model-versions/${modelVersion.id}/wizard?step=${step + 1}`
+        )
+      }
+      allowNextStepsSelect={false}
+      size="sm"
+      classNames={{ steps: 'container max-w-sm' }}
+    >
+      {/* Step 1: Select File */}
+      <Stepper.Step
+        label="Select Model File"
+        loading={
+          modelVersion.trainingStatus === TrainingStatus.Pending ||
+          modelVersion.trainingStatus === TrainingStatus.Submitted ||
+          modelVersion.trainingStatus === TrainingStatus.Paused ||
+          modelVersion.trainingStatus === TrainingStatus.Processing
+        }
+        color={
+          modelVersion.trainingStatus === TrainingStatus.Failed ||
+          modelVersion.trainingStatus === TrainingStatus.Denied
+            ? 'red'
+            : undefined
+        }
+      >
+        <div className="container flex max-w-sm flex-col gap-3">
+          <Title order={3}>Select Model File</Title>
+          <Title mb="sm" order={5}>
+            Choose a model file from the results of your training run.
+            <br />
+            Sample images are provided for reference.
+          </Title>
+          <TrainingSelectFile model={modelData} modelVersion={modelVersion} onNextClick={goNext} />
+        </div>
+      </Stepper.Step>
+
+      {/* Step 2: Version Info */}
+      <Stepper.Step label="Edit version">
+        <div className="container flex max-w-sm flex-col gap-3">
+          <Title order={3}>Edit version</Title>
+          <ModelVersionUpsertForm model={modelData} version={modelVersion} onSubmit={goNext}>
+            {({ loading, canSave }) => (
+              <Group mt="xl" position="right">
+                <Button variant="default" onClick={goBack}>
+                  Back
+                </Button>
+                <Button type="submit" loading={loading} disabled={!canSave}>
+                  Next
+                </Button>
+              </Group>
+            )}
+          </ModelVersionUpsertForm>
+        </div>
+      </Stepper.Step>
+
+      {/* Step 3: Post Info */}
+      <Stepper.Step label={postId ? 'Edit post' : 'Create a post'}>
+        {modelVersion && modelData && (
+          <PostUpsertForm2
+            postId={postId}
+            modelVersionId={modelVersion.id}
+            modelId={modelData.id}
+          />
+        )}
+      </Stepper.Step>
+    </Stepper>
+  );
+};
+
+export function ModelVersionWizard({ data }: Props) {
+  const router = useRouter();
+
+  const { id, versionId } = router.query;
+  const isNew = router.pathname.includes('/create');
+  const parsedStep = router.query.step ? Number(router.query.step) : 1;
+  const step = isNumber(parsedStep) ? parsedStep : 1;
+
+  const {
+    data: modelVersion,
+    isInitialLoading,
+    isError,
+  } = trpc.modelVersion.getById.useQuery(
+    { id: Number(versionId), withFiles: true },
+    { enabled: !!versionId }
+  );
+
+  const modelData = modelVersion?.model ?? data;
 
   const goNext = () => {
-    if (activeStep < 3)
-      router.replace(
-        `/models/${id}/model-versions/${versionId}/wizard?step=${activeStep + 1}`,
-        undefined,
-        { shallow: true, scroll: true }
-      );
+    if (step < MAX_STEPS)
+      router
+        .replace(`/models/${id}/model-versions/${versionId}/wizard?step=${step + 1}`, undefined, {
+          shallow: !isNew,
+        })
+        .then();
   };
 
   const goBack = () => {
-    if (activeStep > 1)
-      router.replace(
-        `/models/${id}/model-versions/${versionId}/wizard?step=${activeStep - 1}`,
-        undefined,
-        { shallow: true, scroll: true }
-      );
+    if (step > 1)
+      router
+        .replace(`/models/${id}/model-versions/${versionId}/wizard?step=${step - 1}`, undefined, {
+          shallow: !isNew,
+        })
+        .then();
   };
 
   const hasFiles = modelVersion && !!modelVersion.files?.length;
 
+  // Filter to posts belonging to the owner of the model
+  const postId = modelVersion?.posts?.filter((post) => post.userId === modelData?.user.id)?.[0]?.id;
+  const isTraining = modelVersion?.uploadType === ModelUploadType.Trained;
+
   useEffect(() => {
+    if (isTraining || isInitialLoading) return;
+
     // redirect to correct step if missing values
     if (!isNew) {
       if (!hasFiles)
-        router.replace(`/models/${id}/model-versions/${versionId}/wizard?step=2`, undefined, {
-          shallow: true,
-        });
+        router
+          .replace(`/models/${id}/model-versions/${versionId}/wizard?step=2`, undefined, {
+            shallow: true,
+          })
+          .then();
       else
-        router.replace(`/models/${id}/model-versions/${versionId}/wizard?step=3`, undefined, {
-          shallow: true,
-        });
+        router
+          .replace(`/models/${id}/model-versions/${versionId}/wizard?step=3`, undefined, {
+            shallow: true,
+          })
+          .then();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasFiles, id, isNew, versionId]);
 
-  useEffect(() => {
-    // set current step based on query param
-    if (activeStep.toString() !== router.query.step) {
-      const rawStep = router.query.step;
-      const step = Number(rawStep);
-      const validStep = isNumber(step) && step >= 1 && step <= 3;
-
-      setActiveStep(validStep ? step : 1);
-    }
-  }, [router.query, activeStep]);
-
-  const editing = !!modelVersion?.id;
-  const postId = modelVersion?.posts?.[0]?.id;
-
   return (
-    <FilesProvider model={modelVersion?.model} version={modelVersion}>
-      <Container size="sm">
-        <Stack spacing="xl" py="xl">
-          <Link href={`/models/${modelVersion?.model.id}`} passHref>
-            <Anchor size="xs">
-              <Group spacing={4} noWrap>
-                <IconArrowLeft size={12} />
-                <Text inherit>Back to {modelVersion?.model.name} page</Text>
-              </Group>
-            </Anchor>
-          </Link>
-          <Stepper
-            active={activeStep - 1}
-            onStepClick={(step) =>
-              router.replace(
-                `/models/${modelVersion?.model.id}/model-versions/${versionId}/wizard?step=${
-                  step + 1
-                }`
-              )
-            }
-            allowNextStepsSelect={false}
-            size="sm"
-          >
-            <Stepper.Step label={editing ? 'Edit version' : 'Add version'}>
-              <Stack>
-                <Title order={3}>{editing ? 'Edit version' : 'Add version'}</Title>
-                <ModelVersionUpsertForm
-                  model={modelVersion?.model}
-                  version={modelVersion}
-                  onSubmit={(result) => {
-                    if (editing) return goNext();
-                    router.replace(
-                      `/models/${result?.modelId}/model-versions/${result?.id}/wizard?step=2`
-                    );
-                  }}
-                >
-                  {({ loading }) => (
-                    <Group mt="xl" position="right">
-                      <Button type="submit" loading={loading}>
-                        Next
-                      </Button>
-                    </Group>
-                  )}
-                </ModelVersionUpsertForm>
-              </Stack>
-            </Stepper.Step>
-            <Stepper.Step
-              label="Upload files"
-              loading={uploading > 0}
-              color={error + aborted > 0 ? 'red' : undefined}
-            >
-              <Stack spacing="xl">
-                <Title order={3}>Upload files</Title>
-                <Files />
-                <UploadStepActions onBackClick={goBack} onNextClick={goNext} />
-              </Stack>
-            </Stepper.Step>
-            <Stepper.Step label={postId ? 'Edit post' : 'Create a post'}>
-              <Stack spacing="xl">
-                <Title order={3}>{postId ? 'Edit post' : 'Create your post'}</Title>
-                {modelVersion && (
-                  <PostEditWrapper postId={postId}>
-                    <PostUpsertForm
-                      modelVersionId={modelVersion.id}
-                      modelId={modelVersion.model.id}
-                    />
-                  </PostEditWrapper>
-                )}
-              </Stack>
-            </Stepper.Step>
-          </Stepper>
-        </Stack>
-      </Container>
+    <FilesProvider model={modelData} version={modelVersion}>
+      <div className="container max-w-sm pb-4">
+        <Link legacyBehavior href={`/models/${modelData?.id}`} passHref>
+          <Anchor size="xs">
+            <Group spacing={4} noWrap>
+              <IconArrowLeft size={12} />
+              <Text inherit>Back to {modelData?.name} page</Text>
+            </Group>
+          </Anchor>
+        </Link>
+      </div>
+      {isInitialLoading ? (
+        <PageLoader text="Loading model..." />
+      ) : isError || !modelData ? (
+        <NotFound />
+      ) : isTraining ? (
+        <TrainSteps
+          step={step}
+          modelData={modelData}
+          modelVersion={modelVersion}
+          goBack={goBack}
+          goNext={goNext}
+          router={router}
+          postId={postId}
+        />
+      ) : (
+        <CreateSteps
+          step={step}
+          versionId={versionId}
+          modelData={modelData}
+          modelVersion={modelVersion}
+          goBack={goBack}
+          goNext={goNext}
+          router={router}
+          postId={postId}
+        />
+      )}
     </FilesProvider>
   );
 }

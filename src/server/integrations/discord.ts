@@ -1,6 +1,6 @@
 import { REST } from '@discordjs/rest';
 import { Routes } from 'discord-api-types/v10';
-import { env } from '~/env/server.mjs';
+import { env } from '~/env/server';
 import { dbWrite } from '~/server/db/client';
 import { createLogger } from '~/utils/logging';
 
@@ -250,12 +250,31 @@ const removeRoleFromUser = async (user_id: string, role_id: string) => {
   }
 };
 
+export const getDiscordId = async (userId: number) => {
+  const account = await dbWrite.account.findFirst({
+    where: { userId, provider: 'discord' },
+    select: { providerAccountId: true },
+  });
+  return account?.providerAccountId;
+};
+
+export const getDiscordIds = async (userIds: number[]) => {
+  const accounts = await dbWrite.account.findMany({
+    where: { userId: { in: userIds }, provider: 'discord' },
+    select: { userId: true, providerAccountId: true },
+  });
+
+  return new Map(accounts.map((account) => [account.userId, account.providerAccountId]));
+};
+
 export const discord = {
   registerMetadata,
   pushMetadata,
   getAllRoles,
   addRoleToUser,
   removeRoleFromUser,
+  getDiscordId,
+  getDiscordIds,
 };
 
 /*

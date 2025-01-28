@@ -3,11 +3,23 @@ import { PrismaClient } from '@prisma/client';
 import { chunk } from 'lodash-es';
 import { clickhouse } from '~/server/clickhouse/client';
 import { dbWrite } from '~/server/db/client';
-import { redis } from '~/server/redis/client';
-import { TransactionType } from '~/server/schema/buzz.schema';
-import { createBuzzTransactionMany } from '~/server/services/buzz.service';
+import { logToAxiom } from '~/server/logging/client';
+import { rewardFailedCounter, rewardGivenCounter } from '~/server/prom/client';
+import { redis, REDIS_KEYS } from '~/server/redis/client';
+import { BuzzAccountType, TransactionType } from '~/server/schema/buzz.schema';
+import { createBuzzTransactionMany, getMultipliersForUser } from '~/server/services/buzz.service';
 import { hashifyObject } from '~/utils/string-helpers';
 import { withRetries } from '../utils/errorHandling';
+import { Fingerprint } from '~/server/utils/fingerprint';
+
+const log = (event: BuzzEventLog, data: MixedObject) => {
+  logToAxiom({
+    name: 'buzz-rewards',
+    type: 'error',
+    event: JSON.stringify(event),
+    ...data,
+  }).catch();
+};
 
 export function createBuzzEvent<T>({
   type,
@@ -15,6 +27,7 @@ export function createBuzzEvent<T>({
   awardAmount,
   getKey,
   visible = true,
+
   ...buzzEvent
 }: ProcessableBuzzEventDefinition<T> | OnEventBuzzEventDefinition<T>) {
   const isOnDemand = 'onDemand' in buzzEvent;
@@ -46,7 +59,15 @@ export function createBuzzEvent<T>({
       // clickhouse query to determine the awarded amount. For the time being, this won't be
       // done.
       awarded: -1,
+      accountType: buzzEvent.toAccountType ?? 'generation',
     };
+
+    // Apply multipliers
+    const { rewardsMultiplier } = await getMultipliersForUser(userId);
+    if (rewardsMultiplier !== 1) {
+      data.awardAmount = Math.ceil(rewardsMultiplier * data.awardAmount);
+      if (data.cap) data.cap = Math.ceil(rewardsMultiplier * data.cap);
+    }
 
     if (!isOnDemand) {
       return data;
@@ -78,14 +99,11 @@ export function createBuzzEvent<T>({
         : [];
      */
 
-    const typeCacheJson = (await redis.hGet('buzz-events', `${userId}:${type}`)) ?? '{}';
+    const typeCacheJson = (await redis.hGet(REDIS_KEYS.BUZZ_EVENTS, `${userId}:${type}`)) ?? '{}';
     const typeCache = JSON.parse(typeCacheJson);
     const eventCount = Object.keys(typeCache).length;
 
-    data.awarded = Math.min(eventCount * awardAmount, data.cap ?? Infinity);
-    // eventCount > 0
-    //   ? Math.min(eventCount * awardAmount, data.cap ?? Infinity)
-    // : Math.min((awarded[0]?.total ?? 0) * awardAmount, data.cap ?? Infinity);
+    data.awarded = Math.min(eventCount * data.awardAmount, data.cap ?? Infinity);
 
     return data;
   };
@@ -96,11 +114,12 @@ export function createBuzzEvent<T>({
         events
           .filter((x) => x.awardAmount > 0)
           .map((event) => {
+            if (event.multiplier === 0) event.multiplier = 1;
             return {
               type: TransactionType.Reward,
               toAccountId: event.toUserId,
               fromAccountId: 0, // central bank
-              amount: event.awardAmount,
+              amount: Math.ceil(event.awardAmount * (event.multiplier ?? 1)),
               description: `Buzz Reward: ${description}`,
               details: {
                 type: event.type,
@@ -112,6 +131,7 @@ export function createBuzzEvent<T>({
                 event.type === 'userReferred' || event.type === 'refereeCreated'
                   ? `${event.type}:${event.forId}-${event.ip}`
                   : `${event.type}:${event.forId}-${event.toUserId}-${event.byUserId}`,
+              toAccountType: buzzEvent.toAccountType ?? 'user',
             };
           })
       )
@@ -122,7 +142,8 @@ export function createBuzzEvent<T>({
     if (!isOnDemand) return false;
 
     // Get daily cache for user
-    const typeCacheJson = (await redis.hGet('buzz-events', `${key.toUserId}:${type}`)) ?? '{}';
+    const typeCacheJson =
+      (await redis.hGet(REDIS_KEYS.BUZZ_EVENTS, `${key.toUserId}:${type}`)) ?? '{}';
     const typeCache = JSON.parse(typeCacheJson);
     const cacheKey = hashifyObject(key);
 
@@ -138,15 +159,18 @@ export function createBuzzEvent<T>({
 
     // Update cache
     typeCache[cacheKey] = Date.now().toString();
-    await redis.hSet('buzz-events', `${key.toUserId}:${type}`, JSON.stringify(typeCache));
+    await redis.hSet(REDIS_KEYS.BUZZ_EVENTS, `${key.toUserId}:${type}`, JSON.stringify(typeCache));
 
     return toAward;
   };
 
-  const apply = async (input: T, ip?: string) => {
+  const apply = async (input: T, tracking?: { ip?: string; fingerprint?: Fingerprint }) => {
     if (!clickhouse) return;
     const definedKey = await getKey(input, { ch: clickhouse, db: dbWrite });
     if (!definedKey) return;
+
+    const { ip, fingerprint } = tracking ?? {};
+    const { rewardsMultiplier } = await getMultipliersForUser(definedKey.toUserId);
 
     const transactionDetails = buzzEvent.getTransactionDetails
       ? await buzzEvent.getTransactionDetails(input, { ch: clickhouse, db: dbWrite })
@@ -156,8 +180,10 @@ export function createBuzzEvent<T>({
     const event: BuzzEventLog = {
       ...key,
       awardAmount,
+      multiplier: rewardsMultiplier,
       status: 'pending',
       ip: ['::1', ''].includes(ip ?? '') ? undefined : ip,
+      fingerprint: fingerprint?.value,
       transactionDetails: JSON.stringify(transactionDetails ?? {}),
     };
 
@@ -172,20 +198,30 @@ export function createBuzzEvent<T>({
     try {
       await addBuzzEvent(event);
     } catch (error) {
+      log(event, { message: 'Failed to record buzz event', error });
+      rewardFailedCounter?.inc?.();
       throw new Error(`Failed to record buzz event: ${error}`);
     }
 
     if (event.status === 'awarded') {
       try {
         await sendAward([event]);
+        rewardGivenCounter?.inc?.();
       } catch (error) {
-        throw new Error(`Failed to send award for buzz event: ${error}`);
+        log(event, {
+          message: 'Failed to send award for buzz event',
+          error,
+        });
+        rewardFailedCounter?.inc?.();
+        throw new Error(
+          `Failed to send award for buzz event: ${error}.\n\nTransaction: ${JSON.stringify(event)}`
+        );
       }
     }
   };
 
   const process = async (ctx: ProcessingContext) => {
-    if (!isProcessable) return;
+    if (!isProcessable || !clickhouse) return;
     await buzzEvent.preprocess?.(ctx);
     const targeted = ctx.toProcess.filter((event) => event.status !== 'unqualified');
 
@@ -201,25 +237,21 @@ export function createBuzzEvent<T>({
         }
 
         const idTuples = [...ids].map((id) => `(${id})`).join(', ');
-        const res = await clickhouse?.query({
-          query: `
-            SELECT ${keyParts.join(', ')}, SUM(awardAmount) AS total
-            FROM buzzEvents
-            WHERE type IN (${types.map((x) => `'${x}'`).join(', ')})
-              AND status = 'awarded'
-              ${
-                !interval
-                  ? ''
-                  : interval === 'day'
-                  ? 'AND time > today()'
-                  : `AND time > now() - INTERVAL '1 ${interval}'`
-              }
-              AND (${keyParts.join(', ')}) IN (${idTuples})
-            GROUP BY ${keyParts.join(', ')}
-          `,
-          format: 'JSONEachRow',
-        });
-        const data = (await res?.json<CapResult[]>()) ?? [];
+        const data = await clickhouse.$query<CapResult>`
+          SELECT ${keyParts.join(', ')}, SUM(awardAmount) AS total
+          FROM buzzEvents
+          WHERE type IN (${types.map((x) => `'${x}'`).join(', ')})
+            AND status = 'awarded'
+            ${
+              !interval
+                ? ''
+                : interval === 'day'
+                ? 'AND time > today()'
+                : `AND time > now() - INTERVAL '1 ${interval}'`
+            }
+            AND (${keyParts.join(', ')}) IN (${idTuples})
+          GROUP BY ${keyParts.join(', ')}
+        `;
         for (const row of data) {
           const key = computeCapKey({ keyParts, interval, data: row });
           prevAwards[key] = row.total;
@@ -302,20 +334,30 @@ export function createBuzzEvent<T>({
 //  hypothesis is that this occurs due to a combination of
 //  async inserts + ch's merge strategy
 async function addBuzzEvent(event: BuzzEventLog) {
-  return await clickhouse?.insert({
-    table: 'buzzEvents',
-    values: [event],
-    format: 'JSONEachRow',
-  });
+  withRetries(
+    async () =>
+      await clickhouse?.insert({
+        table: 'buzzEvents',
+        values: [event],
+        format: 'JSONEachRow',
+      }),
+    5,
+    500
+  );
 }
 
 async function updateBuzzEvents(events: BuzzEventLog[]) {
   for (const event of events) event.version = (event.version ?? 0) + 1;
-  return await clickhouse?.insert({
-    table: 'buzzEvents',
-    values: events,
-    format: 'JSONEachRow',
-  });
+  withRetries(
+    async () =>
+      await clickhouse?.insert({
+        table: 'buzzEvents',
+        values: events,
+        format: 'JSONEachRow',
+      }),
+    5,
+    500
+  );
 }
 
 type CapResult = { [k: string]: number; total: number };
@@ -334,14 +376,16 @@ export type BuzzEvent = ReturnType<typeof createBuzzEvent>;
 type BuzzEventKey = {
   type: string;
   toUserId: number;
-  forId: number;
+  forId: number | string;
   byUserId: number;
 };
 
 export type BuzzEventLog = BuzzEventKey & {
   awardAmount: number;
+  multiplier?: number;
   status?: 'pending' | 'awarded' | 'capped' | 'unqualified';
   ip?: string;
+  fingerprint?: string | null; // TODO - rename to deviceId
   version?: number;
   transactionDetails?: string;
 };
@@ -368,6 +412,7 @@ type BuzzEventDefinitionBase<T> = {
   visible?: boolean;
   getKey: (input: T, ctx: GetKeyContext) => Promise<GetKeyOutput | false>;
   getTransactionDetails?: (input: T, ctx: GetKeyContext) => Promise<MixedObject | undefined>;
+  toAccountType?: BuzzAccountType;
 };
 
 type CapInterval = 'day' | 'week' | 'month';
