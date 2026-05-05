@@ -531,6 +531,7 @@ model User {
   issuedStrikes               UserStrike[]                    @relation("strikeIssuedBy")
   voidedStrikes               UserStrike[]                    @relation("strikeVoidedBy")
   generationPresets           GenerationPreset[]
+  ownedWildcardSets           WildcardSet[]                   @relation("WildcardSetOwner")
 
   // Comics
   comicProjects              ComicProject[]
@@ -1010,6 +1011,7 @@ model ModelVersion {
   featuredInfo            FeaturedModelVersion[]
   ImageResourceNew        ImageResourceNew[]
   coveredCheckpoints      CoveredCheckpoint[]
+  wildcardSet             WildcardSet?
 
   @@index([modelId], type: Hash)
 }
@@ -5453,4 +5455,84 @@ model GenerationPreset {
   @@unique([userId, ecosystem, name])
   @@index([userId])
   @@index([userId, ecosystem])
+}
+
+enum WildcardSetKind {
+  System
+  User
+}
+
+enum WildcardSetAuditStatus {
+  Pending
+  Clean
+  Mixed
+  Dirty
+}
+
+enum WildcardSetCategoryAuditStatus {
+  Pending
+  Clean
+  Dirty
+}
+
+model WildcardSet {
+  id   Int             @id @default(autoincrement())
+  kind WildcardSetKind
+
+  // System-kind only (null for User-kind)
+  modelVersionId  Int?          @unique
+  modelVersion    ModelVersion? @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+  modelName       String?
+  versionName     String?
+  sourceFileCount Int?
+
+  // User-kind only (null for System-kind)
+  ownerUserId Int?
+  owner       User?   @relation("WildcardSetOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  name        String? @db.Citext
+
+  auditStatus      WildcardSetAuditStatus @default(Pending)
+  auditRuleVersion String?
+  auditedAt        DateTime?
+
+  isInvalidated      Boolean   @default(false)
+  invalidationReason String?
+  invalidatedAt      DateTime?
+
+  totalValueCount Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  categories WildcardSetCategory[]
+
+  @@index([kind])
+  @@index([ownerUserId])
+  @@index([auditStatus])
+  @@index([isInvalidated])
+}
+
+model WildcardSetCategory {
+  id            Int         @id @default(autoincrement())
+  wildcardSetId Int
+  wildcardSet   WildcardSet @relation(fields: [wildcardSetId], references: [id], onDelete: Cascade)
+
+  name       String   @db.Citext
+  values     String[]
+  valueCount Int      @default(0)
+
+  auditStatus      WildcardSetCategoryAuditStatus @default(Pending)
+  auditRuleVersion String?
+  auditedAt        DateTime?
+  auditNote        String?
+
+  nsfwLevel Int @default(0)
+
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([wildcardSetId, name])
+  @@index([wildcardSetId])
+  @@index([wildcardSetId, auditStatus])
+  @@index([auditStatus])
 }
