@@ -304,7 +304,7 @@ const ltxv23SubGraph = new DataGraph<LTXVersionCtx, GenerationCtx>()
   .node('generateAudio', {
     input: z.boolean().optional(),
     output: z.boolean(),
-    defaultValue: false,
+    defaultValue: true,
   });
 
 // =============================================================================
@@ -440,6 +440,14 @@ export const ltxGraph = new DataGraph<LTXCtx, GenerationCtx>()
   .discriminator('ltxVersion', {
     v2: ltxv2SubGraph,
     v23: ltxv23SubGraph,
+  })
+
+  // Prompt enhancer toggle — when on, the handler prepends a promptEnhancement
+  // step and feeds its enhancedPrompt into the videoGen step via $ref.
+  .node('enablePromptEnhancer', {
+    input: z.boolean().optional(),
+    output: z.boolean(),
+    defaultValue: true,
   })
 
   // Prompt + triggerWords are common to all LTX versions (no negativePrompt for LTX).
