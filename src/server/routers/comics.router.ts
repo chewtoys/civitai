@@ -40,6 +40,11 @@ import { enhanceComicPrompt } from '~/server/services/comics/prompt-enhance';
 import { orchestratorChatCompletionCost } from '~/server/services/comics/orchestrator-chat';
 import { resolveReferenceMentions } from '~/server/services/comics/mention-resolver';
 import { updateComicNsfwLevels } from '~/server/services/nsfwLevels.service';
+import {
+  BlockedByUsers,
+  BlockedUsers,
+  HiddenUsers,
+} from '~/server/services/user-preferences.service';
 import { createImage, ingestImageById } from '~/server/services/image.service';
 import { createNotification } from '~/server/services/notification.service';
 import { planChapterPanels } from '~/server/services/comics/story-plan';
@@ -1186,7 +1191,28 @@ export const comicsRouter = router({
       };
 
       if (genre) where.genre = genre;
-      if (userId) where.userId = userId;
+
+      // Hide comics authored by users the viewer has hidden/blocked, OR by
+      // users who have blocked the viewer. Mirrors the comments-service
+      // pattern (excludedUserIds = hidden ∪ blocked ∪ blockedBy). Caches are
+      // empty for anonymous viewers so this is a no-op when ctx.user is null.
+      const [hiddenUserIds, blockedByIds, blockedIds] = await Promise.all([
+        HiddenUsers.getCached({ userId: ctx.user?.id }),
+        BlockedByUsers.getCached({ userId: ctx.user?.id }),
+        BlockedUsers.getCached({ userId: ctx.user?.id }),
+      ]);
+      const excludedUserIds = Array.from(
+        new Set([...hiddenUserIds, ...blockedByIds, ...blockedIds].map((u) => u.id))
+      );
+
+      if (userId) {
+        // Explicit author filter: if the requested author is on the exclusion
+        // list (e.g. a stale link to a blocker's profile), force a no-match
+        // userId so the query returns nothing rather than leaking comics.
+        where.userId = excludedUserIds.includes(userId) ? { in: [] } : userId;
+      } else if (excludedUserIds.length) {
+        where.userId = { notIn: excludedUserIds };
+      }
 
       // NSFW browsing level filter — compute allowed nsfwLevel values using bitwise match.
       //
@@ -1461,6 +1487,23 @@ export const comicsRouter = router({
         ctx.user != null && (project.userId === ctx.user.id || ctx.user.isModerator === true);
       if (project.tosViolation && !isOwnerOrModViewer) {
         throw throwNotFoundError('Comic not found');
+      }
+
+      // Hide projects authored by hidden/blocked users (or users who blocked
+      // the viewer). Owners and moderators bypass this so a self-blocked or
+      // mod-reviewed project remains reachable.
+      if (!isOwnerOrModViewer) {
+        const [hiddenUserIds, blockedByIds, blockedIds] = await Promise.all([
+          HiddenUsers.getCached({ userId: ctx.user?.id }),
+          BlockedByUsers.getCached({ userId: ctx.user?.id }),
+          BlockedUsers.getCached({ userId: ctx.user?.id }),
+        ]);
+        const excludedUserIds = new Set(
+          [...hiddenUserIds, ...blockedByIds, ...blockedIds].map((u) => u.id)
+        );
+        if (excludedUserIds.has(project.userId)) {
+          throw throwNotFoundError('Comic not found');
+        }
       }
 
       // Check if viewer is the owner or a moderator
