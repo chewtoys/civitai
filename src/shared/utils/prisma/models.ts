@@ -4188,12 +4188,9 @@ export interface WildcardSet {
   kind: WildcardSetKind;
   modelVersionId: number | null;
   modelVersion?: ModelVersion | null;
-  modelName: string | null;
-  versionName: string | null;
-  sourceFileCount: number | null;
   ownerUserId: number | null;
   owner?: User | null;
-  name: string | null;
+  name: string;
   auditStatus: WildcardSetAuditStatus;
   auditRuleVersion: string | null;
   auditedAt: Date | null;
@@ -4201,7 +4198,6 @@ export interface WildcardSet {
   invalidationReason: string | null;
   invalidatedAt: Date | null;
   metadata: JsonValue | null;
-  totalValueCount: number;
   createdAt: Date;
   updatedAt: Date;
   categories?: WildcardSetCategory[];

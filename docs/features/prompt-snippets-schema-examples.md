@@ -28,11 +28,11 @@ Three System-kind sets imported by other users earlier. No User-kind sets shown 
 
 ### `WildcardSet` (existing rows)
 
-| id | kind | modelVersionId | modelName | versionName | ownerUserId | name | auditStatus | isInvalidated | totalValueCount |
-|----|----|----|----|----|----|----|----|----|----|
-| 3 | System | 301004 | DarkFantasyChars | v1.2 | null | null | Clean | false | 310 |
-| 12 | System | 401876 | MedievalEnvironments | v2.1 | null | null | Mixed | false | 904 |
-| 16 | System | 412009 | AnimeExpressions | v1.0 | null | null | Clean | false | 128 |
+| id | kind   | modelVersionId | ownerUserId | name                        | auditStatus | isInvalidated |
+|----|--------|----------------|-------------|-----------------------------|-------------|---------------|
+| 3  | System | 301004         | null        | DarkFantasyChars - v1.2     | Clean       | false         |
+| 12 | System | 401876         | null        | MedievalEnvironments - v2.1 | Mixed       | false         |
+| 16 | System | 412009         | null        | AnimeExpressions - v1.0     | Clean       | false         |
 
 ### `WildcardSetCategory` (sample from existing System-kind sets)
 
@@ -69,7 +69,6 @@ await prisma.$transaction(async (tx) => {
         ownerUserId: 1001,
         name: 'My snippets',
         auditStatus: 'Pending',
-        totalValueCount: 0,
       }
     });
     // No DB join table — the user's User-kind set is always implicitly loaded.
@@ -87,19 +86,14 @@ await prisma.$transaction(async (tx) => {
       nsfwLevel: 0,
     }
   });
-
-  await tx.wildcardSet.update({
-    where: { id: userSet.id },
-    data: { totalValueCount: { increment: 1 } }
-  });
 });
 ```
 
 ### `WildcardSet` — new row 30 (Alice's User-kind set)
 
-| id | kind | modelVersionId | modelName | versionName | ownerUserId | name | auditStatus | totalValueCount |
-|----|----|----|----|----|----|----|----|----|
-| 30 | User | null | null | null | 1001 | "My snippets" | Pending | 1 |
+| id | kind | modelVersionId | ownerUserId | name        | auditStatus |
+|----|------|----------------|-------------|-------------|-------------|
+| 30 | User | null           | 1001        | My snippets | Pending     |
 
 ### `WildcardSetCategory` — new row 700
 
@@ -128,16 +122,12 @@ const setId = await prisma.$transaction(async (tx) => {
   if (existing) return existing.id;   // No DB write — client adds to localStorage
 
   const files = await extractWildcardZip(458231);
-  const totalValueCount = files.reduce((n, f) => n + f.lines.length, 0);
 
   const set = await tx.wildcardSet.create({
     data: {
       kind: 'System',
       modelVersionId: 458231,
-      modelName: 'fullFeatureFantasy',
-      versionName: 'v3.0',
-      sourceFileCount: files.length,
-      totalValueCount,
+      name: 'fullFeatureFantasy - v3.0',
       auditStatus: 'Pending',
     }
   });
@@ -163,9 +153,9 @@ const setId = await prisma.$transaction(async (tx) => {
 
 ### `WildcardSet` — new row 17 (System-kind)
 
-| id | kind | modelVersionId | modelName | versionName | ownerUserId | name | auditStatus | sourceFileCount | totalValueCount |
-|----|----|----|----|----|----|----|----|----|----|
-| 17 | System | 458231 | fullFeatureFantasy | v3.0 | null | null | Pending | 59 | 1847 |
+| id | kind   | modelVersionId | ownerUserId | name                      | auditStatus |
+|----|--------|----------------|-------------|---------------------------|-------------|
+| 17 | System | 458231         | null        | fullFeatureFantasy - v3.0 | Pending     |
 
 ### `WildcardSetCategory` — 59 new rows (representative sample)
 
@@ -250,9 +240,7 @@ SELECT wsc.id           AS "categoryId",
        wsc."nsfwLevel"  AS "nsfwLevel",
        ws.id            AS "setId",
        ws.kind          AS "setKind",
-       ws."modelName",
-       ws."versionName",
-       ws.name          AS "userSetName",
+       ws.name          AS "setName",       -- e.g. "fullFeatureFantasy - v3.0" or "My snippets"
        ws."ownerUserId"
 FROM "WildcardSet" ws
   JOIN "WildcardSetCategory" wsc  ON wsc."wildcardSetId" = ws.id

@@ -5480,16 +5480,19 @@ model WildcardSet {
   kind WildcardSetKind
 
   // System-kind only (null for User-kind)
-  modelVersionId  Int?          @unique
-  modelVersion    ModelVersion? @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
-  modelName       String?
-  versionName     String?
-  sourceFileCount Int?
+  modelVersionId Int?          @unique
+  modelVersion   ModelVersion? @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
 
   // User-kind only (null for System-kind)
   ownerUserId Int?
-  owner       User?   @relation("WildcardSetOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
-  name        String? @db.Citext
+  owner       User? @relation("WildcardSetOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  // Display name. For System-kind, set at import to "${model.name} - ${modelVersion.name}".
+  // For User-kind, defaults to "My snippets" on first save (and is renameable by the owner).
+  // Drift on rename is acceptable — the picker reads `name` once, model renames are uncommon,
+  // and JOINing back through ModelVersion → Model on every read isn't worth saving the rare
+  // staleness window.
+  name String @db.Citext
 
   auditStatus      WildcardSetAuditStatus @default(Pending)
   auditRuleVersion String?
@@ -5505,9 +5508,8 @@ model WildcardSet {
   // surface area can grow with the feature.
   metadata Json?
 
-  totalValueCount Int      @default(0)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   categories WildcardSetCategory[]
 

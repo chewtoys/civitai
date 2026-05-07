@@ -562,10 +562,7 @@ async function markWildcardVersionInvalidated(
       data: {
         kind: 'System',
         modelVersionId: modelVersion.id,
-        modelName: modelVersion.modelName,
-        versionName: modelVersion.name,
-        sourceFileCount: 0,
-        totalValueCount: 0,
+        name: `${modelVersion.modelName} - ${modelVersion.name}`,
         auditStatus: 'Pending',
         isInvalidated: true,
         invalidationReason: reason,
@@ -751,10 +748,7 @@ export async function importWildcardModelVersion(
           data: {
             kind: 'System',
             modelVersionId,
-            modelName: modelVersion.model.name,
-            versionName: modelVersion.name,
-            sourceFileCount: categories.length,
-            totalValueCount,
+            name: `${modelVersion.model.name} - ${modelVersion.name}`,
             auditStatus: 'Pending',
             metadata: setMetadata,
           },

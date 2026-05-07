@@ -59,6 +59,7 @@ Wildcard-set content is **cached globally** — one extracted copy per model ver
 - **One unified content table.** `WildcardSet` covers both globally-shared content imported from wildcard-type models (`kind = System`) and user-owned personal collections (`kind = User`). The discriminator + nullable owner/model FKs differentiate them; the resolver treats them uniformly.
 - **Values are an inline Postgres `text[]` column.** No separate value table, no JSONB. Audit and site-availability flags live on the category. Categories are the atomic unit of audit + visibility — if a category fails audit it disappears from generation pools entirely; if it passes, its `nsfwLevel` controls whether it shows on .com (SFW) vs .red (NSFW) vs both.
 - **No `UserWildcardSet` join table.** A user's loaded wildcard sets aren't persisted in a DB join table. Their own User-kind set is queryable directly via `WildcardSet WHERE kind = 'User' AND ownerUserId = ?`. Additional sets they've loaded (via "create" buttons on wildcard model pages) live in the form's localStorage — the generation-graph carries those IDs at submission time. Server validates: System-kind sets are public; User-kind sets check `ownerUserId == submitter`.
+- **Minimal denormalization at the set level.** The set carries one `name` column for both kinds (set at import or first save) and lets everything else flow from joins or client-side computation. We deliberately don't carry `modelName`/`versionName` (drift risk on creator rename — JOIN to `ModelVersion → Model` is cheap), `sourceFileCount` (= `categories.length`), or `totalValueCount` (= sum of `categories[].valueCount`, which the picker already loads).
 
 ---
 
@@ -80,14 +81,15 @@ model WildcardSet {
   // System-kind only (null for User-kind):
   modelVersionId      Int?                 @unique
   modelVersion        ModelVersion?        @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
-  modelName           String?              // denormalized e.g. "fullFeatureFantasy"
-  versionName         String?              // denormalized e.g. "v3.0"
-  sourceFileCount     Int?                 // number of .txt files in the source zip
 
   // User-kind only (null for System-kind):
   ownerUserId         Int?
   owner               User?                @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
-  name                String?              @db.Citext // user-given display name e.g. "My snippets"
+
+  // Shared display name. For System-kind, set at import to "${model.name} - ${modelVersion.name}"
+  // (e.g. "fullFeatureFantasy - v3.0"). For User-kind, defaults to "My snippets" on first save
+  // and is renameable by the owner. citext for case-insensitive picker matching.
+  name                String               @db.Citext
 
   // Shared:
   // Aggregate audit — derived from WildcardSetCategory.auditStatus rollup.
@@ -104,7 +106,11 @@ model WildcardSet {
   invalidationReason  String?
   invalidatedAt       DateTime?
 
-  totalValueCount     Int                  // denormalized sum of all category value counts
+  // Open-ended JSON for set-scoped diagnostic/operational data we don't want to model as
+  // first-class columns yet (e.g. `{ skippedEntries: [{ path, reason, sizeBytes }] }`
+  // recording why specific zip entries were rejected during import).
+  metadata            Json?
+
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 
@@ -134,9 +140,8 @@ enum WildcardSetAuditStatus {
 - **Kind invariant.** Exactly one of `(modelVersionId, ownerUserId)` is non-null per row, determined by `kind`. Enforced via a CHECK constraint at migration time (see §8).
 - `modelVersionId` is `@unique` (only enforced when non-null) because we never create two System-kind sets for the same version. Concurrent first-import is handled by the service layer (see §6.1).
 - `onDelete: Restrict` on `modelVersion` — a `ModelVersion` hard-delete is blocked until dependent System-kind sets are invalidated first. `onDelete: Cascade` on `owner` — deleting a user removes their User-kind sets and their categories.
-- `modelName` / `versionName` are denormalized for picker rendering on System-kind sets without JOINs through the models tables.
-- `name` (User-kind only) is `citext` — case-insensitive, preserves user's casing for display. No global uniqueness; multiple users can have a set called "My snippets," and one user can have several sets like "Characters" and "characters" treated as the same name within their own scope.
-- `totalValueCount` is denormalized for quick "38 values · 3 sources" displays.
+- `name` is `NOT NULL` for both kinds. For System-kind it caches `"${model.name} - ${modelVersion.name}"` at import (drift on rename is acceptable — uncommon, and JOINing back through `ModelVersion → Model` on every read isn't worth saving the rare staleness window). For User-kind, defaults to "My snippets" on first save and is renameable. `citext` makes picker matching case-insensitive while preserving casing for display.
+- **No `modelName` / `versionName` / `sourceFileCount` / `totalValueCount` columns.** All four were pure derived data (cached model/version names, source-zip file count, sum of `WildcardSetCategory.valueCount`) with multi-touchpoint maintenance. Replaced by: a single `name` column (above), `categories.length` for category count, and a sum across `categories[].valueCount` (computed client-side after the picker loads categories anyway, or via Prisma's `_count: { categories: true }` for headline-only views).
 
 ### 4.2 `WildcardSetCategory` — categories within a wildcard set, values inline
 
@@ -316,8 +321,8 @@ BEGIN
   ELSE:
     INSERT WildcardSet (
       kind = 'System',
-      modelVersionId, modelName, versionName,
-      sourceFileCount, totalValueCount,
+      modelVersionId,
+      name = '${model.name} - ${modelVersion.name}',
       auditStatus = 'Pending'
     )
     FOR each .txt file:
@@ -353,7 +358,7 @@ BEGIN
     INSERT WildcardSet (
       kind = 'User',
       ownerUserId, name = 'My snippets',
-      totalValueCount = 0, auditStatus = 'Pending'
+      auditStatus = 'Pending'
     )
     -- The user's User-kind set is always implicitly loaded — no extra tracking needed.
     -- The form discovers it via getMySnippetSet() on mount.
@@ -377,8 +382,6 @@ BEGIN
           valueCount = valueCount + 1,
           auditStatus = 'Pending'                  -- re-audit on any mutation
       WHERE id = ?
-
-  UPDATE WildcardSet.totalValueCount += new values added
 COMMIT
 -- Enqueue audit for the affected WildcardSetCategory
 ```
@@ -399,9 +402,7 @@ SELECT wsc.id           AS "categoryId",
        wsc."nsfwLevel"  AS "nsfwLevel",
        ws.id            AS "setId",
        ws.kind          AS "setKind",
-       ws."modelName",
-       ws."versionName",
-       ws.name          AS "userSetName",   -- non-null for User-kind sets
+       ws.name          AS "setName",       -- e.g. "fullFeatureFantasy - v3.0" or "My snippets"
        ws."ownerUserId"
 FROM "WildcardSet" ws
   JOIN "WildcardSetCategory" wsc  ON wsc."wildcardSetId" = ws.id
@@ -415,7 +416,7 @@ WHERE ws.id = ANY(?)                       -- the wildcardSetIds from submission
 
 Authorization happens inline via the `kind`/`ownerUserId` check — any submitted ID failing the predicate is silently dropped (the user revoked access, or the set was administratively reassigned, since the form state was saved).
 
-The picker UI groups results by `setKind` for display ("From My Snippets" for User-kind, "From fullFeatureFantasy v3.0" for System-kind), but storage and querying are uniform.
+The picker UI groups results by `setKind` for display, using `ws.name` as the source label for both kinds ("My snippets" for User-kind, "fullFeatureFantasy - v3.0" for System-kind). Storage and querying are uniform.
 
 **Indexes carrying this query:** primary key on `WildcardSet.id` (for the `= ANY(?)` lookup); `(ownerUserId)` on `WildcardSet` (for the User-kind authorization filter); `(wildcardSetId, name)` + `(wildcardSetId, auditStatus)` on `WildcardSetCategory`. Two-table-FK-walk, sub-millisecond at this scale.
 
@@ -533,7 +534,7 @@ No data backfill. No existing columns modified. `CREATE EXTENSION IF NOT EXISTS`
 
 ## 9. Open questions for DB review
 
-1. **Denormalization of `valueCount` / `totalValueCount`.** Kept for read-path performance. `valueCount` is derivable from `array_length(values, 1)` — could be a generated column. Worth doing, or overkill?
+1. **`WildcardSetCategory.valueCount` denormalization.** Set alongside `values` in the same write — single touchpoint, can't drift. Could be a generated column (`array_length(values, 1)`); we kept it explicit for picker-header reads without function calls. Worth converting to GENERATED, or overkill? (We deliberately dropped set-level `totalValueCount` and `sourceFileCount` — those had multi-touchpoint maintenance and are derivable client-side from the loaded categories.)
 2. **`nsfwLevel` set by audit pipeline vs explicit moderator action.** Current plan: audit produces a verdict + an inferred `nsfwLevel` based on content rules. Mods can override later. Is there a more rigorous classification process the team would want here (e.g., human-in-the-loop required before any non-zero rating)?
 3. **Global set deletion.** Current plan: `WildcardSet` rows are never hard-deleted; `isInvalidated` handles policy-driven removals. Do we want a separate `deletedAt` for a softer concept, or is hard-delete-with-cascade acceptable for User-kind sets specifically (since we won't have step-history risk for personal content)?
 4. **Audit rule version as a string.** Letting the audit service own the versioning scheme. Alternative: a dedicated `AuditRuleset` table and FK to it. Simpler-as-string for v1?

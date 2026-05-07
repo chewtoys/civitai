@@ -41,7 +41,7 @@ For Prisma definitions, queries, indexes, and migration plan, see [prompt-snippe
 
 See [prompt-snippets-schema.md](./prompt-snippets-schema.md) for full Prisma definitions, indexes, and CHECK constraints. Quick summary:
 
-- `WildcardSet` — `kind: System | User` discriminator. System-kind has `modelVersionId`, `modelName`, `versionName`. User-kind has `ownerUserId`, `name`. Audit aggregate, invalidation flags, denormalized `totalValueCount`.
+- `WildcardSet` — `kind: System | User` discriminator. System-kind has `modelVersionId`. User-kind has `ownerUserId`. Both kinds share a single `name @db.Citext` column (System defaults to `"${model.name} - ${modelVersion.name}"` at import; User defaults to `"My snippets"` and is renameable). Audit aggregate, invalidation flags, open-ended `metadata` JSON.
 - `WildcardSetCategory` — `name CITEXT`, `values text[]`, per-category `auditStatus`, `nsfwLevel` (bitwise int), `valueCount`.
 
 Two new tables — no DB join table for "loaded sets." There is no separate `PromptSnippet` table either. User personal content is a User-kind `WildcardSet` whose categories live in the same table as System-kind imported content.

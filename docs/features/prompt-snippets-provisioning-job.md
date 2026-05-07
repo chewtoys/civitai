@@ -128,10 +128,7 @@ async function importWildcardModelVersion(modelVersionId: number): Promise<{
       data: {
         kind: 'System',
         modelVersionId,
-        modelName: modelVersion.model.name,
-        versionName: modelVersion.name,
-        sourceFileCount: files.length,
-        totalValueCount: files.reduce((n, f) => n + f.lines.length, 0),
+        name: `${modelVersion.model.name} - ${modelVersion.name}`,
         auditStatus: 'Pending',
       }
     });
