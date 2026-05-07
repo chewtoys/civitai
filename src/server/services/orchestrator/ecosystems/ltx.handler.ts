@@ -11,7 +11,15 @@
  * - LTXV23 / vid2vid:extend → ltx2.3 extendVideo
  */
 
-import type { PromptEnhancementStepTemplate, VideoGenStepTemplate } from '@civitai/client';
+import type {
+  ComfyLtx23CreateVideoInput,
+  ComfyLtx23EditVideoInput,
+  ComfyLtx23ExtendVideoInput,
+  ComfyLtx23FirstLastFrameToVideoInput,
+  ComfyLtx2CreateVideoInput,
+  ComfyLtx2FirstLastFrameToVideoInput,
+  VideoGenStepTemplate,
+} from '@civitai/client';
 import { removeEmpty } from '~/utils/object-helpers';
 import { findClosestAspectRatio } from '~/utils/aspect-ratio-helpers';
 import type { GenerationGraphTypes } from '~/shared/data-graph/generation/generation-graph';
@@ -24,6 +32,7 @@ import {
 } from '~/shared/data-graph/generation/ltx-graph';
 import { defineHandler } from './handler-factory';
 import type { StepInput } from '.';
+import { createChainedPromptEnhancementStep } from '~/server/services/orchestrator/promptEnhancement';
 
 // Types derived from generation graph.
 // Use Extract (a distributive conditional) rather than `& { ecosystem: ... }`
@@ -71,6 +80,8 @@ function resolveImageDimensions(
  * Creates videoGen input for LTX (v2 and v2.3) ecosystems.
  * When `enablePromptEnhancer` is on, prepends a promptEnhancement step and
  * wires its `output.enhancedPrompt` into the videoGen step's `prompt` via $ref.
+ * Reference images (img2vid / ref2vid) are passed to the enhancer so the
+ * vision-capable LLM can ground the rewrite in the input frames.
  */
 export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => {
   const loras = buildLoras(data, ctx);
@@ -78,17 +89,24 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
   const steps: StepInput[] = [];
   let prompt: string = data.prompt;
   if (data.enablePromptEnhancer) {
-    const enhanceRef = `$${steps.length}`;
-    const enhanceStep: PromptEnhancementStepTemplate & { metadata: { suppressOutput: true } } = {
-      $type: 'promptEnhancement',
-      input: {
+    // Pull image URLs off `data.images` when present (img2vid + ref2vid carry
+    // them; vid2vid uses `data.video` and has no images).
+    const enhancerImages =
+      'images' in data
+        ? data.images?.map((img) => img.url).filter((u): u is string => !!u)
+        : undefined;
+
+    const { step, prompt: promptRef } = createChainedPromptEnhancementStep(
+      {
         ecosystem: data.ecosystem.toLowerCase(),
         prompt: data.prompt,
+        preserveTriggerWords: data.triggerWords,
+        images: enhancerImages?.length ? enhancerImages : undefined,
       },
-      metadata: { suppressOutput: true },
-    };
-    steps.push(enhanceStep);
-    prompt = { $ref: enhanceRef, path: 'output.enhancedPrompt' } as unknown as string;
+      { stepIndex: steps.length, suppressOutput: true }
+    );
+    steps.push(step);
+    prompt = promptRef;
   }
 
   if (data.ltxVersion === 'v23') {
@@ -127,7 +145,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             seed: data.seed,
             generateAudio: data.generateAudio,
             loras,
-          }),
+          }) as ComfyLtx23FirstLastFrameToVideoInput,
         };
         break;
       }
@@ -152,7 +170,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             seed: data.seed,
             generateAudio: data.generateAudio,
             loras,
-          }),
+          }) as ComfyLtx23EditVideoInput,
         };
         break;
       }
@@ -174,7 +192,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             seed: data.seed,
             generateAudio: data.generateAudio,
             loras,
-          }),
+          }) as ComfyLtx23ExtendVideoInput,
         };
         break;
       }
@@ -197,7 +215,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             images: data.images?.map((x) => x.url),
             generateAudio: data.generateAudio,
             loras,
-          }),
+          }) as ComfyLtx23CreateVideoInput,
         };
       }
     }
@@ -236,7 +254,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
         quantity: data.quantity ?? 1,
         seed: data.seed,
         loras,
-      }),
+      }) as ComfyLtx2FirstLastFrameToVideoInput,
     };
   } else {
     videoStep = {
@@ -254,7 +272,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
         seed: data.seed,
         images: data.images?.map((x) => x.url),
         loras,
-      }),
+      }) as ComfyLtx2CreateVideoInput,
     };
   }
 
