@@ -5535,6 +5535,14 @@ model WildcardSetCategory {
 
   nsfwLevel Int @default(0)
 
+  // Open-ended container for category-scoped audit data we don't want to model
+  // as columns yet. Shape today (see WildcardCategoryMetadata in
+  // wildcard-category-audit.service): `{ workflowId?, triggeredTerms?,
+  // triggeredLabels?, retryCount? }` — workflowId tracks in-flight audits;
+  // triggered* arrays survive after rollup so moderators can see what
+  // matched.
+  metadata Json?
+
   displayOrder Int      @default(0)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

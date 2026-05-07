@@ -72,6 +72,11 @@ export async function getWildcardSets({
     where: {
       id: { in: input.ids },
       ...authorizationWhere(userId),
+      // Hide fully-Dirty sets from clients entirely — every category in a
+      // Dirty set has triggered XGuard, so there's nothing safe to surface.
+      // Mixed sets stay visible (they have at least one Clean category) and
+      // get their Dirty categories filtered at the relation below.
+      auditStatus: { not: 'Dirty' },
     },
     select: {
       ...wildcardSetSelect,

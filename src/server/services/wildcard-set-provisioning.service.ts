@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import yaml from 'js-yaml';
 import { dbRead, dbWrite } from '~/server/db/client';
 import { logToAxiom } from '~/server/logging/client';
+import { submitWildcardSetAudit } from '~/server/services/wildcard-category-audit.service';
 import { resolveDownloadUrl } from '~/utils/delivery-worker';
 
 // `Wildcards` is the model-type enum value used elsewhere (see ModelType in
@@ -774,9 +775,20 @@ export async function importWildcardModelVersion(
       { timeout: 60_000 }
     );
 
-    // TODO: enqueue audit job once that pipeline lands. For now the rows sit
-    // at auditStatus = 'Pending' and the resolver excludes them from pools,
-    // which is the correct safe-default per the schema doc.
+    // Kick off per-category XGuard audits in the background. Fire-and-forget:
+    // import shouldn't block on orchestrator latency, and the periodic
+    // `audit-wildcard-set-categories` cron is the safety net if anything
+    // here silently fails. Categories sit at `auditStatus = 'Pending'` until
+    // the webhook callback lands and writes the rollup.
+    submitWildcardSetAudit(created).catch((err) =>
+      logToAxiom({
+        type: 'error',
+        name: 'wildcard-set-provisioning',
+        message: 'failed to schedule audits after import',
+        wildcardSetId: created,
+        error: err instanceof Error ? err.message : String(err),
+      }).catch(() => undefined)
+    );
 
     return {
       status: 'created',

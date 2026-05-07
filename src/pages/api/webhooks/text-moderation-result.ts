@@ -1,14 +1,28 @@
 /**
- * Text moderation result webhook.
+ * Text-moderation result webhook.
  *
- * Non-atomicity note: `recordEntityModerationSuccess` and the entity handler
- * (which calls `recomputeArticleIngestion`) run in separate transactions. If
- * the process crashes between them, the orchestrator's webhook retry will
- * redeliver the callback — `recordEntityModerationSuccess` is idempotent
- * (updateMany on a matching workflowId) and `recomputeArticleIngestion`
- * derives state from ground truth, so replay is safe. For the rare case
- * where the orchestrator already received a 200 and won't retry, the
- * `article-ingestion-reconcile` cron picks up the drift within 10 minutes.
+ * Dispatches by the `type` query param so multiple subsystems can share the
+ * same orchestrator callback URL without bleeding into each other's logic:
+ *
+ *   - omitted / unknown → entity-moderation flow (Article today). Updates the
+ *     `EntityModeration` row + invokes the per-entityType handler.
+ *   - `wildcardCategoryValue` → wildcard category audit flow. Reads the
+ *     workflow's xGuardModeration step output and writes the rollup onto
+ *     the `WildcardSetCategory` row, then recomputes the parent set's
+ *     aggregate audit status.
+ *
+ * Each branch's handler is responsible for its own idempotency. Orchestrator
+ * webhook retries can re-deliver the callback; handlers must tolerate that.
+ *
+ * Non-atomicity note for the entity-moderation branch:
+ * `recordEntityModerationSuccess` and the entity handler (which calls
+ * `recomputeArticleIngestion`) run in separate transactions. If the process
+ * crashes between them, the orchestrator's webhook retry will redeliver the
+ * callback — `recordEntityModerationSuccess` is idempotent (updateMany on a
+ * matching workflowId) and `recomputeArticleIngestion` derives state from
+ * ground truth, so replay is safe. For the rare case where the orchestrator
+ * already received a 200 and won't retry, the `article-ingestion-reconcile`
+ * cron picks up the drift within 10 minutes.
  */
 import type { WorkflowEvent, XGuardModerationOutput, XGuardModerationStep } from '@civitai/client';
 import { getWorkflow } from '@civitai/client';
@@ -23,6 +37,10 @@ import { NotificationCategory } from '~/server/common/enums';
 import { createNotification } from '~/server/services/notification.service';
 import { updateArticleNsfwLevels } from '~/server/services/nsfwLevels.service';
 import { recomputeArticleIngestion } from '~/server/services/article.service';
+import {
+  applyWildcardCategoryAuditFailure,
+  applyWildcardCategoryAuditSuccess,
+} from '~/server/services/wildcard-category-audit.service';
 import { WebhookEndpoint } from '~/server/utils/endpoint-helpers';
 import { ArticleStatus, EntityModerationStatus } from '~/shared/utils/prisma/enums';
 
@@ -79,114 +97,190 @@ const entityHandlers: Record<string, (result: TextModerationResult) => Promise<v
   },
 };
 
+/**
+ * Default callback handler — resolves the workflow via `EntityModeration`,
+ * persists status/result, and dispatches to the per-entityType handler.
+ */
+async function handleEntityModerationCallback(event: WorkflowEvent): Promise<void> {
+  const { data } = await getWorkflow({
+    client: internalOrchestratorClient,
+    path: { workflowId: event.workflowId },
+  });
+  if (!data) throw new Error(`could not find workflow: ${event.workflowId}`);
+
+  const entityType = data.metadata?.entityType as string | undefined;
+  const entityId = data.metadata?.entityId as number | undefined;
+  if (!entityType || !entityId)
+    throw new Error(`missing workflow metadata.entityType or entityId - ${event.workflowId}`);
+
+  switch (event.status) {
+    case 'succeeded': {
+      const steps = (data.steps ?? []) as unknown as XGuardModerationStep[];
+      const moderationStep = steps.find((x) => x.$type === 'xGuardModeration');
+      if (!moderationStep?.output)
+        throw new Error(`missing xGuardModeration output - ${event.workflowId}`);
+
+      const { blocked, triggeredLabels } = moderationStep.output;
+
+      const recorded = await recordEntityModerationSuccess({
+        entityType,
+        entityId,
+        workflowId: event.workflowId,
+        output: moderationStep.output,
+      });
+
+      if (!recorded) {
+        await logToAxiom({
+          name: 'text-moderation-result',
+          type: 'warning',
+          message: 'Stale workflow callback ignored (workflowId mismatch)',
+          workflowId: event.workflowId,
+          entityType,
+          entityId,
+        });
+        return;
+      }
+
+      const handler = entityHandlers[entityType];
+      if (handler) {
+        await handler({
+          entityType,
+          entityId,
+          blocked,
+          triggeredLabels,
+          output: moderationStep.output,
+        });
+      }
+      return;
+    }
+    case 'failed':
+    case 'expired':
+    case 'canceled': {
+      const statusMap = {
+        failed: EntityModerationStatus.Failed,
+        expired: EntityModerationStatus.Expired,
+        canceled: EntityModerationStatus.Canceled,
+      } as const;
+      const recorded = await recordEntityModerationFailure({
+        entityType,
+        entityId,
+        workflowId: event.workflowId,
+        status: statusMap[event.status],
+      });
+      if (!recorded) {
+        await logToAxiom({
+          name: 'text-moderation-result',
+          type: 'warning',
+          message: 'Stale workflow callback ignored (workflowId mismatch)',
+          workflowId: event.workflowId,
+          entityType,
+          entityId,
+        });
+        return;
+      }
+      await logToAxiom({
+        name: 'text-moderation-result',
+        type: event.status === 'failed' ? 'error' : 'warning',
+        message: `Workflow ${event.status}`,
+        workflowId: event.workflowId,
+        entityType,
+        entityId,
+      });
+
+      // Recompute article ingestion status on text moderation failure
+      if (entityType === 'Article') {
+        await recomputeArticleIngestion(entityId);
+      }
+      return;
+    }
+    default: {
+      await logToAxiom({
+        name: 'text-moderation-result',
+        type: 'warning',
+        message: `Unexpected workflow status: ${event.status}`,
+        workflowId: event.workflowId,
+        entityType,
+        entityId,
+      });
+    }
+  }
+}
+
+/**
+ * Wildcard category audit callback — looks up the category by the workflow
+ * metadata, walks the moderation step's output, and writes the strict
+ * rollup onto the category. Set-level rollup is recomputed inside the
+ * service helper.
+ */
+async function handleWildcardCategoryAuditCallback(event: WorkflowEvent): Promise<void> {
+  const { data } = await getWorkflow({
+    client: internalOrchestratorClient,
+    path: { workflowId: event.workflowId },
+  });
+  if (!data) throw new Error(`could not find workflow: ${event.workflowId}`);
+
+  const categoryId = data.metadata?.wildcardSetCategoryId as number | undefined;
+  if (!categoryId)
+    throw new Error(`missing workflow metadata.wildcardSetCategoryId - ${event.workflowId}`);
+
+  switch (event.status) {
+    case 'succeeded': {
+      const steps = (data.steps ?? []) as unknown as XGuardModerationStep[];
+      const moderationStep = steps.find((x) => x.$type === 'xGuardModeration');
+      if (!moderationStep?.output)
+        throw new Error(`missing xGuardModeration output - ${event.workflowId}`);
+
+      await applyWildcardCategoryAuditSuccess({
+        categoryId,
+        workflowId: event.workflowId,
+        output: moderationStep.output,
+      });
+      return;
+    }
+    case 'failed':
+    case 'expired':
+    case 'canceled': {
+      await applyWildcardCategoryAuditFailure({
+        categoryId,
+        workflowId: event.workflowId,
+        status: event.status,
+      });
+      await logToAxiom({
+        name: 'text-moderation-result',
+        type: event.status === 'failed' ? 'error' : 'warning',
+        message: `Wildcard category audit workflow ${event.status}`,
+        workflowId: event.workflowId,
+        wildcardSetCategoryId: categoryId,
+      });
+      return;
+    }
+    default: {
+      await logToAxiom({
+        name: 'text-moderation-result',
+        type: 'warning',
+        message: `Unexpected workflow status: ${event.status}`,
+        workflowId: event.workflowId,
+        wildcardSetCategoryId: categoryId,
+      });
+    }
+  }
+}
+
 export default WebhookEndpoint(async (req, res) => {
   if (req.method !== 'POST')
     return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
 
   try {
     const event: WorkflowEvent = req.body;
+    const type = typeof req.query.type === 'string' ? req.query.type : undefined;
 
-    const { data } = await getWorkflow({
-      client: internalOrchestratorClient,
-      path: { workflowId: event.workflowId },
-    });
-    if (!data) throw new Error(`could not find workflow: ${event.workflowId}`);
-
-    const entityType = data.metadata?.entityType as string | undefined;
-    const entityId = data.metadata?.entityId as number | undefined;
-    if (!entityType || !entityId)
-      throw new Error(`missing workflow metadata.entityType or entityId - ${event.workflowId}`);
-
-    switch (event.status) {
-      case 'succeeded': {
-        const steps = (data.steps ?? []) as unknown as XGuardModerationStep[];
-        const moderationStep = steps.find((x) => x.$type === 'xGuardModeration');
-        if (!moderationStep?.output)
-          throw new Error(`missing xGuardModeration output - ${event.workflowId}`);
-
-        const { blocked, triggeredLabels } = moderationStep.output;
-
-        const recorded = await recordEntityModerationSuccess({
-          entityType,
-          entityId,
-          workflowId: event.workflowId,
-          output: moderationStep.output,
-        });
-
-        if (!recorded) {
-          await logToAxiom({
-            name: 'text-moderation-result',
-            type: 'warning',
-            message: 'Stale workflow callback ignored (workflowId mismatch)',
-            workflowId: event.workflowId,
-            entityType,
-            entityId,
-          });
-          break;
-        }
-
-        const handler = entityHandlers[entityType];
-        if (handler) {
-          await handler({
-            entityType,
-            entityId,
-            blocked,
-            triggeredLabels,
-            output: moderationStep.output,
-          });
-        }
+    switch (type) {
+      case 'wildcardCategoryValue':
+        await handleWildcardCategoryAuditCallback(event);
         break;
-      }
-      case 'failed':
-      case 'expired':
-      case 'canceled': {
-        const statusMap = {
-          failed: EntityModerationStatus.Failed,
-          expired: EntityModerationStatus.Expired,
-          canceled: EntityModerationStatus.Canceled,
-        } as const;
-        const recorded = await recordEntityModerationFailure({
-          entityType,
-          entityId,
-          workflowId: event.workflowId,
-          status: statusMap[event.status],
-        });
-        if (!recorded) {
-          await logToAxiom({
-            name: 'text-moderation-result',
-            type: 'warning',
-            message: 'Stale workflow callback ignored (workflowId mismatch)',
-            workflowId: event.workflowId,
-            entityType,
-            entityId,
-          });
-          break;
-        }
-        await logToAxiom({
-          name: 'text-moderation-result',
-          type: event.status === 'failed' ? 'error' : 'warning',
-          message: `Workflow ${event.status}`,
-          workflowId: event.workflowId,
-          entityType,
-          entityId,
-        });
-
-        // Recompute article ingestion status on text moderation failure
-        if (entityType === 'Article') {
-          await recomputeArticleIngestion(entityId);
-        }
+      default:
+        await handleEntityModerationCallback(event);
         break;
-      }
-      default: {
-        await logToAxiom({
-          name: 'text-moderation-result',
-          type: 'warning',
-          message: `Unexpected workflow status: ${event.status}`,
-          workflowId: event.workflowId,
-          entityType,
-          entityId,
-        });
-      }
     }
 
     return res.status(200).json({ ok: true });

@@ -4215,6 +4215,7 @@ export interface WildcardSetCategory {
   auditedAt: Date | null;
   auditNote: string | null;
   nsfwLevel: number;
+  metadata: JsonValue | null;
   displayOrder: number;
   createdAt: Date;
   updatedAt: Date;

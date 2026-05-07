@@ -42,6 +42,7 @@ CREATE TABLE "WildcardSetCategory" (
     "auditedAt" TIMESTAMP(3),
     "auditNote" TEXT,
     "nsfwLevel" INTEGER NOT NULL DEFAULT 0,
+    "metadata" JSONB,
     "displayOrder" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
