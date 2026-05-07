@@ -28,13 +28,24 @@ const wildcardSetSelect = {
   updatedAt: true,
 } as const;
 
+// Deliberately omits `values: true`. The client never holds the values
+// array except while a user is actively selecting `in`/`ex` values inside
+// the picker for a specific category. v1 has no such picker, so v1 clients
+// receive zero values from this surface. Post-v1, the picker fetches
+// values only for the category whose drawer is open — not the full
+// loaded-sets payload. The server-side resolver fetches values directly
+// via its own query, so values never leave the server outside of that
+// narrow picker-open path.
+//
+// Also omits `auditStatus`: the read query filters to Clean only (see the
+// `where` clauses on `categories` below), so every row a client receives is
+// usable by definition. Pending/Dirty categories are server-side-only state
+// and don't need a client-visible field.
 const wildcardSetCategorySelect = {
   id: true,
   wildcardSetId: true,
   name: true,
-  values: true,
   valueCount: true,
-  auditStatus: true,
   nsfwLevel: true,
   displayOrder: true,
 } as const;
@@ -81,11 +92,14 @@ export async function getWildcardSets({
     select: {
       ...wildcardSetSelect,
       categories: {
-        // Skip Dirty categories everywhere — the resolver excludes them from
-        // pools so showing them in the picker would only confuse the user.
-        // Pending categories pass through with their auditStatus so the UI
-        // can flag "still being audited."
-        where: { auditStatus: { not: 'Dirty' } },
+        // Filter to Clean only. The resolver excludes Dirty (audit-failed)
+        // and Pending (audit-pending) from pools, so non-Clean categories
+        // can't actually be used in generation — surfacing them on the
+        // client would just be picker noise. Once a category is audited
+        // Clean it appears here; until then the client doesn't know it
+        // exists. (auditStatus is therefore omitted from the select — every
+        // row the client receives is Clean by definition.)
+        where: { auditStatus: 'Clean' },
         select: wildcardSetCategorySelect,
         orderBy: [{ displayOrder: 'asc' }, { id: 'asc' }],
       },
@@ -112,7 +126,10 @@ export async function getMyUserWildcardSet({ userId }: { userId: number }) {
     select: {
       ...wildcardSetSelect,
       categories: {
-        where: { auditStatus: { not: 'Dirty' } },
+        // Clean-only — see getWildcardSets for rationale. Same applies even
+        // for the user's own set: a freshly-saved category sits at Pending
+        // until audit completes; it appears here once Clean.
+        where: { auditStatus: 'Clean' },
         select: wildcardSetCategorySelect,
         orderBy: [{ displayOrder: 'asc' }, { id: 'asc' }],
       },

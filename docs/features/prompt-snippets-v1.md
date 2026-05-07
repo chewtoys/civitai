@@ -56,6 +56,7 @@ Three new tables, three enums, one CHECK constraint, citext extension. See [prom
   2. Read additional `wildcardSetIds` from localStorage (set IDs added via "create" clicks on wildcard model pages).
   3. Fetch full set details via `getWildcardSets({ ids })`. Server filters out IDs the user can't access (e.g. invalid User-kind ownership). Pruned IDs silently drop from form state.
   4. Render any chip in the prompts referencing a category that no longer resolves with a **red badge state** ("orphaned" — source set removed or category gone).
+- **What the read API returns — and what it doesn't.** `getWildcardSets` and `getMyUserSet` return per-set metadata (id, kind, name, audit/invalidated flags) and per-category metadata (id, name, displayOrder, valueCount, auditStatus, nsfwLevel) — enough for autocomplete, chip rendering, and audit-aware UI. They deliberately **do not** ship the `values` array. The client never holds values in memory unless a picker drawer for one specific category is open and the user is actively choosing `in`/`ex` values; v1 has no picker drawer, so v1 clients receive zero values from any read endpoint. Preview and submit run the resolver entirely server-side — values stay on the server.
 - **Adding a wildcard set:** clicking "create" on a wildcard model page adds that set's ID to the form's localStorage `wildcardSetIds`. No DB write. The set is immediately available for `#category` autocomplete.
 - **User's own User-kind set is always loaded** — not opt-in.
 
