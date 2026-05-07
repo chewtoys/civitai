@@ -14,13 +14,14 @@ export const negativePromptSchema = z
 
 export type SourceImageProps = z.input<typeof sourceImageSchema>;
 
-const allowedHostsPattern =
-  /^https:\/\/([a-z0-9-]+\.)?civitai\.(com|red)\//i;
-
 export const sourceImageSchema = z.object({
   url: z
     .string()
-    .regex(allowedHostsPattern, 'URL must be on a civitai.com or civitai.red host'),
+    .startsWith('https://orchestration')
+    .includes('.civitai.com')
+    .or(z.string().includes('.civitai.red'))
+    .or(z.string().includes('image.civitai.red'))
+    .or(z.string().includes('image.civitai.com')),
   width: z.number(),
   height: z.number(),
   upscaleWidth: z.number().max(maxUpscaleSize).optional(),
