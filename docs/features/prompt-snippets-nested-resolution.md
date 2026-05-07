@@ -364,8 +364,17 @@ function expandValue(
 ): string {
   if (depth > MAX_DEPTH) return value;
 
-  // 1. Resolve nested #name refs
-  let result = value.replace(/#([a-zA-Z][a-zA-Z0-9_]*)/g, (match, name) => {
+  // 1. Resolve nested #name refs.
+  //
+  //    Name charset must match the import-time category-name convention
+  //    (see wildcard-set-provisioning.service.ts → category names are stored
+  //    as the full relative path inside the source zip, minus `.txt`). That
+  //    means `/`, `.`, and `-` are all valid inside a name, e.g.
+  //    `#uds_wildcards/personmaker/adultage` is a single ref, not `#uds_wildcards`
+  //    followed by literal text. The regex below mirrors the parser's
+  //    `NESTED_REFERENCE_PATTERN` so import-time normalization and resolver
+  //    lookup never disagree on what counts as one ref.
+  let result = value.replace(/#([a-zA-Z][\w./-]*)/g, (match, name) => {
     if (visited.has(name)) return match;  // cycle
     const category = lookupCategory(sourceSetId, name);
     if (!category || category.auditStatus !== 'Clean') return '';  // skip
@@ -422,9 +431,13 @@ The mode (`batch` vs `random`) governs only the *top-level* expansion of the use
 
    Recommendation: **record full depth for now**. Expansion trees are bounded by `MAX_DEPTH = 10`, so worst case is 10 levels — bounded and small. Revisit if real wildcard packs produce huge expansion trees.
 
-7. **Cross-set nested refs (v2).** When/if we want shared "core" packs that other packs reference, what's the syntax? Current syntax is bare `#name`. A future qualified syntax might be `#core/hair_color` or `#core::hair_color` — but should we bake compatibility into the v1 parser (just emit a warning, ignore the qualifier) so existing wildcard models that use a qualified syntax don't break on import?
+7. **Cross-set nested refs (v2).** When/if we want shared "core" packs that other packs reference, what's the syntax?
 
-   Recommendation: **yes, parser tolerates qualifiers in v1**. Strip the qualifier and treat as bare ref (within source set scope). When we add cross-set support in v2, the syntax already works.
+   **`/` is already taken — it's part of the intra-pack namespace.** The import pipeline preserves the source zip's folder structure as part of the category name (e.g. `uds_wildcards/personmaker/adultage` is one category in one set), and the in-pack reference `__uds_wildcards/personmaker/adultage__` resolves to that category. So a future cross-set syntax cannot be `#core/hair_color` — there's no structural way to tell that apart from a nested intra-pack path.
+
+   Recommendation: **use a different separator for cross-set qualifiers, e.g. `#core::hair_color`**. Single colon is unsafe (collides with SD attention syntax weighting `(weight:1.2)`); double-colon is unambiguous. The v1 parser does *not* need to strip qualifiers — there's nothing to strip, because `/`-paths are valid names. When we add cross-set support, `::` is reserved for it.
+
+   Concretely: do **not** treat `#a/b` as "set `a`, category `b`". Treat it as "category `a/b` in the current set." Cross-set support, when added, uses `#setQualifier::name`.
 
 ---
 

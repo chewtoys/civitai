@@ -52,14 +52,16 @@ Two new tables — no DB join table for "loaded sets." There is no separate `Pro
 
 **Trigger character:** `#category`. The behavior of the submission (cartesian fan-out vs random sampling) is governed by the `snippetMode` form toggle, not by the prompt syntax.
 
-**Grammar:** `#` + identifier matching `[A-Za-z][A-Za-z0-9_]*`. Categories are matched case-insensitively (citext storage preserves original casing for display).
+**Grammar:** `#` + a path-like identifier matching `[A-Za-z][\w./-]*`. The charset mirrors the import pipeline's category-name convention — categories are stored as the full relative path inside their source zip (`uds_wildcards/personmaker/easyman`), so chip references must allow `/`, `.`, and `-`. Categories are matched case-insensitively (citext storage preserves original casing for display).
 
-**Collision with existing `#textualInversion` syntax** is resolved at the server. Snippet expansion runs first and replaces any `#token` matching one of the user's accessible category names. Unmatched `#tokens` pass through to the textual-inversion parser unchanged. Edge case: a user with both a wildcard category named `foo` and a textual-inversion resource named `foo` will see the wildcard win — rare conflict, surface a warning if it ever happens.
+**Reserved separator:** `::` is reserved for a future cross-set qualifier (`#core::hair_color`). Single colons collide with SD attention syntax (`(weight:1.2)`), so we deliberately avoid them. Single-`/` paths are intra-pack namespace, **not** a set qualifier — see the cross-set discussion in [prompt-snippets-nested-resolution.md](./prompt-snippets-nested-resolution.md#open-questions-for-review).
+
+**Collision with existing `#textualInversion` syntax** is resolved at the server. Snippet expansion runs first and replaces any `#token` matching one of the user's accessible category names. Unmatched `#tokens` pass through to the textual-inversion parser unchanged. Path-style refs (containing `/`) are unambiguously snippets — TI never uses slashes. Edge case: a user with both a wildcard category named `foo` and a textual-inversion resource named `foo` will see the wildcard win — rare conflict, surface a warning if it ever happens.
 
 **Parser:** new helper in [src/utils/prompt-helpers.ts](../../src/utils/prompt-helpers.ts), co-located with the existing `parsePromptResources`.
 
 ```ts
-const snippetReferencePattern = /#([a-zA-Z][a-zA-Z0-9_]*)/g;
+const snippetReferencePattern = /#([a-zA-Z][\w./-]*)/g;
 // Returns ordered list of references: [{ category, position }]
 ```
 

@@ -26,6 +26,7 @@ CREATE TABLE "WildcardSet" (
     "isInvalidated" BOOLEAN NOT NULL DEFAULT false,
     "invalidationReason" TEXT,
     "invalidatedAt" TIMESTAMP(3),
+    "metadata" JSONB,
     "totalValueCount" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,

@@ -4200,6 +4200,7 @@ export interface WildcardSet {
   isInvalidated: boolean;
   invalidationReason: string | null;
   invalidatedAt: Date | null;
+  metadata: JsonValue | null;
   totalValueCount: number;
   createdAt: Date;
   updatedAt: Date;
