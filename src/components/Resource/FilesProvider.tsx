@@ -704,8 +704,7 @@ export type DropzoneOptions = {
 
 const modelExts = ['.ckpt', '.pt', '.safetensors', '.sft', '.bin'];
 const ggufExts = [...modelExts, '.gguf'];
-const configExts = ['.yaml', '.yml', '.json'];
-const wildcardExts = ['.txt', ...configExts];
+const configExts = ['.yaml', '.yml', '.json', '.txt'];
 const archiveExts = ['.zip'];
 
 const dropzoneOptionsByModelType: Record<ModelType, DropzoneOptions> = {
@@ -933,7 +932,7 @@ const dropzoneOptionsByModelType: Record<ModelType, DropzoneOptions> = {
   },
   Wildcards: {
     primary: {
-      extensions: [...archiveExts, ...wildcardExts],
+      extensions: [...archiveExts, ...configExts],
       fileTypes: [...primaryFileTypesByModelType.Wildcards],
       maxFiles: 1,
     },
