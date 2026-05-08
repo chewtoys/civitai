@@ -9,6 +9,7 @@ import { checkOAuthRateLimit, sendRateLimitResponse } from '~/server/oauth/rate-
 import { logOAuthEvent } from '~/server/oauth/audit-log';
 import { TokenScope } from '~/shared/constants/token-scope.constants';
 import { buzzLimitSchema } from '~/server/schema/api-key.schema';
+import { Prisma } from '@prisma/client';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === 'OPTIONS') {
@@ -134,9 +135,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             userId: session.user.id,
             clientId,
             scope: requestedScope,
-            buzzLimit: parsedBuzzLimit ?? undefined,
+            buzzLimit: parsedBuzzLimit ?? Prisma.JsonNull,
           },
-          update: { scope: requestedScope, buzzLimit: parsedBuzzLimit ?? null },
+          update: { scope: requestedScope, buzzLimit: parsedBuzzLimit ?? Prisma.JsonNull },
         });
       }
     } else if (!existingConsent || existingConsent.scope !== requestedScope) {
