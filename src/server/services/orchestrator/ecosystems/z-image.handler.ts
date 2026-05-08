@@ -66,6 +66,7 @@ export const createZImageInput = defineHandler<ZImageCtx, [ImageGenStepTemplate]
         quantity,
         seed: data.seed,
         loras: Object.keys(loras).length > 0 ? loras : undefined,
+        diffuserModel: data.model ? ctx.airs.getOrThrow(data.model.id) : undefined,
       }) as ZImageInput,
     },
   ];
