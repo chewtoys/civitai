@@ -135,7 +135,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             userId: session.user.id,
             clientId,
             scope: requestedScope,
-            buzzLimit: parsedBuzzLimit ?? undefined,
+            buzzLimit: parsedBuzzLimit ?? Prisma.JsonNull,
           },
           update: { scope: requestedScope, buzzLimit: parsedBuzzLimit ?? Prisma.DbNull },
         });

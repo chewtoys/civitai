@@ -73,12 +73,15 @@ export const createContext = async ({
   // tokenScope: from bearer token auth (stored on req.context by getServerAuthSession).
   // Session auth (cookies) gets Full scope â€” no restrictions for browser users.
   const tokenScope = ((req as any).context?.tokenScope as number) ?? TokenScope.Full;
-  const apiKeyId = ((req as any).context?.apiKeyId as number | null) ?? null;
-  const subject =
-    ((req as any).context?.subject as
-      | { type: 'apiKey'; id: number }
-      | { type: 'oauth'; id: string }
-      | null) ?? null;
+  // apiKeyId / subject are only present when auth came from a Bearer token.
+  // Modeled as optional (undefined when absent) so DeepNonNullable<Context> in
+  // controller signatures can collapse them to required fields when the caller
+  // already knows the request is token-auth'd.
+  const apiKeyId = (req as any).context?.apiKeyId as number | undefined;
+  const subject = (req as any).context?.subject as
+    | { type: 'apiKey'; id: number }
+    | { type: 'oauth'; id: string }
+    | undefined;
 
   return {
     user: session?.user,
@@ -123,8 +126,8 @@ export const publicApiContext2 = async (req: NextApiRequest, res: NextApiRespons
     // callers that expect AbortSignal have a valid value.
     signal: new AbortController().signal,
     tokenScope: TokenScope.Full,
-    apiKeyId: null,
-    subject: null,
+    apiKeyId: undefined,
+    subject: undefined,
   });
 };
 

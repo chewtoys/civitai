@@ -32,8 +32,8 @@ export const getServerProxySSGHelpers = async (
       domain,
       signal: new AbortController().signal,
       tokenScope: TokenScope.Full,
-      apiKeyId: null,
-      subject: null,
+      apiKeyId: undefined,
+      subject: undefined,
     },
     transformer: superjson,
   });
