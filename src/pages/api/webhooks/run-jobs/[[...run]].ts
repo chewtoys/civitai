@@ -52,6 +52,7 @@ import type { Job } from '~/server/jobs/job';
 import { jobQueueJobs } from '~/server/jobs/job-queue';
 import { newOrderJobs } from '~/server/jobs/new-order-jobs';
 import { nextauthCleanup } from '~/server/jobs/next-auth-cleanup';
+import { syncEmailBlocklist } from '~/server/jobs/sync-email-blocklist';
 import { bountyJobs } from '~/server/jobs/prepare-bounties';
 import { leaderboardJobs } from '~/server/jobs/prepare-leaderboard';
 // import { processClubMembershipRecurringPayments } from '~/server/jobs/process-club-membership-recurring-payments';
@@ -139,6 +140,7 @@ export const jobs: Job[] = [
   cacheCleanup,
   rewardsAbusePrevention,
   nextauthCleanup,
+  syncEmailBlocklist,
   applyTagRules,
   // processCreatorProgramImageGenerationRewards,
   processVaultItems,
