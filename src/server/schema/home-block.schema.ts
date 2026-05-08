@@ -28,6 +28,9 @@ export const homeBlockMetaSchema = z
       limit: z.number().default(8),
       rows: z.number().default(2),
       tagId: z.coerce.number().optional(),
+      // Caps how many items from the same creator can appear in one homeblock render.
+      // Pair with a fetch `limit` larger than `rows * 7` so the dedup has a pool to pick from.
+      maxPerUser: z.number().int().positive().optional(),
     }),
     leaderboards: z.array(
       z.object({
