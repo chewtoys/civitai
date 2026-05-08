@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   Badge,
   Button,
   Container,
@@ -15,6 +16,7 @@ import {
 import { useDisclosure } from '@mantine/hooks';
 import { openConfirmModal } from '@mantine/modals';
 import {
+  IconAlertCircle,
   IconArrowLeft,
   IconBook,
   IconCalendar,
@@ -1229,6 +1231,59 @@ function ProjectWorkspace() {
 
       <Container size="xl" py="xl">
         <Stack gap="xl">
+          {/* ── Visibility alert ─────────────────────────── */}
+          {/* Surfaced to the OWNER only (this page is owner-protected) so
+              they understand why a published comic isn't reaching the
+              public. The list of affected chapters comes from the same
+              `hiddenReason` the listing route uses to gate visibility, so
+              what we show here matches what readers would see. */}
+          {(() => {
+            const tosChapters = project.chapters.filter((ch) => ch.hiddenReason === 'tosViolation');
+            const reviewChapters = project.chapters.filter(
+              (ch) => ch.hiddenReason === 'reviewPending'
+            );
+            const projectTos = project.hiddenReason === 'tosViolation';
+            if (!projectTos && tosChapters.length === 0 && reviewChapters.length === 0) {
+              return null;
+            }
+            return (
+              <Alert
+                color={projectTos || tosChapters.length > 0 ? 'red' : 'orange'}
+                icon={<IconAlertCircle size={18} />}
+                title={
+                  projectTos
+                    ? 'Comic hidden — TOS violation'
+                    : tosChapters.length > 0
+                    ? 'Some chapters are hidden — TOS violation'
+                    : 'Some chapters are hidden — moderator review pending'
+                }
+              >
+                <Stack gap={4}>
+                  {projectTos && (
+                    <Text size="sm">
+                      This comic has been flagged for a Terms of Service violation and is not
+                      visible to readers. Please review your content or contact support.
+                    </Text>
+                  )}
+                  {!projectTos && tosChapters.length > 0 && (
+                    <Text size="sm">
+                      The following chapters were flagged for a Terms of Service violation and
+                      are hidden from readers: <b>{tosChapters.map((c) => c.name).join(', ')}</b>.
+                    </Text>
+                  )}
+                  {reviewChapters.length > 0 && (
+                    <Text size="sm">
+                      The following chapters have one or more panel images awaiting moderator
+                      review and won't appear publicly until they're cleared:{' '}
+                      <b>{reviewChapters.map((c) => c.name).join(', ')}</b>. They'll publish
+                      automatically once approved.
+                    </Text>
+                  )}
+                </Stack>
+              </Alert>
+            );
+          })()}
+
           {/* ── Header card ─────────────────────────── */}
           <div className={clsx(styles.headerCard, styles.gradientTopBorder)}>
             <div className={styles.headerImage} onClick={() => openSettings()}>
@@ -1595,6 +1650,29 @@ function ProjectWorkspace() {
                                     </Badge>
                                   ) : null;
                                 })()}
+                                {chapter.hiddenReason && (
+                                  <Tooltip
+                                    label={
+                                      chapter.hiddenReason === 'tosViolation'
+                                        ? 'Hidden from readers — flagged as a TOS violation. Please remove the offending content or contact support.'
+                                        : 'Hidden from readers — at least one panel image is awaiting moderator review. It will publish automatically once cleared.'
+                                    }
+                                    withArrow
+                                    position="right"
+                                    multiline
+                                    w={260}
+                                  >
+                                    <Badge
+                                      size="xs"
+                                      color={chapter.hiddenReason === 'tosViolation' ? 'red' : 'orange'}
+                                      variant="filled"
+                                      ml={2}
+                                      leftSection={<IconAlertCircle size={10} />}
+                                    >
+                                      {chapter.hiddenReason === 'tosViolation' ? 'TOS' : 'Review'}
+                                    </Badge>
+                                  </Tooltip>
+                                )}
                               </div>
                             </div>
                           </div>

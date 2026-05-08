@@ -12,6 +12,7 @@ import {
   BOUNTIES_SEARCH_INDEX,
   USERS_SEARCH_INDEX,
   METRICS_IMAGES_SEARCH_INDEX,
+  COMICS_SEARCH_INDEX,
 } from '~/server/common/constants';
 import { logToAxiom } from '~/server/logging/client';
 import { REDIS_SYS_KEYS, sysRedis } from '~/server/redis/client';
@@ -230,6 +231,11 @@ export const processUserContentRemovalQueue = async () => {
     { name: COLLECTIONS_SEARCH_INDEX, filter: `user.username IN [${escapedUsernames}]` },
     { name: BOUNTIES_SEARCH_INDEX, filter: `user.username IN [${escapedUsernames}]` },
     { name: USERS_SEARCH_INDEX, filter: `id IN [${userIdList}]` },
+    // Comics index uses `user.username` as its filterable attribute
+    // (see `comics.search-index.ts` filterableAttributes). Without this
+    // entry, banning a user leaves their comics indexed and reachable
+    // through search even though the listing route would now hide them.
+    { name: COMICS_SEARCH_INDEX, filter: `user.username IN [${escapedUsernames}]` },
   ];
 
   const metricsIndexConfigs = [

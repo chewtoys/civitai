@@ -29,6 +29,7 @@ import {
   ComicPanelStatus,
   ComicProjectStatus,
   ComicReferenceType,
+  ImageIngestionStatus,
 } from '~/shared/utils/prisma/enums';
 import { getOrchestratorToken } from '~/server/orchestrator/get-orchestrator-token';
 import { pollIterationWorkflow } from '~/server/services/orchestrator/poll-iteration';
@@ -1019,11 +1020,19 @@ export const comicsRouter = router({
           chapters: {
             orderBy: { position: 'asc' },
             include: {
-              // Pull only `status` per panel so we can derive `panelCount`
-              // and `hasInProgressPanels` on the server. Even at 100 panels
-              // per chapter this is dramatically smaller than the full
-              // include used by `getProject`.
-              panels: { select: { status: true } },
+              // Pull `status` plus the panel image's moderation fields so
+              // we can derive `panelCount`, `hasInProgressPanels`, AND a
+              // per-chapter `hiddenReason` describing why a published
+              // chapter isn't reaching the public (a panel image flagged
+              // for review or marked TOS-violating).
+              panels: {
+                select: {
+                  status: true,
+                  image: {
+                    select: { ingestion: true, needsReview: true, tosViolation: true },
+                  },
+                },
+              },
             },
           },
         },
@@ -1068,15 +1077,44 @@ export const comicsRouter = router({
         const hasInProgressPanels = chapter.panels.some(
           (p) => p.status !== ComicPanelStatus.Ready && p.status !== ComicPanelStatus.Failed
         );
+
+        // Per-chapter visibility for the owner: mirror the gates used by
+        // `getPublicProjects` and the search index so the editor can tell
+        // the creator *why* a Published chapter isn't visible to readers.
+        // We only flag Published chapters — drafts are obviously hidden
+        // and don't need a separate reason. TOS wins over review when
+        // both are present (more severe / final).
+        let hiddenReason: 'tosViolation' | 'reviewPending' | null = null;
+        if (chapter.status === ComicChapterStatus.Published) {
+          const readyPanels = chapter.panels.filter(
+            (p) => p.status === ComicPanelStatus.Ready
+          );
+          const hasTosImage = readyPanels.some((p) => p.image?.tosViolation === true);
+          const hasReviewImage = readyPanels.some(
+            (p) =>
+              !!p.image &&
+              !p.image.tosViolation &&
+              (p.image.needsReview != null || p.image.ingestion !== ImageIngestionStatus.Scanned)
+          );
+          if (hasTosImage) hiddenReason = 'tosViolation';
+          else if (hasReviewImage) hiddenReason = 'reviewPending';
+        }
+
         // Strip the panel array from the returned shape — callers that need
         // panel data should use `getChapter`. The derived flags above are
         // all the sidebar needs.
         const { panels: _panels, ...rest } = chapter;
-        return { ...rest, panelCount, hasInProgressPanels };
+        return { ...rest, panelCount, hasInProgressPanels, hiddenReason };
       });
 
+      // Project-level: TOS-violated projects are hidden globally regardless
+      // of chapter state. Per-chapter reasons cover the rest.
+      const projectHiddenReason: 'tosViolation' | null = project.tosViolation
+        ? 'tosViolation'
+        : null;
+
       const { chapters: _chapters, ...projectRest } = project;
-      return { ...projectRest, chapters, references };
+      return { ...projectRest, chapters, references, hiddenReason: projectHiddenReason };
     }),
 
   // Full panel data for a single chapter. Pair with `getProjectShell`.
@@ -1201,9 +1239,25 @@ export const comicsRouter = router({
       const { limit, cursor, genre, period, sort, followed, userId, browsingLevel } = input;
 
       // Build where clause
+      //
+      // Visibility gates layered here (each one is a hard requirement —
+      // the listing must NEVER expose content that fails any of them):
+      //  - project is Active and not TOS-violated
+      //  - author is not banned (User.bannedAt IS NULL)
+      //  - project has at least one Published chapter with at least one
+      //    Ready panel that carries an imageUrl
+      //  - among the Ready panels of that chapter, none has an Image still
+      //    awaiting review (`needsReview` set) or in a non-clean ingestion
+      //    state (anything other than `Scanned`). Without this, panels
+      //    whose underlying Image was flagged after the panel record went
+      //    to `Ready` would still surface.
       const where: any = {
         status: ComicProjectStatus.Active,
         tosViolation: false,
+        // Match the search-index WHERE clause so listing and search agree:
+        // exclude system-user content (-1) and banned authors.
+        userId: { not: -1 },
+        user: { bannedAt: null },
         chapters: {
           some: {
             status: ComicChapterStatus.Published,
@@ -1211,6 +1265,29 @@ export const comicsRouter = router({
               some: {
                 status: ComicPanelStatus.Ready,
                 imageUrl: { not: null },
+                image: {
+                  ingestion: ImageIngestionStatus.Scanned,
+                  needsReview: null,
+                  tosViolation: false,
+                },
+              },
+              // No Ready panel may have an Image that's still under
+              // review or blocked. We deliberately constrain to
+              // `status === Ready` here: a chapter being actively
+              // generated (Pending/Generating panels) is fine; we just
+              // can't surface it if any of its Ready panels carries a
+              // tainted Image.
+              none: {
+                status: ComicPanelStatus.Ready,
+                OR: [
+                  { image: { needsReview: { not: null } } },
+                  { image: { tosViolation: true } },
+                  {
+                    image: {
+                      ingestion: { not: ImageIngestionStatus.Scanned },
+                    },
+                  },
+                ],
               },
             },
           },
@@ -1234,12 +1311,15 @@ export const comicsRouter = router({
 
       if (userId) {
         // Explicit author filter: if the requested author is on the exclusion
-        // list (e.g. a stale link to a blocker's profile), force a no-match
-        // userId so the query returns nothing rather than leaking comics.
-        where.userId = excludedUserIds.includes(userId) ? { in: [] } : userId;
+        // list (e.g. a stale link to a blocker's profile) or is the system
+        // user (-1), force a no-match userId so the query returns nothing.
+        const blocked = userId === -1 || excludedUserIds.includes(userId);
+        where.userId = blocked ? { in: [] } : userId;
       } else if (excludedUserIds.length) {
-        where.userId = { notIn: excludedUserIds };
+        where.userId = { notIn: [...excludedUserIds, -1] };
       }
+      // else: the project-level `userId: { not: -1 }` set above still
+      // excludes the system user.
 
       // NSFW browsing level filter — compute allowed nsfwLevel values using bitwise match.
       //
@@ -1348,12 +1428,23 @@ export const comicsRouter = router({
               position: true,
               name: true,
               publishedAt: true,
+              // Mirror the project-level WHERE: only Ready panels whose
+              // Image is fully clean (Scanned, no review, no TOS) count
+              // toward `readyPanelCount` and the thumbnail sample.
+              // Without this, a project that passes the gate on one
+              // clean panel can still ship a thumbnail/preview drawn
+              // from a tainted Ready panel.
               _count: {
                 select: {
                   panels: {
                     where: {
                       status: ComicPanelStatus.Ready,
                       imageUrl: { not: null },
+                      image: {
+                        ingestion: ImageIngestionStatus.Scanned,
+                        needsReview: null,
+                        tosViolation: false,
+                      },
                     },
                   },
                 },
@@ -1362,6 +1453,11 @@ export const comicsRouter = router({
                 where: {
                   status: ComicPanelStatus.Ready,
                   imageUrl: { not: null },
+                  image: {
+                    ingestion: ImageIngestionStatus.Scanned,
+                    needsReview: null,
+                    tosViolation: false,
+                  },
                 },
                 take: 1,
                 orderBy: { position: 'asc' },
@@ -1439,7 +1535,24 @@ export const comicsRouter = router({
     .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ id: z.number().int() }))
     .query(async ({ input, ctx }) => {
-      const isOwnerOrMod = ctx.user != null;
+      // Cheap meta read first — we need to know who owns this project
+      // before we can decide whether to pull non-Published chapters in
+      // the SQL select. Doing this in one query would force us to fall
+      // back to the old `ctx.user != null` shortcut, which leaks draft
+      // rows for every logged-in viewer, not just owners/mods.
+      const projectMeta = await dbRead.comicProject.findUnique({
+        where: { id: input.id },
+        select: { userId: true, status: true },
+      });
+      if (!projectMeta || projectMeta.status === ComicProjectStatus.Deleted) {
+        throw throwNotFoundError('Comic not found');
+      }
+      const isModerator = ctx.user?.isModerator === true;
+      const isOwner = ctx.user != null && ctx.user.id === projectMeta.userId;
+      // Only the owner or a moderator gets non-Published chapters from the
+      // SQL select. Public reader viewers (anonymous OR logged-in non-owners)
+      // never see drafts on this endpoint.
+      const canSeeAllChapters = isOwner || isModerator;
 
       const project = await dbRead.comicProject.findUnique({
         where: { id: input.id },
@@ -1456,12 +1569,16 @@ export const comicsRouter = router({
           nsfwLevel: true,
           status: true,
           tosViolation: true,
+          publishedAt: true,
           user: {
-            select: userWithCosmeticsSelect,
+            select: { ...userWithCosmeticsSelect, bannedAt: true },
           },
           chapters: {
-            // Owners and mods see all chapters; public sees only published
-            ...(!isOwnerOrMod ? { where: { status: ComicChapterStatus.Published } } : {}),
+            // Public reader: only Published chapters reach the SQL response
+            // for non-owner / non-mod viewers. Owners and mods can pull
+            // all statuses (drafts included) so they can preview the
+            // page or moderate flagged content.
+            ...(!canSeeAllChapters ? { where: { status: ComicChapterStatus.Published } } : {}),
             orderBy: { position: 'asc' },
             select: {
               id: true,
@@ -1485,8 +1602,23 @@ export const comicsRouter = router({
                   imageUrl: true,
                   prompt: true,
                   position: true,
+                  // Pull moderation-relevant Image fields so non-owner/mod
+                  // viewers can be denied chapters that have any panel
+                  // image still in review or with a TOS / blocked
+                  // ingestion state. Without this a `Ready` panel whose
+                  // underlying Image was flagged AFTER scan would still
+                  // surface here.
                   image: {
-                    select: { id: true, nsfwLevel: true, hash: true, width: true, height: true },
+                    select: {
+                      id: true,
+                      nsfwLevel: true,
+                      hash: true,
+                      width: true,
+                      height: true,
+                      ingestion: true,
+                      needsReview: true,
+                      tosViolation: true,
+                    },
                   },
                 },
               },
@@ -1516,6 +1648,22 @@ export const comicsRouter = router({
         throw throwNotFoundError('Comic not found');
       }
 
+      // Block projects authored by banned users for non-owner, non-mod.
+      // Banning a user must remove their content from public surfaces;
+      // owners (themselves) and mods can still load it for moderation.
+      if ((project.user as any)?.bannedAt && !isOwnerOrModViewer) {
+        throw throwNotFoundError('Comic not found');
+      }
+
+      // Block projects that have never been published. `publishedAt` is
+      // set the first time *any* chapter publishes — until that happens
+      // the project is unpublished and shouldn't be reachable through the
+      // public reader URL even if SEO/links surface the id. Owners and
+      // mods can still pull it up for review/preview.
+      if (project.publishedAt == null && !isOwnerOrModViewer) {
+        throw throwNotFoundError('Comic not found');
+      }
+
       // Hide projects authored by hidden/blocked users (or users who blocked
       // the viewer). Owners and moderators bypass this so a self-blocked or
       // mod-reviewed project remains reachable.
@@ -1537,14 +1685,35 @@ export const comicsRouter = router({
       const canViewDrafts =
         ctx.user != null && (project.userId === ctx.user.id || ctx.user.isModerator === true);
 
-      // Filter out draft chapters for non-owner, non-mod viewers
-      // Also filter out chapters with no ready panels
+      // Filter out draft chapters for non-owner, non-mod viewers, chapters
+      // with no ready panels, AND chapters whose Ready panels carry any
+      // Image still in review or in a non-clean ingestion state. The
+      // listing endpoint applies an equivalent filter at the query layer
+      // so a chapter held back here also won't make a project discoverable
+      // through the feed. Owners and mods bypass the review filter so
+      // they can still navigate their own comic and moderate flagged
+      // content.
       const filteredChapters = project.chapters.filter((ch) => {
         if (ch.panels.length === 0) return false;
         if (ch.status !== ComicChapterStatus.Published && !canViewDrafts) return false;
+        if (!canViewDrafts) {
+          const hasTaintedPanel = ch.panels.some((p) => {
+            const img = p.image;
+            if (!img) return true; // no Image yet — treat as not-yet-clean
+            if (img.tosViolation) return true;
+            if (img.needsReview) return true;
+            if (img.ingestion !== ImageIngestionStatus.Scanned) return true;
+            return false;
+          });
+          if (hasTaintedPanel) return false;
+        }
         return true;
       });
 
+      // Public viewers get a 404 if nothing's visible. Owners and mods
+      // still get the page even when empty — they may be previewing a
+      // brand-new project or reviewing flagged content where every
+      // chapter has been pulled by the moderation gates.
       if (filteredChapters.length === 0 && !canViewDrafts) {
         throw throwNotFoundError('Comic not found');
       }

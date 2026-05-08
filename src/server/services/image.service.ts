@@ -126,6 +126,7 @@ import {
 import type { ImageModActivity } from '~/server/services/moderator.service';
 import { trackModActivity } from '~/server/services/moderator.service';
 import { createNotification } from '~/server/services/notification.service';
+import { queueComicsForPanelImages } from '~/server/services/nsfwLevels.service';
 import { bustCachesForPosts, updatePostNsfwLevel } from '~/server/services/post.service';
 import { bulkSetReportStatus, resolveEntityAppeal } from '~/server/services/report.service';
 import { getVotableTags2 } from '~/server/services/tag.service';
@@ -502,6 +503,11 @@ export async function handleUnblockImages({
       queueImageSearchIndexUpdate({ ids, action: SearchIndexUpdateQueueAction.Update }),
       deleteImagTagsForReviewByImageIds(ids),
       bulkRemoveBlockedImages(images.map(({ pHash }) => pHash).filter(isDefined)),
+      // Comic projects are gated on `Image.needsReview`/`ingestion`/
+      // `tosViolation`. Unblock flips those, but `processImageScanWorkflow`
+      // (where the standard re-queue lives) isn't on this code path —
+      // re-queue here so the search index re-evaluates visibility.
+      queueComicsForPanelImages(ids),
     ]);
     // Bust after the writes above land so a concurrent reader can't refill the cache from pre-update rows.
     if (postIds.length) await bustCachesForPosts(postIds);
@@ -571,6 +577,11 @@ export async function handleBlockImages({
 
       queueImageSearchIndexUpdate({ ids, action: SearchIndexUpdateQueueAction.Delete }),
       invalidateExistence,
+      // Same reason as `handleUnblockImages` — moderator block bypasses
+      // `processImageScanWorkflow`, so we queue the parent comic project
+      // here directly. Without this the comic stays indexed under its
+      // pre-block (visible) state.
+      queueComicsForPanelImages(ids),
     ]);
     // Bust after the block write commits so a concurrent reader can't refill with the pre-block state.
     if (postIds.length) await bustCachesForPosts(postIds);
