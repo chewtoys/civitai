@@ -559,7 +559,17 @@ export const fluxModeOptions = [
  */
 export type GenerationResolution = '480p' | '720p' | '1080p' | '2K' | '4K';
 
-export type GenerationAspectRatio = '21:9' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16';
+export type GenerationAspectRatio =
+  | '21:9'
+  | '16:9'
+  | '3:2'
+  | '5:4'
+  | '4:3'
+  | '1:1'
+  | '3:4'
+  | '4:5'
+  | '2:3'
+  | '9:16';
 
 export type AspectRatioDimensions = { width: number; height: number };
 
@@ -578,25 +588,37 @@ export const aspectRatioDimensions: Record<
   '480p': {
     '21:9': { width: 1344, height: 576 },
     '16:9': { width: 848, height: 480 },
+    '3:2': { width: 720, height: 480 },
+    '5:4': { width: 608, height: 480 },
     '4:3': { width: 640, height: 480 },
     '1:1': { width: 480, height: 480 },
     '3:4': { width: 480, height: 640 },
+    '4:5': { width: 384, height: 480 },
+    '2:3': { width: 480, height: 720 },
     '9:16': { width: 480, height: 848 },
   },
   '720p': {
     '21:9': { width: 2016, height: 864 },
     '16:9': { width: 1280, height: 720 },
+    '3:2': { width: 1080, height: 720 },
+    '5:4': { width: 912, height: 720 },
     '4:3': { width: 960, height: 720 },
     '1:1': { width: 720, height: 720 },
     '3:4': { width: 720, height: 960 },
+    '4:5': { width: 576, height: 720 },
+    '2:3': { width: 720, height: 1080 },
     '9:16': { width: 720, height: 1280 },
   },
   '1080p': {
     '21:9': { width: 3024, height: 1296 },
     '16:9': { width: 1920, height: 1080 },
+    '3:2': { width: 1620, height: 1080 },
+    '5:4': { width: 1344, height: 1080 },
     '4:3': { width: 1440, height: 1080 },
     '1:1': { width: 1080, height: 1080 },
     '3:4': { width: 1080, height: 1440 },
+    '4:5': { width: 864, height: 1080 },
+    '2:3': { width: 1080, height: 1620 },
     '9:16': { width: 1080, height: 1920 },
   },
   '2K': {
@@ -614,6 +636,29 @@ export const aspectRatioDimensions: Record<
     '9:16': { width: 2304, height: 4096 },
   },
 };
+
+/**
+ * Diffusion training aspect ratio buckets — fixed width/height pairs picked to
+ * keep total pixel area near a target while staying divisible by 64 (the U-Net
+ * stride requirement). These are model-architecture values, not derivable by
+ * scaling a clean ratio.
+ */
+
+/** SDXL/Flux training buckets (~1024² area, /64 aligned). Used by SDXL, Pony v7,
+ * Chroma, Flux v1/v2, Hi-Dream, Z-Image, Anima, and any other ~1M-pixel
+ * diffusion model that follows SDXL's bucketing convention. */
+export const sdxlAspectRatioBuckets = [
+  { label: '2:3', value: '2:3', width: 832, height: 1216 },
+  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
+  { label: '3:2', value: '3:2', width: 1216, height: 832 },
+];
+
+/** SD1 training buckets (~512² area, /64 aligned). */
+export const sd1AspectRatioBuckets = [
+  { label: '2:3', value: '2:3', width: 512, height: 768 },
+  { label: '1:1', value: '1:1', width: 512, height: 512 },
+  { label: '3:2', value: '3:2', width: 768, height: 512 },
+];
 
 /**
  * Returns aspect ratio options (label/value/width/height) for the given

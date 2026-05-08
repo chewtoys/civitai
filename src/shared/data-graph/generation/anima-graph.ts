@@ -20,6 +20,7 @@ import {
   sliderNode,
   triggerWordsGraph,
 } from './common';
+import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Constants
@@ -27,17 +28,6 @@ import {
 
 /** Anima default model version ID */
 const animaVersionId = 2836417;
-
-// =============================================================================
-// Aspect Ratios
-// =============================================================================
-
-/** Anima aspect ratios (1024px based) */
-const animaAspectRatios = [
-  { label: '2:3', value: '2:3', width: 832, height: 1216 },
-  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
-  { label: '3:2', value: '3:2', width: 1216, height: 832 },
-];
 
 // =============================================================================
 // Sampler & Schedule Options
@@ -81,7 +71,7 @@ export const animaGraph = new DataGraph<{ ecosystem: string; workflow: string },
   )
   .merge(createResourcesGraph())
   .node('seed', seedNode())
-  .node('aspectRatio', aspectRatioNode({ options: animaAspectRatios, defaultValue: '1:1' }))
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node('cfgScale', sliderNode({ min: 1, max: 20, defaultValue: 7, step: 0.5 }))
   .node('steps', sliderNode({ min: 10, max: 50, defaultValue: 25 }))
   .node(

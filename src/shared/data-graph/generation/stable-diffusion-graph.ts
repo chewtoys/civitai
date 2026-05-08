@@ -20,6 +20,10 @@ import {
   sliderNode,
   triggerWordsGraph,
 } from './common';
+import {
+  sdxlAspectRatioBuckets,
+  sd1AspectRatioBuckets,
+} from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Constants
@@ -27,24 +31,6 @@ import {
 
 /** Maximum output resolution (longest side) for hires fix upscaling */
 const MAX_UPSCALE_RESOLUTION = 4096;
-
-// =============================================================================
-// Aspect Ratios
-// =============================================================================
-
-/** Default aspect ratio options for SD family models */
-const sdAspectRatios = [
-  { label: '2:3', value: '2:3', width: 832, height: 1216 },
-  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
-  { label: '3:2', value: '3:2', width: 1216, height: 832 },
-];
-
-/** SD1-specific aspect ratios (smaller dimensions) */
-const sd1AspectRatios = [
-  { label: '2:3', value: '2:3', width: 512, height: 768 },
-  { label: '1:1', value: '1:1', width: 512, height: 512 },
-  { label: '3:2', value: '3:2', width: 768, height: 512 },
-];
 
 // =============================================================================
 // Stable Diffusion Graph V2
@@ -85,7 +71,7 @@ export const stableDiffusionGraph = new DataGraph<
   .node(
     'aspectRatio',
     (ctx) => {
-      const options = ctx.ecosystem === 'SD1' ? sd1AspectRatios : sdAspectRatios;
+      const options = ctx.ecosystem === 'SD1' ? sd1AspectRatioBuckets : sdxlAspectRatioBuckets;
       const hasImages = Array.isArray(ctx.images) && ctx.images.length > 0;
       return { ...aspectRatioNode({ options }), when: !hasImages };
     },

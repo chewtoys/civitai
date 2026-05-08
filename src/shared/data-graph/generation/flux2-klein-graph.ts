@@ -28,6 +28,7 @@ import {
   sliderNode,
   triggerWordsGraph,
 } from './common';
+import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Flux.2 Klein Mode Constants
@@ -55,17 +56,6 @@ const flux2KleinModeVersionOptions = [
   { label: '9B Base', value: flux2KleinVersionIds['9b-base'] },
   { label: '4B', value: flux2KleinVersionIds['4b'] },
   { label: '4B Base', value: flux2KleinVersionIds['4b-base'] },
-];
-
-// =============================================================================
-// Aspect Ratios
-// =============================================================================
-
-/** Flux.2 Klein aspect ratios (1024px based) */
-const flux2KleinAspectRatios = [
-  { label: '2:3', value: '2:3', width: 832, height: 1216 },
-  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
-  { label: '3:2', value: '3:2', width: 1216, height: 832 },
 ];
 
 // =============================================================================
@@ -104,7 +94,7 @@ type Flux2KleinModeCtx = {
  */
 const distilledModeGraph = new DataGraph<Flux2KleinModeCtx, GenerationCtx>()
   .merge(createResourcesGraph())
-  .node('aspectRatio', aspectRatioNode({ options: flux2KleinAspectRatios, defaultValue: '1:1' }))
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .merge(negativePromptGraph)
   .node('steps', sliderNode({ min: 4, max: 12, defaultValue: 8 }))
   .node('seed', seedNode());
@@ -115,7 +105,7 @@ const distilledModeGraph = new DataGraph<Flux2KleinModeCtx, GenerationCtx>()
  */
 const baseModeGraph = new DataGraph<Flux2KleinModeCtx, GenerationCtx>()
   .merge(createResourcesGraph())
-  .node('aspectRatio', aspectRatioNode({ options: flux2KleinAspectRatios, defaultValue: '1:1' }))
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .merge(negativePromptGraph)
   .node('sampler', samplerNode({ options: flux2KleinSamplers, defaultValue: 'euler' }))
   .node('scheduler', schedulerNode({ options: flux2KleinSchedules, defaultValue: 'simple' }))
