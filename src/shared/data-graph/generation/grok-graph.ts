@@ -29,6 +29,10 @@ import {
   videoNode,
   createCheckpointGraph,
 } from './common';
+import {
+  getAspectRatioOptions,
+  type GenerationAspectRatio,
+} from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Constants
@@ -45,26 +49,23 @@ const grokImageAspectRatios = [
   { label: '9:16', value: '9:16', width: 1024, height: 1824 },
 ];
 
-/** Grok video aspect ratios by resolution */
-const grokVideoAspectRatiosByResolution: Record<string, typeof grokImageAspectRatios> = {
-  '480p': [
-    { label: '16:9', value: '16:9', width: 848, height: 480 },
-    { label: '3:2', value: '3:2', width: 720, height: 480 },
-    { label: '4:3', value: '4:3', width: 640, height: 480 },
-    { label: '1:1', value: '1:1', width: 480, height: 480 },
-    { label: '3:4', value: '3:4', width: 480, height: 640 },
-    { label: '2:3', value: '2:3', width: 480, height: 720 },
-    { label: '9:16', value: '9:16', width: 480, height: 848 },
-  ],
-  '720p': [
-    { label: '16:9', value: '16:9', width: 1280, height: 720 },
-    { label: '3:2', value: '3:2', width: 1080, height: 720 },
-    { label: '4:3', value: '4:3', width: 960, height: 720 },
-    { label: '1:1', value: '1:1', width: 720, height: 720 },
-    { label: '3:4', value: '3:4', width: 720, height: 960 },
-    { label: '2:3', value: '2:3', width: 720, height: 1080 },
-    { label: '9:16', value: '9:16', width: 720, height: 1280 },
-  ],
+const grokVideoAspectRatioList: GenerationAspectRatio[] = [
+  '16:9',
+  '3:2',
+  '4:3',
+  '1:1',
+  '3:4',
+  '2:3',
+  '9:16',
+];
+
+/** Grok video aspect ratios keyed by resolution — used by the handler to snap inputs */
+const grokVideoAspectRatiosByResolution: Record<
+  string,
+  ReturnType<typeof getAspectRatioOptions>
+> = {
+  '480p': getAspectRatioOptions('480p', grokVideoAspectRatioList),
+  '720p': getAspectRatioOptions('720p', grokVideoAspectRatioList),
 };
 
 /** Grok video resolution options */
@@ -148,9 +149,10 @@ const grokVideoGraph = new DataGraph<GrokVideoCtx, GenerationCtx>()
   .node(
     'aspectRatio',
     (ctx) => {
-      const resolution = (ctx as { resolution?: string }).resolution ?? '720p';
-      const options =
-        grokVideoAspectRatiosByResolution[resolution] ?? grokVideoAspectRatiosByResolution['720p'];
+      const options = getAspectRatioOptions(
+        (ctx as { resolution?: string }).resolution ?? '720p',
+        grokVideoAspectRatioList
+      );
       const hasImages = Array.isArray(ctx.images) && ctx.images.length > 0;
       const hasVideo = !!ctx.video?.url;
       return {

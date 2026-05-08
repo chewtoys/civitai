@@ -1,6 +1,6 @@
 import { TRPCError } from '@trpc/server';
 
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type {
   UpsertArticleInput,
   UnpublishArticleSchema,
@@ -25,7 +25,7 @@ export const upsertArticleHandler = async ({
   ctx,
 }: {
   input: UpsertArticleInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const categories = await getCategoryTags('article');
@@ -54,7 +54,7 @@ export async function unpublishArticleHandler({
   ctx,
 }: {
   input: UnpublishArticleSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id } = input;
@@ -92,7 +92,7 @@ export async function restoreArticleHandler({
   ctx,
 }: {
   input: RestoreArticleSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id } = input;

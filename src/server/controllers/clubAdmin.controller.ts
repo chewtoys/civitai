@@ -1,4 +1,4 @@
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
 import { userContributingClubs } from '~/server/services/club.service';
 import {
@@ -26,7 +26,7 @@ export const getPagedClubAdminInvitesHandler = async ({
   ctx,
 }: {
   input: GetPagedClubAdminInviteSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   const limit = (input.limit ?? 9) + 1;
@@ -60,7 +60,7 @@ export const getPagedClubAdminsHandler = async ({
   ctx,
 }: {
   input: GetPagedClubAdminSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   const limit = (input.limit ?? 9) + 1;
@@ -97,7 +97,7 @@ export const upsertClubAdminInviteHandler = async ({
   ctx,
 }: {
   input: UpsertClubAdminInviteInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   const clubId = input.clubId;
@@ -122,7 +122,7 @@ export const deleteClubAdminInviteHandler = async ({
   ctx,
 }: {
   input: DeleteClubAdminInviteInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   const clubId = input.clubId;
@@ -147,7 +147,7 @@ export const acceptClubAdminInviteHandler = async ({
   ctx,
 }: {
   input: AcceptClubAdminInviteInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return acceptClubAdminInvite({
@@ -166,7 +166,7 @@ export const updateClubAdminHandler = async ({
   ctx,
 }: {
   input: UpdateClubAdminInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   const clubId = input.clubId;
@@ -191,7 +191,7 @@ export const deleteClubAdminHandler = async ({
   ctx,
 }: {
   input: DeleteClubAdminInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   const clubId = input.clubId;

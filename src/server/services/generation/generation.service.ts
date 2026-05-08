@@ -496,7 +496,8 @@ export async function getUnstableResources() {
  * `false`.
  */
 export async function getGenerationEcosystemConfig(
-  user: { id?: number; isModerator?: boolean } = {}
+  user: { id?: number; isModerator?: boolean } = {},
+  opts: { isGreen?: boolean } = {}
 ): Promise<GenerationEcosystemContext> {
   const [cached, hasTestingAccess] = await Promise.all([
     sysRedis
@@ -507,7 +508,14 @@ export async function getGenerationEcosystemConfig(
   ]);
 
   // Spread defaults so legacy Redis values without the new fields stay valid.
-  return { ...DEFAULT_GENERATION_ECOSYSTEM_CONFIG, ...(cached ?? {}), hasTestingAccess };
+  // `isGreen` is left undefined when omitted so the NSFW gate is skipped for
+  // callers that aren't surfacing resources through the user-facing generator.
+  return {
+    ...DEFAULT_GENERATION_ECOSYSTEM_CONFIG,
+    ...(cached ?? {}),
+    hasTestingAccess,
+    isGreen: opts.isGreen,
+  };
 }
 
 async function resolveTestingAccess(user: {
@@ -565,9 +573,10 @@ export type GenerationConfig = {
  * never see the granular `modOnly*` / `testing*` lists.
  */
 export async function getGatedListsForUser(
-  user: { id?: number; isModerator?: boolean } = {}
+  user: { id?: number; isModerator?: boolean } = {},
+  opts: { isGreen?: boolean } = {}
 ): Promise<{ gatedEcosystems: string[]; gatedVersionIds: number[] }> {
-  const config = await getGenerationEcosystemConfig(user);
+  const config = await getGenerationEcosystemConfig(user, opts);
   const isModerator = !!user.isModerator;
 
   const gatedEcosystems = [...config.disabledEcosystems];
@@ -577,6 +586,9 @@ export async function getGatedListsForUser(
   const gatedVersionIds = [...config.disabledIds];
   if (!isModerator) gatedVersionIds.push(...config.modOnlyIds);
   if (!config.hasTestingAccess) gatedVersionIds.push(...config.testingIds);
+  // Only gate NSFW IDs when the caller explicitly signaled isGreen. Omitted
+  // means "not in a green-domain UI context" — leave nsfwIds available.
+  if (config.isGreen === true) gatedVersionIds.push(...config.nsfwIds);
 
   return { gatedEcosystems, gatedVersionIds };
 }
@@ -589,12 +601,13 @@ export async function getGatedListsForUser(
  * needs to filter the UI.
  */
 export async function getGenerationConfig(
-  user: { id?: number; isModerator?: boolean } = {}
+  user: { id?: number; isModerator?: boolean } = {},
+  opts: { isGreen?: boolean } = {}
 ): Promise<GenerationConfig> {
   const [unstableResources, ecosystemConfig, gated] = await Promise.all([
     getUnstableResources(),
-    getGenerationEcosystemConfig(user),
-    getGatedListsForUser(user),
+    getGenerationEcosystemConfig(user, opts),
+    getGatedListsForUser(user, opts),
   ]);
   return {
     unstableResources,
@@ -688,11 +701,12 @@ function getResourceGatingState({
   resourceId: number;
   ecosystemKey: string | undefined;
   ecosystemConfig: GenerationEcosystemConfig;
-}): 'disabled' | 'modOnly' | 'testing' | 'enabled' {
+}): 'disabled' | 'modOnly' | 'testing' | 'nsfw' | 'enabled' {
   // ID-level rules override ecosystem-level rules.
   if (ecosystemConfig.disabledIds.includes(resourceId)) return 'disabled';
   if (ecosystemConfig.modOnlyIds.includes(resourceId)) return 'modOnly';
   if (ecosystemConfig.testingIds.includes(resourceId)) return 'testing';
+  if (ecosystemConfig.nsfwIds.includes(resourceId)) return 'nsfw';
 
   if (ecosystemKey) {
     if (ecosystemConfig.disabledEcosystems.includes(ecosystemKey)) return 'disabled';
@@ -762,6 +776,8 @@ export function getResourceCanGenerate({
       canGenerate = false;
     } else if (state === 'testing' && !ecosystemConfig.hasTestingAccess) {
       canGenerate = false;
+    } else if (state === 'nsfw' && ecosystemConfig.isGreen === true) {
+      canGenerate = false;
     }
   }
 
@@ -789,7 +805,9 @@ export async function getResourceData(
 
   const unavailableResources = await getUnavailableResources();
   const featuredModels = await getFeaturedModels();
-  const ecosystemConfig = await getGenerationEcosystemConfig(user);
+  // sfwOnly is set upstream from ctx.features.isGreen, so reuse it as the
+  // isGreen signal for the nsfwIds gate inside getResourceCanGenerate.
+  const ecosystemConfig = await getGenerationEcosystemConfig(user, { isGreen: sfwOnly });
 
   function transformGenerationData(
     { settings, ...item }: GenerationResourceDataModel,

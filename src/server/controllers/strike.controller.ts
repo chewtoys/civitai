@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type {
   CreateStrikeInput,
   GetStrikesInput,
@@ -24,7 +24,7 @@ export const createStrikeHandler = async ({
   ctx,
 }: {
   input: CreateStrikeInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await createStrike({ ...input, issuedBy: ctx.user.id });
@@ -39,7 +39,7 @@ export const voidStrikeHandler = async ({
   ctx,
 }: {
   input: VoidStrikeInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await voidStrike({ ...input, voidedBy: ctx.user.id });
@@ -100,7 +100,7 @@ export const getMyStrikesHandler = async ({
   ctx,
 }: {
   input: GetMyStrikesInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await getStrikesForUser(ctx.user.id, {
@@ -113,7 +113,7 @@ export const getMyStrikesHandler = async ({
   }
 };
 
-export const getMyStrikeSummaryHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getMyStrikeSummaryHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     return await getStrikeSummary(ctx.user.id);
   } catch (error) {

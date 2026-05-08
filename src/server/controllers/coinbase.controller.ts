@@ -1,4 +1,4 @@
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
 import { createBuzzOrder, createCodeOrder } from '~/server/services/coinbase.service';
 import coinbaseCaller from '~/server/http/coinbase/coinbase.caller';
@@ -12,7 +12,7 @@ export const createBuzzOrderHandler = async ({
   input,
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: CreateBuzzCharge;
 }) => {
   if (!ctx.user.email) {
@@ -29,7 +29,7 @@ export const createCodeOrderHandler = async ({
   input,
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: CreateCodeOrder;
 }) => {
   if (!ctx.user.email) {

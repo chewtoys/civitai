@@ -5,7 +5,7 @@ import {
   upsertAnswer,
 } from './../services/answer.service';
 import type { GetByIdInput } from '~/server/schema/base.schema';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
 import { getAnswers } from '~/server/services/answer.service';
 import { throwDbError, throwNotFoundError } from '~/server/utils/errorHandling';
@@ -102,7 +102,7 @@ export const upsertAnswerHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: UpsertAnswerInput;
 }) => {
   try {
@@ -132,7 +132,7 @@ export const setAnswerVoteHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: AnswerVoteInput;
 }) => {
   try {

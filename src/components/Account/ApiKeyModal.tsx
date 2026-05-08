@@ -253,8 +253,8 @@ export function ApiKeyModal({ ...props }: Props) {
                 />
               </Group>
               <Text size="xs" c="dimmed" mb={limitEnabled ? 8 : 0}>
-                Caps how much buzz this key can spend in a rolling window. Enforced on the
-                orchestrator. Leave off for no limit.
+                Caps how much buzz this key can spend on AI services in a rolling window. Leave off
+                for no limit.
               </Text>
               {limitEnabled && (
                 <Group grow>

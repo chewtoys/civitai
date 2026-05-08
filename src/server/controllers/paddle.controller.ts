@@ -1,5 +1,5 @@
 import { getTRPCErrorFromUnknown } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { dbWrite } from '~/server/db/client';
 import { paddleCancellationEmail } from '~/server/email/templates';
 import {
@@ -38,7 +38,7 @@ export const createBuzzPurchaseTransactionHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: TransactionCreateInput;
 }) => {
   try {
@@ -63,7 +63,7 @@ export const processCompleteBuzzTransactionHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetByIdStringInput;
 }) => {
   // Get the transaction:
@@ -76,7 +76,7 @@ export const updateSubscriptionPlanHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: UpdateSubscriptionInputSchema;
 }) => {
   try {
@@ -89,7 +89,7 @@ export const updateSubscriptionPlanHandler = async ({
   }
 };
 
-export const cancelSubscriptionHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const cancelSubscriptionHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const subscription = await getUserSubscription({ userId: ctx.user.id });
     if (!subscription) {
@@ -108,7 +108,7 @@ export const cancelSubscriptionHandler = async ({ ctx }: { ctx: DeepNonNullable<
   }
 };
 
-export const cancelEmailHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const cancelEmailHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const subscription = await getUserSubscription({ userId: ctx.user.id });
     if (!subscription) {
@@ -149,7 +149,7 @@ export const cancelEmailHandler = async ({ ctx }: { ctx: DeepNonNullable<Context
   }
 };
 
-export const getManagementUrlsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getManagementUrlsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const urls: {
       updatePaymentMethod: string | null | undefined;
@@ -214,7 +214,7 @@ export const purchaseBuzzWithSubscriptionHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: TransactionWithSubscriptionCreateInput;
 }) => {
   try {
@@ -227,7 +227,7 @@ export const purchaseBuzzWithSubscriptionHandler = async ({
   }
 };
 
-export const getOrCreateCustomerHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getOrCreateCustomerHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const user = { id: ctx.user.id, email: ctx.user.email as string };
     const customer = await createCustomer(user);
@@ -237,7 +237,7 @@ export const getOrCreateCustomerHandler = async ({ ctx }: { ctx: DeepNonNullable
   }
 };
 
-export const refreshSubscriptionHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const refreshSubscriptionHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     return await refreshSubscription({ userId: ctx.user.id });
   } catch (e) {
@@ -245,7 +245,7 @@ export const refreshSubscriptionHandler = async ({ ctx }: { ctx: DeepNonNullable
   }
 };
 
-export const hasPaddleSubscriptionHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const hasPaddleSubscriptionHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   // Grab this from the DB since Paddle is dead
   return fromDbSubscriptionHandler({ ctx });
 
@@ -277,7 +277,7 @@ export const hasPaddleSubscriptionHandler = async ({ ctx }: { ctx: DeepNonNullab
   }
 };
 
-const fromDbSubscriptionHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+const fromDbSubscriptionHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const subscription = (
       await dbWrite.$queryRaw<{ id: string }[]>`
@@ -300,7 +300,7 @@ export const getAdjustmentsInfiniteHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetPaddleAdjustmentsSchema;
 }) => {
   if (!ctx.user.isModerator || !ctx.features.paddleAdjustments) {

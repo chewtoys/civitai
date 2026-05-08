@@ -26,19 +26,19 @@ import {
   createResourcesGraph,
   createCheckpointGraph,
 } from './common';
+import { getAspectRatioOptions } from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Constants
 // =============================================================================
 
-/** Hunyuan aspect ratio options */
-const hunyuanAspectRatios = [
-  { label: '16:9', value: '16:9', width: 848, height: 480 },
-  { label: '3:2', value: '3:2', width: 720, height: 480 },
-  { label: '1:1', value: '1:1', width: 480, height: 480 },
-  { label: '2:3', value: '2:3', width: 480, height: 720 },
-  { label: '9:16', value: '9:16', width: 480, height: 848 },
-];
+const hunyuanAspectRatios = getAspectRatioOptions('480p', [
+  '16:9',
+  '3:2',
+  '1:1',
+  '2:3',
+  '9:16',
+]);
 
 /** Hunyuan duration options */
 const hunyuanDurations = [

@@ -391,6 +391,7 @@ model User {
   blurNsfw                Boolean                @default(true)
   browsingLevel           Int                    @default(1)
   onboarding              Int                    @default(0)
+  flags                   Int                    @default(0)
   isModerator             Boolean?               @default(false)
   createdAt               DateTime               @default(now())
   deletedAt               DateTime?
@@ -991,6 +992,7 @@ model ModelVersion {
   uploadType           ModelUploadType   @default(Created)
   usageControl         ModelUsageControl @default(Download)
   earlyAccessTimeFrame Int               @default(0)
+  flags                Int               @default(0)
 
   licensingFee                   Int?
   licensingFeeType               LicensingFeeType?               @default(PerImageBuzz)

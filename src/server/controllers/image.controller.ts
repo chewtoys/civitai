@@ -8,7 +8,7 @@ import {
   SearchIndexUpdateQueueAction,
 } from '~/server/common/enums';
 import { mapToViolationType } from '~/server/common/tos-reasons';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { dbRead, dbWrite } from '~/server/db/client';
 import { imageTagsCache } from '~/server/redis/caches';
 import { reportAcceptedReward } from '~/server/rewards';
@@ -89,7 +89,7 @@ export const moderateImageHandler = async ({
   ctx,
 }: {
   input: ImageModerationSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const images = await moderateImages({
@@ -134,7 +134,7 @@ export const deleteImageHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const tagsByImage = await imageTagsCache.fetch(input.id);
@@ -168,7 +168,7 @@ export const setTosViolationHandler = async ({
   ctx,
 }: {
   input: SetTosViolationSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { user, ip, fingerprint } = ctx;
@@ -282,7 +282,7 @@ export const getInfiniteImagesHandler = async ({
 }) => {
   const { user, features, signal } = ctx;
 
-  // Check BitDex mode first — if active (shadow or primary), always route through
+  // Check BitDex mode first â€” if active (shadow or primary), always route through
   // getAllImagesIndex (which handles BitDex internally), bypassing the useIndex check.
   // Skip BitDex for queries that need features it doesn't support:
   // - collectionId: requires relational joins through CollectionItem table
@@ -369,7 +369,7 @@ export const getImagesAsPostsInfiniteHandler = async ({
   try {
     const { user, features } = ctx;
 
-    // Check BitDex mode — if active, always route through getAllImagesIndex.
+    // Check BitDex mode â€” if active, always route through getAllImagesIndex.
     // Skip BitDex for unsupported query types (collections, prioritized users).
     const skipBitdex = !!input.collectionId || !!input.prioritizedUserIds?.length;
     const bitdexMode = skipBitdex
@@ -408,14 +408,14 @@ export const getImagesAsPostsInfiniteHandler = async ({
       // (modelVersionId filter) stay on BitDex where they're needed.
       const { items: pinnedPostsImages } = await getAllImages({
         ...input,
-        // Don't filter by model version/model for pinned posts — we already have
+        // Don't filter by model version/model for pinned posts â€” we already have
         // exact postIds. The ImageResourceNew join that modelVersionId triggers
         // excludes videos and other media that lack resource-detection entries,
         // causing pinned posts with videos to silently disappear from the gallery.
         modelVersionId: undefined,
         modelId: undefined,
         reviewId: undefined,
-        // Max pinned posts (20) × max images per post (20) = 400
+        // Max pinned posts (20) Ã— max images per post (20) = 400
         limit: constants.modelGallery.maxPinnedPosts * POST_IMAGE_LIMIT,
         useCombinedNsfwLevel: !features.canViewNsfw,
         followed: false,
@@ -453,7 +453,7 @@ export const getImagesAsPostsInfiniteHandler = async ({
         headers: { src: 'getImagesAsPostsInfiniteHandler' },
         include: [...input.include, 'tagIds', 'profilePictures'],
         dbTarget: features.datapacketRead ? 'datapacket' : 'read',
-        // Forward pre-evaluated variant — getImagesFromSearch ignores it on the
+        // Forward pre-evaluated variant â€” getImagesFromSearch ignores it on the
         // DB path (getAllImages doesn't read it).
         bitdexMode,
       });
@@ -708,7 +708,7 @@ export function setVideoThumbnailController({
   ctx,
 }: {
   input: SetVideoThumbnailInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id: userId, isModerator } = ctx.user;
@@ -725,7 +725,7 @@ export async function updateImageAcceptableMinorHandler({
   ctx,
 }: {
   input: UpdateImageAcceptableMinorInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { collectionId } = input;
@@ -751,7 +751,7 @@ export async function handleUpdateImageNsfwLevel({
   ctx,
 }: {
   input: UpdateImageNsfwLevelOutput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id: userId, isModerator } = ctx.user;

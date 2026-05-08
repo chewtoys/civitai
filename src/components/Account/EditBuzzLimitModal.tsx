@@ -99,9 +99,9 @@ export function EditBuzzLimitModal({ opened, onClose, subject, name, initialLimi
           />
         </Group>
         <Text size="xs" c="dimmed">
-          Caps how much buzz this {subject.type === 'apiKey' ? 'key' : 'app'} can spend in a rolling
-          window. Enforced on the orchestrator. Saving here invalidates the orchestrator&apos;s
-          cached limit so the new value takes effect on the next request.
+          Caps how much buzz this {subject.type === 'apiKey' ? 'key' : 'app'} can spend on AI
+          services (generation, training, scanning) in a rolling window. Changes apply on the next
+          request.
         </Text>
         {enabled && (
           <Group grow>

@@ -38,6 +38,10 @@ import {
   createCheckpointGraph,
   type ResourceData,
 } from './common';
+import {
+  getAspectRatioOptions,
+  type GenerationAspectRatio,
+} from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Constants
@@ -108,81 +112,45 @@ const ecosystemToVersionDef = new Map(
   })
 );
 
-/** Wan aspect ratio options (basic 3 — used by v2.2-5b) */
+/** Wan aspect ratio options (basic 3 — used by v2.2-5b; 1024×1024 1:1 diverges from table) */
 const wanAspectRatios = [
   { label: '16:9', value: '16:9', width: 1280, height: 720 },
   { label: '1:1', value: '1:1', width: 1024, height: 1024 },
   { label: '9:16', value: '9:16', width: 720, height: 1280 },
 ];
 
-/** Wan 2.2 aspect ratios (expanded — API supports 7 ratios) */
-const wan22AspectRatios = [
-  { label: '16:9', value: '16:9', width: 1280, height: 720 },
-  { label: '4:3', value: '4:3', width: 960, height: 720 },
-  { label: '1:1', value: '1:1', width: 720, height: 720 },
-  { label: '3:4', value: '3:4', width: 720, height: 960 },
-  { label: '9:16', value: '9:16', width: 720, height: 1280 },
-  { label: '5:4', value: '5:4', width: 900, height: 720 },
-  { label: '4:5', value: '4:5', width: 720, height: 900 },
+const wan22AspectRatioList: GenerationAspectRatio[] = [
+  '16:9',
+  '4:3',
+  '1:1',
+  '3:4',
+  '9:16',
+  '5:4',
+  '4:5',
 ];
+const wan25AspectRatioList: GenerationAspectRatio[] = ['16:9', '1:1', '9:16'];
+const wan21AspectRatioList: GenerationAspectRatio[] = ['16:9', '3:2', '1:1', '2:3', '9:16'];
 
-/** Wan 2.2 multi-step aspect ratios by resolution (comfy provider uses explicit pixel dims) */
+/** Wan 2.2 aspect ratios at 720p (API supports 7 ratios) */
+const wan22AspectRatios = getAspectRatioOptions('720p', wan22AspectRatioList);
+
+/** Wan 2.2 multi-step aspect ratios by resolution */
 const wan22MultiStepAspectRatiosByResolution: Record<string, typeof wanAspectRatios> = {
-  '480p': [
-    { label: '16:9', value: '16:9', width: 848, height: 480 },
-    { label: '4:3', value: '4:3', width: 640, height: 480 },
-    { label: '1:1', value: '1:1', width: 480, height: 480 },
-    { label: '3:4', value: '3:4', width: 480, height: 640 },
-    { label: '9:16', value: '9:16', width: 480, height: 848 },
-    { label: '5:4', value: '5:4', width: 608, height: 480 },
-    { label: '4:5', value: '4:5', width: 384, height: 480 },
-  ],
-  '720p': [
-    { label: '16:9', value: '16:9', width: 1280, height: 720 },
-    { label: '4:3', value: '4:3', width: 960, height: 720 },
-    { label: '1:1', value: '1:1', width: 720, height: 720 },
-    { label: '3:4', value: '3:4', width: 720, height: 960 },
-    { label: '9:16', value: '9:16', width: 720, height: 1280 },
-    { label: '5:4', value: '5:4', width: 912, height: 720 },
-    { label: '4:5', value: '4:5', width: 576, height: 720 },
-  ],
+  '480p': getAspectRatioOptions('480p', wan22AspectRatioList),
+  '720p': getAspectRatioOptions('720p', wan22AspectRatioList),
 };
 
 /** Wan 2.5 resolution-dependent aspect ratios */
 const wan25AspectRatiosByResolution: Record<string, typeof wanAspectRatios> = {
-  '480p': [
-    { label: '16:9', value: '16:9', width: 848, height: 480 },
-    { label: '1:1', value: '1:1', width: 480, height: 480 },
-    { label: '9:16', value: '9:16', width: 480, height: 848 },
-  ],
-  '720p': [
-    { label: '16:9', value: '16:9', width: 1280, height: 720 },
-    { label: '1:1', value: '1:1', width: 720, height: 720 },
-    { label: '9:16', value: '9:16', width: 720, height: 1280 },
-  ],
-  '1080p': [
-    { label: '16:9', value: '16:9', width: 1920, height: 1080 },
-    { label: '1:1', value: '1:1', width: 1080, height: 1080 },
-    { label: '9:16', value: '9:16', width: 1080, height: 1920 },
-  ],
+  '480p': getAspectRatioOptions('480p', wan25AspectRatioList),
+  '720p': getAspectRatioOptions('720p', wan25AspectRatioList),
+  '1080p': getAspectRatioOptions('1080p', wan25AspectRatioList),
 };
 
 /** Wan 2.1 resolution-dependent aspect ratios */
 const wan21AspectRatiosByResolution: Record<string, typeof wanAspectRatios> = {
-  '480p': [
-    { label: '16:9', value: '16:9', width: 848, height: 480 },
-    { label: '3:2', value: '3:2', width: 720, height: 480 },
-    { label: '1:1', value: '1:1', width: 480, height: 480 },
-    { label: '2:3', value: '2:3', width: 480, height: 720 },
-    { label: '9:16', value: '9:16', width: 480, height: 848 },
-  ],
-  '720p': [
-    { label: '16:9', value: '16:9', width: 1280, height: 720 },
-    { label: '3:2', value: '3:2', width: 1080, height: 720 },
-    { label: '1:1', value: '1:1', width: 720, height: 720 },
-    { label: '2:3', value: '2:3', width: 720, height: 1080 },
-    { label: '9:16', value: '9:16', width: 720, height: 1280 },
-  ],
+  '480p': getAspectRatioOptions('480p', wan21AspectRatioList),
+  '720p': getAspectRatioOptions('720p', wan21AspectRatioList),
 };
 
 /** Wan resolution options by version */
@@ -436,22 +404,12 @@ const wan25Graph = new DataGraph<WanVersionCtx, GenerationCtx>()
 // Wan 2.7 Video Subgraph
 // =============================================================================
 
+const wan27AspectRatioList: GenerationAspectRatio[] = ['16:9', '4:3', '1:1', '3:4', '9:16'];
+
 /** Wan 2.7 video aspect ratios by resolution */
 const wan27AspectRatiosByResolution: Record<string, typeof wanAspectRatios> = {
-  '720p': [
-    { label: '16:9', value: '16:9', width: 1280, height: 720 },
-    { label: '4:3', value: '4:3', width: 960, height: 720 },
-    { label: '1:1', value: '1:1', width: 720, height: 720 },
-    { label: '3:4', value: '3:4', width: 720, height: 960 },
-    { label: '9:16', value: '9:16', width: 720, height: 1280 },
-  ],
-  '1080p': [
-    { label: '16:9', value: '16:9', width: 1920, height: 1080 },
-    { label: '4:3', value: '4:3', width: 1440, height: 1080 },
-    { label: '1:1', value: '1:1', width: 1080, height: 1080 },
-    { label: '3:4', value: '3:4', width: 1080, height: 1440 },
-    { label: '9:16', value: '9:16', width: 1080, height: 1920 },
-  ],
+  '720p': getAspectRatioOptions('720p', wan27AspectRatioList),
+  '1080p': getAspectRatioOptions('1080p', wan27AspectRatioList),
 };
 
 /** Wan 2.7 video resolution options */

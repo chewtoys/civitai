@@ -1,7 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import dayjs from '~/shared/utils/dayjs';
 
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type {
   BulkUpdateReportStatusInput,
   CreateEntityAppealInput,
@@ -38,7 +38,7 @@ export async function createReportHandler({
   ctx,
 }: {
   input: CreateReportInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const result = await createReport({
@@ -68,7 +68,7 @@ export async function setReportStatusHandler({
   ctx,
 }: {
   input: SetReportStatusInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id, status } = input;
@@ -84,7 +84,7 @@ export async function bulkUpdateReportStatusHandler({
   ctx,
 }: {
   input: BulkUpdateReportStatusInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { ids, status } = input;
@@ -288,7 +288,7 @@ export async function createEntityAppealHandler({
   ctx,
 }: {
   input: CreateEntityAppealInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   const { id: userId } = ctx.user;
   try {
@@ -322,7 +322,7 @@ export async function getRecentAppealsHandler({
   ctx,
 }: {
   input: GetRecentAppealsInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   const sessionUser = ctx.user;
   try {
@@ -345,7 +345,7 @@ export async function resolveEntityAppealHandler({
   ctx,
 }: {
   input: ResolveAppealInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id: userId } = ctx.user;

@@ -37,19 +37,25 @@ import {
   videoNode,
 } from './common';
 import { isWorkflowOrVariant } from './config/workflows';
+import {
+  getAspectRatioOptions,
+  type GenerationAspectRatio,
+} from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Constants
 // =============================================================================
 
-/** HappyHorse aspect ratio options (dimensions aligned to 720p) */
-const happyHorseAspectRatios = [
-  { label: '16:9', value: '16:9', width: 1280, height: 720 },
-  { label: '4:3', value: '4:3', width: 960, height: 720 },
-  { label: '1:1', value: '1:1', width: 720, height: 720 },
-  { label: '3:4', value: '3:4', width: 720, height: 960 },
-  { label: '9:16', value: '9:16', width: 720, height: 1280 },
+const happyHorseAspectRatioList: GenerationAspectRatio[] = [
+  '16:9',
+  '4:3',
+  '1:1',
+  '3:4',
+  '9:16',
 ];
+
+/** Default happy horse aspect ratios (720p) — exported for legacy consumers */
+const happyHorseAspectRatios = getAspectRatioOptions('720p', happyHorseAspectRatioList);
 
 /** HappyHorse resolution options */
 const happyHorseResolutions = [
@@ -103,23 +109,26 @@ export const happyHorseGraph = new DataGraph<HappyHorseCtx, GenerationCtx>()
     ['workflow']
   )
 
-  // Aspect ratio — shown for txt2vid and img2vid:ref2vid only
-  .node(
-    'aspectRatio',
-    (ctx) => ({
-      ...aspectRatioNode({ options: happyHorseAspectRatios, defaultValue: '16:9' }),
-      when: ctx.workflow === 'txt2vid' || ctx.workflow === 'img2vid:ref2vid',
-    }),
-    ['workflow']
-  )
-
-  // Resolution
+  // Resolution (declared before aspectRatio so dimensions can scale with it)
   .node(
     'resolution',
     enumNode({
       options: happyHorseResolutions,
       defaultValue: '720p',
     })
+  )
+
+  // Aspect ratio — shown for txt2vid and img2vid:ref2vid only; dimensions scale with resolution
+  .node(
+    'aspectRatio',
+    (ctx) => ({
+      ...aspectRatioNode({
+        options: getAspectRatioOptions(ctx.resolution, happyHorseAspectRatioList),
+        defaultValue: '16:9',
+      }),
+      when: ctx.workflow === 'txt2vid' || ctx.workflow === 'img2vid:ref2vid',
+    }),
+    ['workflow', 'resolution']
   )
 
   // Duration (3-15 seconds)

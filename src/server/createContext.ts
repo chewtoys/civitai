@@ -48,7 +48,7 @@ export const createContext = async ({
   const domain = getRequestDomainColor(req) ?? 'blue';
 
   // Abort downstream work (Meili, DB calls that plumb signal) when the client
-  // disconnects — e.g. when the image feed's slow-fetch timeout cancels a hung
+  // disconnects â€” e.g. when the image feed's slow-fetch timeout cancels a hung
   // request. Saves pod CPU on requests whose response will never be read.
   //
   // Listening on the raw socket's 'end' event: Next.js pages router wraps
@@ -71,14 +71,17 @@ export const createContext = async ({
   res.once('close', detach);
 
   // tokenScope: from bearer token auth (stored on req.context by getServerAuthSession).
-  // Session auth (cookies) gets Full scope — no restrictions for browser users.
+  // Session auth (cookies) gets Full scope â€” no restrictions for browser users.
   const tokenScope = ((req as any).context?.tokenScope as number) ?? TokenScope.Full;
-  const apiKeyId = ((req as any).context?.apiKeyId as number | null) ?? null;
-  const subject =
-    ((req as any).context?.subject as
-      | { type: 'apiKey'; id: number }
-      | { type: 'oauth'; id: string }
-      | null) ?? null;
+  // apiKeyId / subject are only present when auth came from a Bearer token.
+  // Modeled as optional (undefined when absent) so DeepNonNullable<Context> in
+  // controller signatures can collapse them to required fields when the caller
+  // already knows the request is token-auth'd.
+  const apiKeyId = (req as any).context?.apiKeyId as number | undefined;
+  const subject = (req as any).context?.subject as
+    | { type: 'apiKey'; id: number }
+    | { type: 'oauth'; id: string }
+    | undefined;
 
   return {
     user: session?.user,
@@ -119,12 +122,12 @@ export const publicApiContext2 = async (req: NextApiRequest, res: NextApiRespons
     res,
     req,
     domain,
-    // Non-client-facing context — use an always-open signal so downstream
+    // Non-client-facing context â€” use an always-open signal so downstream
     // callers that expect AbortSignal have a valid value.
     signal: new AbortController().signal,
     tokenScope: TokenScope.Full,
-    apiKeyId: null,
-    subject: null,
+    apiKeyId: undefined,
+    subject: undefined,
   });
 };
 
@@ -149,3 +152,12 @@ export const publicApiContext = async (req: NextApiRequest, res: NextApiResponse
 };
 
 export type Context = AsyncReturnType<typeof createContext>;
+
+/**
+ * Context shape for protected procedures, where `user` (and other base fields)
+ * are guaranteed non-null but `apiKeyId`/`subject` legitimately remain nullable
+ * (session auth has no apiKeyId). Replaces `DeepNonNullable<Context>` for
+ * controllers, which would otherwise strip the nullability of these fields.
+ */
+export type ProtectedContext = Omit<DeepNonNullable<Context>, 'apiKeyId' | 'subject'> &
+  Pick<Context, 'apiKeyId' | 'subject'>;

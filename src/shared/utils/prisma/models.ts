@@ -448,6 +448,7 @@ export interface User {
   blurNsfw: boolean;
   browsingLevel: number;
   onboarding: number;
+  flags: number;
   isModerator: boolean | null;
   createdAt: Date;
   deletedAt: Date | null;
@@ -866,6 +867,7 @@ export interface ModelVersion {
   uploadType: ModelUploadType;
   usageControl: ModelUsageControl;
   earlyAccessTimeFrame: number;
+  flags: number;
   licensingFee: number | null;
   licensingFeeType: LicensingFeeType | null;
   licensingFeeSettlementCurrency: LicensingFeeSettlementCurrency | null;

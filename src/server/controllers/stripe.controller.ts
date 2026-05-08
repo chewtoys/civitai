@@ -15,7 +15,7 @@ import {
   createCancelSubscriptionSession,
   cancelSubscriptionWithFallback,
 } from './../services/stripe.service';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type * as Schema from '../schema/stripe.schema';
 
 import { getTRPCErrorFromUnknown } from '@trpc/server';
@@ -27,7 +27,7 @@ export const createCustomerHandler = async ({
   ctx,
 }: {
   input: Schema.CreateCustomerInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   return await createCustomer({ ...input });
 };
@@ -37,7 +37,7 @@ export const createDonateSessionHandler = async ({
   ctx,
 }: {
   input: Schema.CreateDonateSessionInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { id, email, customerId } = ctx.user;
   if (!email) throw throwAuthorizationError('email required');
@@ -60,7 +60,7 @@ export const createSubscriptionSessionHandler = async ({
   ctx,
 }: {
   input: Schema.CreateSubscribeSessionInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { id, email, customerId } = ctx.user;
   if (!email) throw throwAuthorizationError('email required');
@@ -82,7 +82,7 @@ export const createSubscriptionSessionHandler = async ({
 export const createManageSubscriptionSessionHandler = async ({
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   if (!ctx.user.customerId) throw throwNotFoundError('customerId not found');
   return await createManageSubscriptionSession({ customerId: ctx.user.customerId });
@@ -103,7 +103,7 @@ export const createBuzzSessionHandler = async ({
   ctx,
 }: {
   input: Schema.CreateBuzzSessionInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id, email, customerId } = ctx.user;
@@ -131,7 +131,7 @@ export const getPaymentIntentHandler = async ({
   ctx,
 }: {
   input: Schema.PaymentIntentCreationSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id, email, customerId } = ctx.user;
@@ -165,7 +165,7 @@ export const getSetupIntentHandler = async ({
   ctx,
 }: {
   input: Schema.SetupIntentCreateSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id, email, customerId } = ctx.user;
@@ -190,7 +190,7 @@ export const getSetupIntentHandler = async ({
 export const createCancelSubscriptionSessionHandler = async ({
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   if (!ctx.user.customerId) throw throwNotFoundError('customerId not found');
   try {
@@ -203,7 +203,7 @@ export const createCancelSubscriptionSessionHandler = async ({
 export const cancelSubscriptionWithFallbackHandler = async ({
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   if (!ctx.user.customerId) throw throwNotFoundError('customerId not found');
   try {

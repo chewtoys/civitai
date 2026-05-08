@@ -1,5 +1,5 @@
 import { createBuzzOrder, processBuzzOrder } from './../services/paypal.service';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 
 import type { PaypalPurchaseBuzzSchema, PaypalOrderSchema } from '../schema/paypal.schema';
 
@@ -8,7 +8,7 @@ export const createBuzzOrderHandler = async ({
   ctx,
 }: {
   input: PaypalPurchaseBuzzSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   return await createBuzzOrder({ userId: ctx.user.id, ...input });
 };

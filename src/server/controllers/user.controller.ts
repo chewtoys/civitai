@@ -11,7 +11,7 @@ import {
   OnboardingSteps,
   SearchIndexUpdateQueueAction,
 } from '~/server/common/enums';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { dbRead, dbWrite } from '~/server/db/client';
 import { onboardingCompletedCounter, onboardingErrorCounter } from '~/server/prom/client';
 import { getUserFollows } from '~/server/redis/caches';
@@ -198,7 +198,7 @@ export const getUsernameAvailableHandler = async ({
   ctx,
 }: {
   input: GetByUsernameSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     if (!(await isUsernamePermitted(input.username))) return false;
@@ -225,7 +225,7 @@ export const getUserByIdHandler = async ({ input }: { input: GetByIdInput }) => 
 export const getNotificationSettingsHandler = async ({
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { id } = ctx.user;
 
@@ -242,7 +242,7 @@ export const getNotificationSettingsHandler = async ({
   }
 };
 
-export const checkUserNotificationsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const checkUserNotificationsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   const { id } = ctx.user;
 
   try {
@@ -285,7 +285,7 @@ export const completeOnboardingHandler = async ({
   ctx,
 }: {
   input: UserOnboardingSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { domain } = ctx;
@@ -373,7 +373,7 @@ export const updateUserHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: Partial<UserUpdateInput>;
 }) => {
   const {
@@ -455,7 +455,7 @@ export const updateUserHandler = async ({
       updateSource: 'updateUser',
     });
 
-    // Post-update operations — parallelize independent work
+    // Post-update operations â€” parallelize independent work
     const postUpdatePromises: Promise<unknown>[] = [];
 
     // Delete old profilePic and ingest new one
@@ -517,7 +517,7 @@ export const deleteUserHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: DeleteUserInput;
 }) => {
   const { id } = input;
@@ -543,7 +543,7 @@ export const deleteUserHandler = async ({
 
 type EngagedModelType = ModelEngagementType | 'Recommended';
 
-export const getUserEngagedModelsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserEngagedModelsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   const { id } = ctx.user;
 
   try {
@@ -586,7 +586,7 @@ export const getUserEngagedModelVersionsHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const userId = ctx.user.id;
   const versions = await dbRead.modelVersion.findMany({
@@ -642,7 +642,7 @@ export const getCreatorsHandler = async ({ input }: { input: Partial<GetAllSchem
   }
 };
 
-export const getUserFollowingListHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserFollowingListHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     return await getUserFollows(ctx.user.id);
   } catch (error) {
@@ -709,7 +709,7 @@ export const toggleFollowUserHandler = async ({
   ctx,
 }: {
   input: ToggleFollowUserSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { ip, fingerprint, user } = ctx;
@@ -741,7 +741,7 @@ export const toggleFollowUserHandler = async ({
   }
 };
 
-export const getUserHiddenListHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserHiddenListHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const { id: userId } = ctx.user;
     //TODO CLEAN UP: Can this just be an array of ids?
@@ -769,7 +769,7 @@ export const toggleHideUserHandler = async ({
   ctx,
 }: {
   input: ToggleFollowUserSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -795,7 +795,7 @@ export const toggleHideModelHandler = async ({
   ctx,
 }: {
   input: ToggleModelEngagementInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -822,7 +822,7 @@ export async function toggleFavoriteHandler({
   ctx,
 }: {
   input: ToggleFavoriteInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   const { id: userId, muted } = ctx.user;
   if (muted) return false;
@@ -877,7 +877,7 @@ export const toggleNotifyModelHandler = async ({
   ctx,
 }: {
   input: ToggleModelEngagementInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -961,7 +961,7 @@ export const getUserTagsHandler = async ({
   ctx,
 }: {
   input?: GetUserTagsSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id } = ctx.user;
@@ -991,7 +991,7 @@ export const toggleMuteHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   if (!ctx.user.isModerator) throw throwAuthorizationError();
 
@@ -1025,7 +1025,7 @@ export const toggleBanHandler = async ({
   ctx,
 }: {
   input: ToggleBanUser;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   if (!ctx.user.isModerator) throw throwAuthorizationError();
 
@@ -1050,7 +1050,7 @@ export const getUserCosmeticsHandler = async ({
   ctx,
 }: {
   input?: GetUserCosmeticsSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -1143,7 +1143,7 @@ export const toggleArticleEngagementHandler = async ({
   ctx,
 }: {
   input: ToggleUserArticleEngagementsInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const on = await toggleUserArticleEngagement({ ...input, userId: ctx.user.id });
@@ -1166,7 +1166,7 @@ export const toggleBountyEngagementHandler = async ({
   ctx,
 }: {
   input: ToggleUserBountyEngagementsInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const on = await toggleUserBountyEngagement({ ...input, userId: ctx.user.id });
@@ -1193,7 +1193,7 @@ export const userByReferralCodeHandler = async ({ input }: { input: UserByReferr
   }
 };
 
-export const userRewardDetailsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const userRewardDetailsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     // TODO.Optimization: This will make multiple requests to redis, we could probably do it in one and make this faster. This will get slower as we add more Active rewards.
     const rewardDetails = await Promise.all(
@@ -1214,7 +1214,7 @@ export const claimCosmeticHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id } = input;
@@ -1230,7 +1230,7 @@ export const claimCosmeticHandler = async ({
   }
 };
 
-export const getUserPaymentMethodsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserPaymentMethodsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     let { customerId } = ctx.user;
 
@@ -1258,7 +1258,7 @@ export const deleteUserPaymentMethodHandler = async ({
   ctx,
 }: {
   input: PaymentMethodDeleteInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return deleteCustomerPaymentMethod({
@@ -1275,7 +1275,7 @@ const defaultToggleableFeatures = toggleableFeatures.reduce(
   (acc, feature) => ({ ...acc, [feature.key]: feature.default }),
   {} as FeatureAccess
 );
-export const getUserFeatureFlagsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserFeatureFlagsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const { id } = ctx.user;
     const { features = {} } = await getUserSettings(id);
@@ -1310,7 +1310,7 @@ export const toggleUserFeatureFlagHandler = async ({
   ctx,
 }: {
   input: ToggleFeatureInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id } = ctx.user;
@@ -1331,7 +1331,7 @@ export const toggleUserFeatureFlagHandler = async ({
   }
 };
 
-export const getUserSettingsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserSettingsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const { id } = ctx.user;
     // Return JSON settings *and* the User-column content toggles so the client
@@ -1349,7 +1349,7 @@ export const setUserSettingHandler = async ({
   ctx,
 }: {
   input: SetUserSettingsInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id } = ctx.user;
@@ -1378,7 +1378,7 @@ export const dismissAlertHandler = async ({
   ctx,
 }: {
   input: { alertId: string; dismiss: boolean };
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id } = ctx.user;
@@ -1399,7 +1399,7 @@ export const restoreAlertHandler = async ({
   ctx,
 }: {
   input: { alertId: string };
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id } = ctx.user;
@@ -1416,7 +1416,7 @@ export const restoreAlertHandler = async ({
 export const getUserBookmarkCollectionsHandler = async ({
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   return getUserBookmarkCollections({
     userId: ctx.user.id,
@@ -1426,7 +1426,7 @@ export const getUserBookmarkCollectionsHandler = async ({
 export const getUserPurchasedRewardsHandler = async ({
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return getUserPurchasedRewards({
@@ -1441,7 +1441,7 @@ export async function setLeaderboardEligibilityHandler({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: SetLeaderboardEligibilitySchema;
 }) {
   await setLeaderboardEligibility(input);

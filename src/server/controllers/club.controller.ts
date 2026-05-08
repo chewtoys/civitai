@@ -32,7 +32,7 @@ import {
   userContributingClubs,
 } from '~/server/services/club.service';
 import type { GetByEntityInput, GetByIdInput } from '~/server/schema/base.schema';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { GetInfiniteBountySchema } from '~/server/schema/bounty.schema';
 import { getAllBounties, getImagesForBounties } from '~/server/services/bounty.service';
 import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
@@ -59,7 +59,7 @@ export async function upsertClubHandler({
   ctx,
 }: {
   input: UpsertClubInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     return await upsertClub({
@@ -101,7 +101,7 @@ export async function upsertClubTierHandler({
   ctx,
 }: {
   input: UpsertClubTierInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   const { clubId, ...tier } = input;
   try {
@@ -122,7 +122,7 @@ export async function deleteClubTierHandler({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     await deleteClubTier({
@@ -156,7 +156,7 @@ export async function upsertClubResourceHandler({
   ctx,
 }: {
   input: UpsertClubResourceInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     await upsertClubResource({
@@ -294,7 +294,7 @@ export async function updateClubResourceHandler({
   ctx,
 }: {
   input: UpdateClubResourceInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     await updateClubResource({
@@ -320,7 +320,7 @@ export async function removeClubResourceHandler({
   ctx,
 }: {
   input: RemoveClubResourceInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     return removeClubResource({
@@ -339,7 +339,7 @@ export async function deleteClubHandler({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     return deleteClub({

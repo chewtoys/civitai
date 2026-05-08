@@ -1,7 +1,7 @@
 import { EntityMetric_MetricType_Type } from '~/shared/utils/prisma/enums';
 import type { EntityMetric_EntityType_Type } from '~/shared/utils/prisma/enums';
 import { clickhouse } from '~/server/clickhouse/client';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { logToAxiom } from '~/server/logging/client';
 import { redis, REDIS_KEYS, type RedisKeyTemplateCache } from '~/server/redis/client';
 import { entityMetricRedis } from '~/server/redis/entity-metric.redis';
@@ -55,7 +55,7 @@ export const updateEntityMetric = async ({
   metricType,
   amount = 1,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   entityType?: EntityMetric_EntityType_Type;
   entityId: number;
   metricType: EntityMetric_MetricType_Type;
@@ -163,7 +163,7 @@ export const incrementEntityMetric = async ({
   entityId,
   metricType,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   entityType?: EntityMetric_EntityType_Type;
   entityId: number;
   metricType: EntityMetric_MetricType_Type;
@@ -177,7 +177,7 @@ export const decrementEntityMetric = async ({
   entityId,
   metricType,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   entityType?: EntityMetric_EntityType_Type;
   entityId: number;
   metricType: EntityMetric_MetricType_Type;

@@ -1,9 +1,9 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { throwDbError } from '../utils/errorHandling';
 import { getUserPaymentConfiguration } from '../services/user-payment-configuration.service';
 
-export const getHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   const userId = ctx.user.id;
   try {
     const userPaymentConfig = await getUserPaymentConfiguration({ userId });

@@ -96,12 +96,18 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
         ? data.images?.map((img) => img.url).filter((u): u is string => !!u)
         : undefined;
 
+    const audioEnabled = 'generateAudio' in data && !!data.generateAudio;
+    const instruction = audioEnabled
+      ? "Audio generation is enabled. Preserve any audio descriptions the user already wrote in the prompt (music, voices, dialogue, sound effects, ambient sounds) — do not remove, replace, or contradict them. If the user's prompt has little or no audio detail, add appropriate audio cues that fit the scene."
+      : undefined;
+
     const { step, prompt: promptRef } = createChainedPromptEnhancementStep(
       {
         ecosystem: data.ecosystem.toLowerCase(),
         prompt: data.prompt,
         preserveTriggerWords: data.triggerWords,
         images: enhancerImages?.length ? enhancerImages : undefined,
+        instruction,
       },
       { stepIndex: steps.length, suppressOutput: true }
     );

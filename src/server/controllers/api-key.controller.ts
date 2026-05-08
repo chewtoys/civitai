@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type {
   AddAPIKeyInput,
   DeleteAPIKeyInput,
@@ -38,7 +38,7 @@ export async function getUserApiKeysHandler({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetUserAPIKeysInput;
 }) {
   const { user } = ctx;
@@ -51,7 +51,7 @@ export async function addApiKeyHandler({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: AddAPIKeyInput;
 }) {
   const { user } = ctx;
@@ -65,7 +65,7 @@ export async function setBuzzLimitHandler({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: SetBuzzLimitInput;
 }) {
   const { user } = ctx;
@@ -96,7 +96,7 @@ export async function setBuzzLimitHandler({
   await preventReplicationLag('userApiKeys', user.id);
 
   // Audit trail in ClickHouse `actions`. Fire-and-forget. Captures who
-  // changed which subject's limit and what the new value is — useful when
+  // changed which subject's limit and what the new value is â€” useful when
   // diagnosing "why did my agent suddenly stop generating" later.
   ctx.track
     .action({
@@ -113,11 +113,11 @@ export async function setBuzzLimitHandler({
   return updated;
 }
 
-export async function getApiKeySpendHandler({ ctx }: { ctx: DeepNonNullable<Context> }) {
+export async function getApiKeySpendHandler({ ctx }: { ctx: ProtectedContext }) {
   const { user } = ctx;
   try {
     // Build the subject list from the user's User-type API keys plus their
-    // OAuth consents — *only* those with a buzzLimit configured. Subjects
+    // OAuth consents â€” *only* those with a buzzLimit configured. Subjects
     // without a limit have nothing to display in the UI and would just
     // generate 404s on the orchestrator side.
     const [apiKeys, consents] = await Promise.all([
@@ -147,7 +147,7 @@ export async function getApiKeySpendHandler({ ctx }: { ctx: DeepNonNullable<Cont
     return await getBuzzSpendForSubjects(user.id, subjects);
   } catch (err) {
     // The orchestrator endpoint may be unreachable / not yet deployed in some
-    // environments — return an empty list rather than failing the page render.
+    // environments â€” return an empty list rather than failing the page render.
     return [];
   }
 }
@@ -156,7 +156,7 @@ export async function deleteApiKeyHandler({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: DeleteAPIKeyInput;
 }) {
   const { user } = ctx;

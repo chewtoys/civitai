@@ -1173,14 +1173,12 @@ export const ecosystemSettings: EcosystemSettings[] = [
     ecosystemId: ECO.ZImageTurbo,
     defaults: {
       model: { id: 2442439 },
-      modelLocked: true,
     },
   },
   {
     ecosystemId: ECO.ZImageBase,
     defaults: {
       model: { id: 2635223 },
-      modelLocked: true,
     },
   },
   {

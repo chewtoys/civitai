@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import type { ApiKeyType } from '~/shared/utils/prisma/enums';
 import { dbWrite, dbRead } from '~/server/db/client';
 import { getDbWithoutLag } from '~/server/db/db-lag-helpers';
@@ -89,7 +90,7 @@ export async function setApiKeyBuzzLimit({
   // source of truth that the orchestrator will re-fetch via /api/v1/me.
   const updated = await dbWrite.apiKey.update({
     where: { id, userId },
-    data: { buzzLimit: buzzLimit ?? null },
+    data: { buzzLimit: buzzLimit ?? Prisma.DbNull },
     select: { id: true, userId: true, buzzLimit: true },
   });
 

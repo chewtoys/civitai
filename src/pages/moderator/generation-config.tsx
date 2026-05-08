@@ -53,6 +53,7 @@ type EcosystemConfigForm = {
   modOnlyIds: string[];
   disabledIds: string[];
   testingIds: string[];
+  nsfwIds: string[];
 };
 
 const EMPTY_FORM: EcosystemConfigForm = {
@@ -63,6 +64,7 @@ const EMPTY_FORM: EcosystemConfigForm = {
   modOnlyIds: [],
   disabledIds: [],
   testingIds: [],
+  nsfwIds: [],
 };
 
 /** Parse a TagsInput value (strings) into positive integers; returns the bad entries separately. */
@@ -105,6 +107,7 @@ function EcosystemConfigSection() {
       modOnlyIds: (data.modOnlyIds ?? []).map(String),
       disabledIds: (data.disabledIds ?? []).map(String),
       testingIds: (data.testingIds ?? []).map(String),
+      nsfwIds: (data.nsfwIds ?? []).map(String),
     });
   }, [data]);
 
@@ -154,11 +157,13 @@ function EcosystemConfigSection() {
     const modOnlyParsed = parseIds(form.modOnlyIds);
     const disabledParsed = parseIds(form.disabledIds);
     const testingParsed = parseIds(form.testingIds);
+    const nsfwParsed = parseIds(form.nsfwIds);
 
     const allInvalid = [
       ...modOnlyParsed.invalid,
       ...disabledParsed.invalid,
       ...testingParsed.invalid,
+      ...nsfwParsed.invalid,
     ];
     if (allInvalid.length) {
       showErrorNotification({
@@ -176,6 +181,7 @@ function EcosystemConfigSection() {
       modOnlyIds: modOnlyParsed.ids,
       disabledIds: disabledParsed.ids,
       testingIds: testingParsed.ids,
+      nsfwIds: nsfwParsed.ids,
     });
   };
 
@@ -198,8 +204,9 @@ function EcosystemConfigSection() {
         <Text c="dimmed" size="sm">
           <b>Disabled</b> = off for everyone (kill-switch, mods included). <b>Mod-only</b> = visible
           to mods only. <b>Testing</b> = visible to mods plus users with the{' '}
-          <code>generation-testing</code> Flipt flag. <b>Experimental</b> shows the
-          &ldquo;experimental build&rdquo; alert in the generator UI but does not gate access.
+          <code>generation-testing</code> Flipt flag. <b>NSFW</b> = hidden on green (SFW-only)
+          domains; available on red/blue. <b>Experimental</b> shows the &ldquo;experimental
+          build&rdquo; alert in the generator UI but does not gate access.
         </Text>
       </Stack>
 
@@ -290,6 +297,15 @@ function EcosystemConfigSection() {
           placeholder="e.g. 12345"
           value={form.testingIds}
           onChange={(v) => setForm((f) => ({ ...f, testingIds: v }))}
+          splitChars={[',', ' ']}
+          clearable
+        />
+        <TagsInput
+          label="NSFW IDs"
+          description="Hidden on green (SFW-only) domains. Use for NSFW models that should remain available on red/blue."
+          placeholder="e.g. 12345"
+          value={form.nsfwIds}
+          onChange={(v) => setForm((f) => ({ ...f, nsfwIds: v }))}
           splitChars={[',', ' ']}
           clearable
         />
