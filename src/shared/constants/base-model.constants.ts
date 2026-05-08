@@ -1125,5 +1125,5 @@ export const DEPRECATED_BASE_MODELS = [
 export function getCanAuctionForGeneration(baseModel?: string) {
   if (!baseModel) return false;
   const group = getGenerationBaseModelGroup(baseModel);
-  return group ? !['Qwen', 'ZImageTurbo', 'ZImageBase', 'Other'].includes(group.group) : false;
+  return group ? !['Qwen', 'Other'].includes(group.group) : false;
 }

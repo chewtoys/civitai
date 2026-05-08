@@ -4264,6 +4264,6 @@ export function getCanAuctionForGeneration(baseModel?: string): boolean {
   if (!ecosystem) return false;
 
   // Ecosystems that don't support auction
-  const noAuctionEcosystems = ['Qwen', 'ZImageTurbo', 'ZImageBase', 'Other'];
+  const noAuctionEcosystems = ['Qwen', 'Other'];
   return !noAuctionEcosystems.includes(ecosystem.key);
 }
