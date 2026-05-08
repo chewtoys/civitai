@@ -105,7 +105,8 @@ async function isAllowedToSignIn({
   email: string;
   captchaToken?: string;
 }) {
-  const emailDomain = email.split('@')[1];
+  const emailDomain = email.split('@')[1]?.toLowerCase();
+  if (!emailDomain) throw new Error('Invalid email address');
   const blockedDomains = await getBlockedEmailDomains();
   if (blockedDomains.includes(emailDomain)) {
     throw new Error(`Email domain ${emailDomain} is not allowed`);
