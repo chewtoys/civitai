@@ -12,21 +12,36 @@ import {
   sfwBrowsingLevelsFlag,
 } from '~/shared/constants/browsingLevel.constants';
 import { Flags } from '~/shared/utils/flags';
-import {
-  parseVerifiedBotHeader,
-  VERIFIED_BOT_HEADER,
-} from '~/server/utils/bot-detection/header';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
+import { parseVerifiedBotHeader, VERIFIED_BOT_HEADER } from '~/server/utils/bot-detection/header';
 import type { Context } from './createContext';
 
-const t = initTRPC.context<Context>().create({
-  transformer: {
-    serialize: (data: any) => withSpan('trpc:serialize:superjson', () => superjson.serialize(data)),
-    deserialize: superjson.deserialize.bind(superjson),
-  },
-  errorFormatter({ shape }) {
-    return shape;
-  },
-});
+export interface TRPCMeta {
+  /** Bitwise token scope required for this procedure. Checked against ctx.tokenScope. */
+  requiredScope?: number;
+  /**
+   * When true, this procedure cannot be invoked via API key or OAuth token,
+   * regardless of scope — only session auth (browser cookie) is allowed.
+   * Used for Civitai-side buzz-spending operations (tips, bounty creation,
+   * cosmetic purchases, etc.). Buzz spend through tokens is delegated entirely
+   * to the orchestrator.
+   */
+  blockApiKeys?: boolean;
+}
+
+const t = initTRPC
+  .context<Context>()
+  .meta<TRPCMeta>()
+  .create({
+    transformer: {
+      serialize: (data: any) =>
+        withSpan('trpc:serialize:superjson', () => superjson.serialize(data)),
+      deserialize: superjson.deserialize.bind(superjson),
+    },
+    errorFormatter({ shape }) {
+      return shape;
+    },
+  });
 
 export const { router, middleware } = t;
 /**
@@ -110,10 +125,49 @@ const applyDomainFeature = t.middleware((options) => {
   return next();
 });
 
+/**
+ * Token scope enforcement middleware (fail-safe).
+ * - Session auth (no apiKeyId) is always allowed through unless blockApiKeys is set.
+ * - Procedures without `.meta({ requiredScope })` implicitly require `TokenScope.Full`.
+ *   Scoped tokens are denied on un-annotated endpoints; session and full-access keys
+ *   pass through (subject to the blockApiKeys gate below).
+ * - blockApiKeys: when set, the procedure is forbidden for any API-key/OAuth-token
+ *   request regardless of scope. Used for buzz-spending operations that the
+ *   orchestrator owns; tokens have no business spending buzz on Civitai's side.
+ */
+const enforceTokenScope = t.middleware(({ ctx, meta, next }) => {
+  // blockApiKeys: deny any token-based request, regardless of scope. Session
+  // auth (apiKeyId === null) is unaffected.
+  if (meta?.blockApiKeys && ctx.apiKeyId != null) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'This action cannot be performed via API key or OAuth token.',
+    });
+  }
+
+  // Session auth (cookies) and full-access API keys pass through scope check
+  if (ctx.tokenScope === TokenScope.Full) {
+    return next();
+  }
+
+  // Default unannotated endpoints to requiring Full scope
+  const requiredScope = meta?.requiredScope ?? TokenScope.Full;
+
+  if (!Flags.hasFlag(ctx.tokenScope, requiredScope)) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Your API key does not have the required scope for this action',
+    });
+  }
+
+  return next();
+});
+
 export const publicProcedure = t.procedure
   .use(isAcceptableOrigin)
   .use(enforceClientVersion)
-  .use(applyDomainFeature);
+  .use(applyDomainFeature)
+  .use(enforceTokenScope);
 
 /**
  * Reusable middleware to ensure

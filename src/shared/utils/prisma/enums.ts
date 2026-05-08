@@ -485,17 +485,11 @@ export type PartnerPricingModel = (typeof PartnerPricingModel)[keyof typeof Part
 export const ApiKeyType = {
   System: 'System',
   User: 'User',
+  Access: 'Access',
+  Refresh: 'Refresh',
 } as const;
 
 export type ApiKeyType = (typeof ApiKeyType)[keyof typeof ApiKeyType];
-
-export const KeyScope = {
-  Read: 'Read',
-  Write: 'Write',
-  Generate: 'Generate',
-} as const;
-
-export type KeyScope = (typeof KeyScope)[keyof typeof KeyScope];
 
 export const TagEngagementType = {
   Hide: 'Hide',

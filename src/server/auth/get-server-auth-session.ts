@@ -64,7 +64,16 @@ export const getServerAuthSession = async ({
 
   if (!req.context) req.context = {};
   if (token) {
-    if (!req.context?.session) req.context.session = await getSessionFromBearerToken(token);
+    if (!req.context?.session) {
+      const result = await getSessionFromBearerToken(token);
+      req.context.session = result;
+      if (result && 'tokenScope' in result) {
+        req.context.tokenScope = result.tokenScope;
+        req.context.buzzLimit = (result as any).buzzLimit ?? null;
+        req.context.apiKeyId = (result as any).apiKeyId ?? null;
+        req.context.subject = (result as any).subject ?? null;
+      }
+    }
     return req.context.session as Session | null;
   }
   try {

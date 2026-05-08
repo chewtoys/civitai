@@ -7,6 +7,7 @@ import {
   getImageResources,
 } from '~/server/services/csam.service';
 import { moderatorProcedure, router } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const csamRouter = router({
   getImageResources: moderatorProcedure

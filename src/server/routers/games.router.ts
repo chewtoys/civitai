@@ -45,6 +45,7 @@ import {
 } from '~/server/trpc';
 import { NewOrderRankType } from '~/shared/utils/prisma/enums';
 import { generateToken } from '~/utils/string-helpers';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const newGameSchema = z.object({
   themeIds: z.array(z.string()).min(1),
@@ -78,37 +79,42 @@ async function createGameInstance(code: string) {
 
 export const gamesRouter = router({
   chopped: router({
-    start: protectedProcedure.input(newGameSchema).mutation(async ({ ctx, input }) => {
-      const code = generateToken(GAME_TOKEN_LENGTH).toUpperCase();
-      const cost = ComputeCost(input);
-      const { transactionId } = await createBuzzTransaction({
-        fromAccountId: ctx.user.id,
-        toAccountId: 0,
-        amount: cost,
-        type: TransactionType.Purchase,
-        description: `Chopped game (${code}): ${input.themeIds.length} rounds + ${
-          input.includeAudio ? 'audio' : 'no audio'
-        }`,
-        externalTransactionId: 'chopped-' + code,
-      });
-      if (!transactionId) {
-        throw new Error('Failed to create transaction');
-      }
+    start: protectedProcedure
+      .meta({ requiredScope: TokenScope.SocialWrite, blockApiKeys: true })
+      .input(newGameSchema)
+      .mutation(async ({ ctx, input }) => {
+        const code = generateToken(GAME_TOKEN_LENGTH).toUpperCase();
+        const cost = ComputeCost(input);
+        const { transactionId } = await createBuzzTransaction({
+          fromAccountId: ctx.user.id,
+          toAccountId: 0,
+          amount: cost,
+          type: TransactionType.Purchase,
+          description: `Chopped game (${code}): ${input.themeIds.length} rounds + ${
+            input.includeAudio ? 'audio' : 'no audio'
+          }`,
+          externalTransactionId: 'chopped-' + code,
+        });
+        if (!transactionId) {
+          throw new Error('Failed to create transaction');
+        }
 
-      try {
-        await createGameInstance(code);
-      } catch (error) {
-        await refundTransaction(transactionId, 'Failed to create game instance');
-      }
+        try {
+          await createGameInstance(code);
+        } catch (error) {
+          await refundTransaction(transactionId, 'Failed to create game instance');
+        }
 
-      return { code };
-    }),
+        return { code };
+      }),
   }),
   newOrder: router({
     join: guardedProcedure
+      .meta({ requiredScope: TokenScope.SocialWrite })
       .use(isFlagProtected('newOrderGame'))
       .mutation(({ ctx }) => joinGame({ userId: ctx.user.id })),
     getPlayer: guardedProcedure
+      .meta({ requiredScope: TokenScope.MediaRead })
       .use(isFlagProtected('newOrderGame'))
       .query(({ ctx }) => getPlayerById({ playerId: ctx.user.id })),
     getPlayers: moderatorProcedure
@@ -116,12 +122,14 @@ export const gamesRouter = router({
       .use(isFlagProtected('newOrderGame'))
       .query(({ input }) => getPlayersInfinite({ ...input })),
     getImagesQueue: guardedProcedure
+      .meta({ requiredScope: TokenScope.MediaRead })
       .use(isFlagProtected('newOrderGame'))
       .input(getImagesQueueSchema.optional())
       .query(({ input, ctx }) =>
         getImagesQueue({ ...input, playerId: ctx.user.id, isModerator: ctx.user.isModerator })
       ),
     getHistory: guardedProcedure
+      .meta({ requiredScope: TokenScope.MediaRead })
       .input(getHistorySchema)
       .use(isFlagProtected('newOrderGame'))
       .query(({ input, ctx }) => getPlayerHistory({ ...input, playerId: ctx.user.id })),
@@ -134,6 +142,7 @@ export const gamesRouter = router({
       .use(isFlagProtected('newOrderGame'))
       .mutation(({ input }) => cleanseSmite({ ...input })),
     addRating: guardedProcedure
+      .meta({ requiredScope: TokenScope.SocialWrite })
       .input(addImageRatingSchema)
       .use(isFlagProtected('newOrderGame'))
       .mutation(({ input, ctx }) =>
@@ -145,6 +154,7 @@ export const gamesRouter = router({
         })
       ),
     resetCareer: guardedProcedure
+      .meta({ requiredScope: TokenScope.SocialWrite })
       .use(isFlagProtected('newOrderGame'))
       .mutation(({ ctx }) => resetPlayer({ playerId: ctx.user.id })),
     resetPlayerById: moderatorProcedure

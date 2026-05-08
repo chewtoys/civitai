@@ -19,6 +19,7 @@ import {
 } from '~/server/controllers/clubAdmin.controller';
 import { throwAuthorizationError, throwBadRequestError } from '../utils/errorHandling';
 import { userContributingClubs } from '../services/club.service';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const isOwnerOrModerator = middleware(async ({ ctx, input, next }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -44,35 +45,42 @@ const isOwnerOrModerator = middleware(async ({ ctx, input, next }) => {
 
 export const clubAdminRouter = router({
   getInvitesPaged: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(getPagedClubAdminInviteSchema)
     .use(isFlagProtected('clubs'))
     .use(isOwnerOrModerator)
     .query(getPagedClubAdminInvitesHandler),
   getAdminsPaged: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(getPagedClubAdminSchema)
     .use(isFlagProtected('clubs'))
     .use(isOwnerOrModerator)
     .query(getPagedClubAdminsHandler),
   upsertInvite: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(upsertClubAdminInviteInput)
     .use(isFlagProtected('clubs'))
     .use(isOwnerOrModerator)
     .mutation(upsertClubAdminInviteHandler),
   deleteInvite: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(deleteClubAdminInviteInput)
     .use(isFlagProtected('clubs'))
     .use(isOwnerOrModerator)
     .mutation(deleteClubAdminInviteHandler),
   acceptInvite: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(acceptClubAdminInviteInput)
     .use(isFlagProtected('clubs'))
     .mutation(acceptClubAdminInviteHandler),
   update: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(updateClubAdminInput)
     .use(isFlagProtected('clubs'))
     .use(isOwnerOrModerator)
     .mutation(updateClubAdminHandler),
   delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(deleteClubAdminInput)
     .use(isFlagProtected('clubs'))
     .use(isOwnerOrModerator)

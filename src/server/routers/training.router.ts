@@ -35,6 +35,7 @@ import {
   publicProcedure,
   router,
 } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const TRAINING_ANNOUNCEMENT_KEY = 'training-announcement';
 const announcementColors = ['yellow', 'red', 'blue', 'green', 'gray'] as const;
@@ -49,6 +50,7 @@ export const trainingRouter = router({
    * @deprecated for orchestrator v2
    */
   createRequest: guardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(createTrainingRequestSchema)
     .use(isFlagProtected('imageTraining'))
     .mutation(({ input, ctx }) => createTrainingRequest({ ...input, userId: ctx.user.id })),
@@ -56,20 +58,27 @@ export const trainingRouter = router({
    * @deprecated for orchestrator v2
    */
   createRequestDryRun: protectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(createTrainingRequestDryRunSchema)
     .use(isFlagProtected('imageTraining'))
     .query(({ input }) => createTrainingRequestDryRun({ ...input })),
 
   moveAsset: protectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(moveAssetInput)
     .use(isFlagProtected('imageTraining'))
     .mutation(({ input, ctx }) => moveAsset({ ...input, userId: ctx.user.id })),
-  getModelBasic: publicProcedure.input(getByIdSchema).query(getModelData),
+  getModelBasic: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .input(getByIdSchema)
+    .query(getModelData),
   autoTag: guardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(autoTagInput)
     .use(isFlagProtected('imageTraining'))
     .mutation(({ input, ctx }) => autoTagHandler({ ...input, userId: ctx.user.id })),
   autoCaption: guardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(autoCaptionInput)
     .use(isFlagProtected('imageTraining'))
     .mutation(({ input, ctx }) => autoCaptionHandler({ ...input, userId: ctx.user.id })),
@@ -82,6 +91,7 @@ export const trainingRouter = router({
   // Tagging/captioning is free; the orchestrator work is billed to the system token
   // and not the user, so each endpoint needs a per-user rate cap to prevent abuse.
   getAutoLabelUploadUrl: guardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(getAutoLabelUploadUrlSchema)
     .use(isFlagProtected('imageTraining'))
     .use(isFlagProtected('trainingAutoLabelOrchestrator'))
@@ -90,6 +100,7 @@ export const trainingRouter = router({
     .use(rateLimit({ limit: 1000, period: 60 }))
     .mutation(({ input, ctx }) => getAutoLabelUploadUrl({ ...input, userId: ctx.user.id })),
   submitAutoLabelWorkflow: guardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(submitAutoLabelWorkflowSchema)
     .use(isFlagProtected('imageTraining'))
     .use(isFlagProtected('trainingAutoLabelOrchestrator'))
@@ -98,6 +109,7 @@ export const trainingRouter = router({
     .use(rateLimit({ limit: 100, period: 60 }))
     .mutation(({ input, ctx }) => submitAutoLabelWorkflow({ ...input, userId: ctx.user.id })),
   getAutoLabelWorkflow: guardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(getAutoLabelWorkflowSchema)
     .use(isFlagProtected('imageTraining'))
     .use(isFlagProtected('trainingAutoLabelOrchestrator'))
@@ -107,6 +119,7 @@ export const trainingRouter = router({
     .use(rateLimit({ limit: 1500, period: 60 }))
     .query(({ input, ctx }) => getAutoLabelWorkflow({ ...input, userId: ctx.user.id })),
   getStatus: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .use(isFlagProtected('imageTraining'))
     .use(edgeCacheIt({ ttl: CacheTTL.xs, tags: () => ['training-status'] }))
     .query(() => getTrainingServiceStatus()),
@@ -124,14 +137,17 @@ export const trainingRouter = router({
    * @deprecated for orchestrator v2
    */
   getJobEstStarts: protectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .use(isFlagProtected('imageTraining'))
     .query(({ ctx }) => getJobEstStartsHandler({ userId: ctx.user.id })),
 
   // Training page announcement (moderator-editable)
-  getAnnouncement: publicProcedure.query(async () => {
-    const announcement = await dbKV.get<TrainingAnnouncement>(TRAINING_ANNOUNCEMENT_KEY);
-    return announcement ?? null;
-  }),
+  getAnnouncement: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .query(async () => {
+      const announcement = await dbKV.get<TrainingAnnouncement>(TRAINING_ANNOUNCEMENT_KEY);
+      return announcement ?? null;
+    }),
 
   setAnnouncement: moderatorProcedure
     .input(trainingAnnouncementSchema)

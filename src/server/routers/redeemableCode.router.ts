@@ -20,17 +20,19 @@ import {
 } from '~/server/services/redeemableCode.service';
 import { cachedCounter } from '~/server/utils/cache-helpers';
 import { REDIS_KEYS } from '~/server/redis/client';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const redemptionCounter = cachedCounter(REDIS_KEYS.COUNTERS.REDEMPTION_ATTEMPTS);
 
 export const redeemableCodeRouter = router({
-  getMyPurchasedCodes: protectedProcedure.query(({ ctx }) =>
-    getMyPurchasedCodes({ userId: ctx.user.id })
-  ),
-  getMyConsumedMembershipCodes: protectedProcedure.query(({ ctx }) =>
-    getMyConsumedMembershipCodes({ userId: ctx.user.id })
-  ),
+  getMyPurchasedCodes: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .query(({ ctx }) => getMyPurchasedCodes({ userId: ctx.user.id })),
+  getMyConsumedMembershipCodes: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .query(({ ctx }) => getMyConsumedMembershipCodes({ userId: ctx.user.id })),
   getCodeByOrderId: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(getCodeByOrderIdSchema)
     .query(({ input, ctx }) => getCodeByOrderId({ ...input, userId: ctx.user.id })),
   create: moderatorProcedure.input(createRedeemableCodeSchema).mutation(async ({ input, ctx }) => {
@@ -43,6 +45,7 @@ export const redeemableCodeRouter = router({
     await ctx.track.redeemableCode('delete', { code: input.code });
   }),
   consume: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(consumeRedeemableCodeSchema)
     .mutation(async ({ input, ctx }) => {
       const attempts = await redemptionCounter.incrementBy(ctx.user.id);

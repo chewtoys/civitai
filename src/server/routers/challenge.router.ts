@@ -61,65 +61,76 @@ import {
   playgroundPickWinners,
 } from '~/server/services/challenge.service';
 import { getJudgeCommentForImage } from '~/server/services/commentsv2.service';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 // Router definition
 export const challengeRouter = router({
   // Get paginated list of challenges
   getInfinite: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getInfiniteChallengesSchema)
     .use(isFlagProtected('challengePlatform'))
     .query(({ input, ctx }) => getInfiniteChallenges({ ...input, currentUserId: ctx.user?.id })),
 
   // Get single challenge by ID (public — sensitive fields stripped)
   getById: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getByIdSchema)
     .use(isFlagProtected('challengePlatform'))
     .query(({ input }) => getChallengeDetail(input.id)),
 
   // Get upcoming challenge themes for preview widget
   getUpcomingThemes: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getUpcomingThemesSchema)
     .use(isFlagProtected('challengePlatform'))
     .query(({ input }) => getUpcomingThemes(input.count)),
 
   // Get challenge winners
   getWinners: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getChallengeWinnersSchema)
     .use(isFlagProtected('challengePlatform'))
     .query(({ input }) => getChallengeWinners(input.challengeId)),
 
   // Get completed challenges with inline winners for previous winners page
   getCompletedWithWinners: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getCompletedChallengesWithWinnersSchema)
     .use(isFlagProtected('challengePlatform'))
     .query(({ input }) => getCompletedChallengesWithWinners(input)),
 
   // Get winner cooldown status for current user on a challenge
   getWinnerCooldownStatus: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getWinnerCooldownStatusSchema)
     .use(isFlagProtected('challengePlatform'))
     .query(({ input, ctx }) => getWinnerCooldownStatus(input.challengeId, ctx.user.id)),
 
   // Get current user's entry count for a challenge
   getUserEntryCount: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getUserEntryCountSchema)
     .use(isFlagProtected('challengePlatform'))
     .query(({ input, ctx }) => getUserEntryCount(input.challengeId, ctx.user.id)),
 
   // Pay to guarantee entries get reviewed by the AI judge
   requestReview: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite, blockApiKeys: true })
     .input(requestReviewSchema)
     .use(isFlagProtected('challengePlatform'))
     .mutation(({ input, ctx }) => requestReview(input.challengeId, input.imageIds, ctx.user.id)),
 
   // Get user's unjudged entries for paid review selection
   getUserUnjudgedEntries: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getUserUnjudgedEntriesSchema)
     .use(isFlagProtected('challengePlatform'))
     .query(({ input, ctx }) => getUserUnjudgedEntries(input.challengeId, ctx.user.id)),
 
   // Check image eligibility for a challenge
   checkEntryEligibility: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(checkEntryEligibilitySchema)
     .use(isFlagProtected('challengePlatform'))
     .query(({ input }) => checkImageEligibility(input.challengeId, input.imageIds)),
@@ -178,6 +189,7 @@ export const challengeRouter = router({
 
   // Public: Get active challenge events for featured section
   getActiveEvents: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .use(isFlagProtected('challengePlatform'))
     .query(() => getActiveEvents()),
 
@@ -201,6 +213,7 @@ export const challengeRouter = router({
 
   // Public: Get judge's comment on a specific image
   getJudgeComment: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ imageId: z.number(), judgeUserId: z.number() }))
     .use(isFlagProtected('challengePlatform'))
     .query(({ input }) => getJudgeCommentForImage(input)),

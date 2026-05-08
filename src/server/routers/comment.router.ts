@@ -35,6 +35,7 @@ import {
   router,
 } from '~/server/trpc';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input }) => {
   if (!ctx?.user) throw new TRPCError({ code: 'UNAUTHORIZED' });
@@ -88,32 +89,57 @@ const isLocked = middleware(async ({ ctx, next, input }) => {
 });
 
 export const commentRouter = router({
-  getAll: publicProcedure.input(getAllCommentsSchema).query(getCommentsInfiniteHandler),
-  getById: publicProcedure.input(getByIdSchema).query(getCommentHandler),
-  getReactions: publicProcedure.input(getCommentReactionsSchema).query(getCommentReactionsHandler),
-  getCommentsById: publicProcedure.input(getByIdSchema).query(getCommentCommentsHandler),
-  getCommentsCount: publicProcedure.input(getByIdSchema).query(getCommentCommentsCountHandler),
+  getAll: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getAllCommentsSchema)
+    .query(getCommentsInfiniteHandler),
+  getById: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getByIdSchema)
+    .query(getCommentHandler),
+  getReactions: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getCommentReactionsSchema)
+    .query(getCommentReactionsHandler),
+  getCommentsById: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getByIdSchema)
+    .query(getCommentCommentsHandler),
+  getCommentsCount: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getByIdSchema)
+    .query(getCommentCommentsCountHandler),
   getCommentCountByModel: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getCommentCountByModelSchema)
     .query(({ input }) => getCommentCountByModel(input)),
   upsert: guardedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(commentUpsertInput)
     .use(isOwnerOrModerator)
     .use(isLocked)
     .use(rateLimit(commentRateLimits))
     .mutation(upsertCommentHandler),
   delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(deleteUserCommentHandler),
-  toggleReaction: protectedProcedure.input(toggleReactionInput).mutation(({ input, ctx }) =>
-    toggleReactionHandler({
-      ctx,
-      input: { entityType: 'commentOld', entityId: input.id, reaction: input.reaction },
-    })
-  ),
-  toggleHide: protectedProcedure.input(getByIdSchema).mutation(toggleHideCommentHandler),
+  toggleReaction: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
+    .input(toggleReactionInput)
+    .mutation(({ input, ctx }) =>
+      toggleReactionHandler({
+        ctx,
+        input: { entityType: 'commentOld', entityId: input.id, reaction: input.reaction },
+      })
+    ),
+  toggleHide: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
+    .input(getByIdSchema)
+    .mutation(toggleHideCommentHandler),
   toggleLock: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(toggleLockHandler),

@@ -221,6 +221,7 @@ export const ActionType = [
   'Membership_Downgrade',
   'CSAM_Help_Triggered',
   'ProfanitySearch',
+  'BuzzLimit_Set',
 ] as const;
 export type ActionType = (typeof ActionType)[number];
 

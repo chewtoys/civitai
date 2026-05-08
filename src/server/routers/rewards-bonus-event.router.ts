@@ -10,6 +10,7 @@ import {
   upsertRewardsBonusEvent,
 } from '~/server/services/rewards-bonus-event.service';
 import { getByIdSchema } from '~/server/schema/base.schema';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const rewardsBonusEventRouter = router({
   upsert: moderatorProcedure
