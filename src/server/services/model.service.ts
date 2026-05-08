@@ -1,8 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { TRPCError } from '@trpc/server';
 import type { ManipulateType } from 'dayjs';
-import dayjs from '~/shared/utils/dayjs';
 import { isEmpty, uniq } from 'lodash-es';
+import dayjs from '~/shared/utils/dayjs';
 import type { SearchParams, SearchResponse } from 'meilisearch';
 import type { SessionUser } from 'next-auth';
 import { env } from '~/env/server';
@@ -141,6 +141,7 @@ import {
 import { decreaseDate, isFutureDate } from '~/utils/date-helpers';
 import { prepareFile } from '~/utils/file-helpers';
 import { fromJson, toJson } from '~/utils/json-helpers';
+import { deleteModelFileObjects } from '~/utils/s3-utils';
 import { isDefined } from '~/utils/type-guards';
 import type {
   GetAssociatedResourcesInput,
@@ -1456,8 +1457,19 @@ export const permaDeleteModelById = async ({
 }: GetByIdInput & {
   userId: number;
 }) => {
+  // Populated inside the tx so the snapshot is consistent with the cascade.
+  let modelFileUrls: string[] = [];
+
   const deletionResult = await dbWrite.$transaction(
     async (tx) => {
+      // Snapshot ModelFile URLs inside the tx — read before the cascade nukes the rows.
+      modelFileUrls = (
+        await tx.modelFile.findMany({
+          where: { modelVersion: { modelId: id } },
+          select: { url: true },
+        })
+      ).map((f) => f.url);
+
       const model = await tx.model.findUnique({
         where: { id },
         select: {
@@ -1508,18 +1520,59 @@ export const permaDeleteModelById = async ({
   const { deletedModel, imagesToDelete } = deletionResult;
 
   if (deletedModel) {
-    // Delete model bids
-    await deleteBidsForModel({ modelId: deletedModel.id });
-    // Queue model search index updates
-    await modelsSearchIndex.queueUpdate([
-      { id: deletedModel.id, action: SearchIndexUpdateQueueAction.Delete },
-    ]);
-    // Queue image search index updates
-    if (imagesToDelete.length > 0) {
-      await queueImageSearchIndexUpdate({
-        ids: imagesToDelete.map((img) => img.id),
-        action: SearchIndexUpdateQueueAction.Delete,
+    // Each post-commit step is independently best-effort. The DB tx already
+    // committed, so a downstream failure in bid cleanup or search-index
+    // queueing must NOT shortcut the S3 cleanup — otherwise we leak orphan
+    // objects in B2/R2 every time one of these auxiliary services hiccups.
+    try {
+      await deleteBidsForModel({ modelId: deletedModel.id });
+    } catch (error) {
+      logToAxiom({
+        type: 'error',
+        name: 'model-perma-delete-bids',
+        message: `Failed to delete bids for model ${id}`,
+        error,
       });
+    }
+    try {
+      await modelsSearchIndex.queueUpdate([
+        { id: deletedModel.id, action: SearchIndexUpdateQueueAction.Delete },
+      ]);
+    } catch (error) {
+      logToAxiom({
+        type: 'error',
+        name: 'model-perma-delete-search-index',
+        message: `Failed to queue search index update for model ${id}`,
+        error,
+      });
+    }
+    if (imagesToDelete.length > 0) {
+      try {
+        await queueImageSearchIndexUpdate({
+          ids: imagesToDelete.map((img) => img.id),
+          action: SearchIndexUpdateQueueAction.Delete,
+        });
+      } catch (error) {
+        logToAxiom({
+          type: 'error',
+          name: 'model-perma-delete-image-search-index',
+          message: `Failed to queue image search index update for model ${id}`,
+          error,
+        });
+      }
+    }
+    // Clean up S3 objects for all deleted ModelFiles (admin-triggered, latency-tolerant → await).
+    if (modelFileUrls.length > 0) {
+      try {
+        await deleteModelFileObjects(modelFileUrls);
+      } catch (error) {
+        logToAxiom({
+          type: 'error',
+          name: 'model-perma-delete-s3-objects',
+          message: `Failed to delete S3 objects for model ${id}`,
+          error,
+        });
+      }
     }
   }
 
