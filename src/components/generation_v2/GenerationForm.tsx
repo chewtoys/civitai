@@ -914,36 +914,30 @@ export function GenerationForm() {
                   }
                   error={error?.message}
                 >
+                  <ActiveWildcards
+                    loadedSets={loadedWildcardSets}
+                    ownSetId={ownWildcardSetId}
+                    onRemoveSet={removeWildcardSet}
+                    onAdd={handleAddWildcardSet}
+                    isAdding={loadFromModelVersion.isPending}
+                    className="mb-2"
+                  />
                   <Paper
                     radius="md"
                     withBorder
                     data-tour="gen:prompt"
                     className="bg-white focus-within:border-blue-6 dark:bg-dark-6 dark:focus-within:border-blue-8"
                   >
-                    <PromptInput
-                      px="sm"
-                      name="prompt"
-                      value={value}
+                    <RichTextarea
+                      value={value as string}
                       onChange={onChange}
-                      onFillForm={(metadata) => {
-                        const { resources, ...data } = metadata;
-                        graph.set(data as Parameters<typeof graph.set>[0]);
-                      }}
+                      snippets={{ categories: snippetCategories }}
+                      attentionEdit
                       placeholder={
                         (meta as { placeholder?: string }).placeholder ?? 'Your prompt goes here...'
                       }
-                      autosize
                       minRows={2}
-                      variant="unstyled"
-                      styles={(theme) => ({
-                        input: {
-                          padding: '10px 0',
-                          backgroundColor: 'transparent',
-                          lineHeight: theme.lineHeights.sm,
-                        },
-                        error: { display: 'none' },
-                        wrapper: { margin: 0 },
-                      })}
+                      className="!border-0 !bg-transparent"
                     />
                     {/* Nested trigger words controller */}
                     <Controller
