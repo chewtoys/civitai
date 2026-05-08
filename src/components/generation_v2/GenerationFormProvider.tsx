@@ -155,9 +155,12 @@ const storageAdapter = createLocalStorageAdapter({
   groups: [
     // User preferences - persisted across resets
     { name: 'preferences', keys: ['outputFormat', 'priority'] },
-    // Workflow is the primary selector - stored globally
+    // Workflow is the primary selector - stored globally.
+    // `snippets` (loaded wildcard sets + mode/batchCount) lives here too so
+    // a user's loaded wildcard packs persist across ecosystem and workflow
+    // switches — a pack loaded while on SDXL stays available on Flux.
     {
-      keys: ['workflow', 'prompt', 'negativePrompt', 'seed', 'quantity'],
+      keys: ['workflow', 'prompt', 'negativePrompt', 'seed', 'quantity', 'snippets'],
     },
     { name: 'output', keys: ['ecosystem'], scope: 'output' },
     // ecosystem is scoped to workflow (different workflows may use different ecosystems)

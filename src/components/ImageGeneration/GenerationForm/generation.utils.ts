@@ -129,18 +129,32 @@ export const useUnsupportedResources = () => {
  * @see https://github.com/AUTOMATIC1111/stable-diffusion-webui/blob/master/javascript/edit-attention.js
  */
 const DELIMETERS = '.,\\/!?%^*;:{}=`~()\r\n\t';
-export function keyupEditAttention(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-  const target = event.target as HTMLTextAreaElement;
-  if (!(event.metaKey || event.ctrlKey)) return;
 
-  const isPlus = event.key == 'ArrowUp';
-  const isMinus = event.key == 'ArrowDown';
-  if (!isPlus && !isMinus) return;
+export type AttentionEditResult = {
+  text: string;
+  selectionStart: number;
+  selectionEnd: number;
+};
 
-  let selectionStart = target.selectionStart;
-  let selectionEnd = target.selectionEnd;
-  let text = target.value;
-
+/**
+ * Pure function that applies one mod+ArrowUp / mod+ArrowDown attention edit
+ * to a plain-text prompt, given the current selection range as character
+ * offsets. Returns the new text + selection range, or `null` when the
+ * keystroke is a no-op (cursor in whitespace with no surrounding token,
+ * malformed weight, etc.).
+ *
+ * Extracted from `keyupEditAttention` so the same algorithm can drive both
+ * the textarea-based `InputPrompt` and the Tiptap-based `InputPromptSnippets`
+ * — the latter has no `selectionStart`/`value` setters to mutate, so the
+ * editor wrapper does its own char-offset ↔ ProseMirror-position mapping
+ * around this function.
+ */
+export function editPromptAttentionRange(
+  text: string,
+  selectionStart: number,
+  selectionEnd: number,
+  isPlus: boolean
+): AttentionEditResult | null {
   function selectCurrentParenthesisBlock(OPEN: string, CLOSE: string) {
     if (selectionStart !== selectionEnd) return false;
 
@@ -170,7 +184,6 @@ export function keyupEditAttention(event: React.KeyboardEvent<HTMLTextAreaElemen
     const lastColon = parenContent.lastIndexOf(':');
     selectionStart = beforeParen + 1;
     selectionEnd = selectionStart + lastColon;
-    target.setSelectionRange(selectionStart, selectionEnd);
     return true;
   }
 
@@ -187,7 +200,6 @@ export function keyupEditAttention(event: React.KeyboardEvent<HTMLTextAreaElemen
       selectionEnd++;
     }
 
-    target.setSelectionRange(selectionStart, selectionEnd);
     return true;
   }
 
@@ -195,8 +207,6 @@ export function keyupEditAttention(event: React.KeyboardEvent<HTMLTextAreaElemen
   if (!selectCurrentParenthesisBlock('<', '>') && !selectCurrentParenthesisBlock('(', ')')) {
     selectCurrentWord();
   }
-
-  event.preventDefault();
 
   let closeCharacter = ')';
   let delta = 0.1;
@@ -210,7 +220,7 @@ export function keyupEditAttention(event: React.KeyboardEvent<HTMLTextAreaElemen
       selectionEnd -= 1;
     }
     if (selectionStart == selectionEnd) {
-      return;
+      return null;
     }
 
     text =
@@ -226,7 +236,7 @@ export function keyupEditAttention(event: React.KeyboardEvent<HTMLTextAreaElemen
 
   const end = text.slice(selectionEnd + 1).indexOf(closeCharacter) + 1;
   let weight = parseFloat(text.slice(selectionEnd + 1, selectionEnd + 1 + end));
-  if (isNaN(weight)) return;
+  if (isNaN(weight)) return null;
 
   weight += isPlus ? delta : -delta;
   weight = parseFloat(weight.toPrecision(12));
@@ -243,12 +253,38 @@ export function keyupEditAttention(event: React.KeyboardEvent<HTMLTextAreaElemen
     text = text.slice(0, selectionEnd + 1) + weight + text.slice(selectionEnd + end);
   }
 
-  target.focus();
-  target.value = text;
-  target.selectionStart = selectionStart;
-  target.selectionEnd = selectionEnd;
+  return { text, selectionStart, selectionEnd };
+}
 
-  return text;
+/**
+ * Textarea wrapper around `editPromptAttentionRange`. Reads the current
+ * value + selection from the target, runs the algorithm, and writes the
+ * result back including the new selection range. Returns the new text
+ * (matching the legacy contract used by `InputPrompt`).
+ */
+export function keyupEditAttention(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+  const target = event.target as HTMLTextAreaElement;
+  if (!(event.metaKey || event.ctrlKey)) return;
+
+  const isPlus = event.key == 'ArrowUp';
+  const isMinus = event.key == 'ArrowDown';
+  if (!isPlus && !isMinus) return;
+
+  const result = editPromptAttentionRange(
+    target.value,
+    target.selectionStart,
+    target.selectionEnd,
+    isPlus
+  );
+  if (!result) return;
+
+  event.preventDefault();
+  target.focus();
+  target.value = result.text;
+  target.selectionStart = result.selectionStart;
+  target.selectionEnd = result.selectionEnd;
+
+  return result.text;
 }
 
 // const workflowDefinitionKey = 'workflow-definition';

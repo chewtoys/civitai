@@ -2,6 +2,7 @@ import type { Context } from '~/server/createContext';
 import type {
   DeleteUserSnippetCategoryInput,
   GetWildcardSetsInput,
+  LoadWildcardSetFromModelVersionInput,
   RemoveUserSnippetInput,
   ReorderUserSnippetsInput,
   SaveUserSnippetInput,
@@ -11,6 +12,7 @@ import {
   deleteUserSnippetCategory,
   getMyUserWildcardSet,
   getWildcardSets,
+  loadWildcardSetFromModelVersion,
   removeUserSnippet,
   reorderUserSnippets,
   saveUserSnippet,
@@ -75,4 +77,14 @@ export function deleteCategoryHandler({
   ctx: AuthedCtx;
 }) {
   return deleteUserSnippetCategory({ userId: ctx.user.id, input });
+}
+
+export function loadFromModelVersionHandler({
+  input,
+  ctx,
+}: {
+  input: LoadWildcardSetFromModelVersionInput;
+  ctx: AuthedCtx;
+}) {
+  return loadWildcardSetFromModelVersion({ userId: ctx.user.id, input });
 }

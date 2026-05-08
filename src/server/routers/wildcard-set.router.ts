@@ -2,6 +2,7 @@ import {
   deleteCategoryHandler,
   getManyHandler,
   getMyUserSetHandler,
+  loadFromModelVersionHandler,
   removeSnippetHandler,
   reorderSnippetsHandler,
   saveSnippetHandler,
@@ -10,6 +11,7 @@ import {
 import {
   deleteUserSnippetCategoryInputSchema,
   getWildcardSetsInputSchema,
+  loadWildcardSetFromModelVersionInputSchema,
   removeUserSnippetInputSchema,
   reorderUserSnippetsInputSchema,
   saveUserSnippetInputSchema,
@@ -26,6 +28,14 @@ export const wildcardSetRouter = router({
   // IDs the caller isn't authorized for; categories from invalidated sets are
   // omitted but the set metadata stays so the UI can warn.
   getMany: protectedProcedure.input(getWildcardSetsInputSchema).query(getManyHandler),
+
+  // Resolve a `Wildcards`-type ModelVersion to a WildcardSet.id, importing
+  // on demand. Idempotent. Wired to the form's "Add wildcard set" button:
+  // user picks a model from the resource select modal → this returns the
+  // set id → client adds it to `snippets.wildcardSetIds`.
+  loadFromModelVersion: protectedProcedure
+    .input(loadWildcardSetFromModelVersionInputSchema)
+    .mutation(loadFromModelVersionHandler),
 
   // User-kind value CRUD. All routes verify ownership of the target category
   // through its parent set's `ownerUserId`. Each mutation flips the category

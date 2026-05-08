@@ -3,11 +3,13 @@ import { dbRead, dbWrite } from '~/server/db/client';
 import type {
   DeleteUserSnippetCategoryInput,
   GetWildcardSetsInput,
+  LoadWildcardSetFromModelVersionInput,
   RemoveUserSnippetInput,
   ReorderUserSnippetsInput,
   SaveUserSnippetInput,
   UpdateUserSnippetInput,
 } from '~/server/schema/wildcard-set.schema';
+import { importWildcardModelVersion } from '~/server/services/wildcard-set-provisioning.service';
 import {
   throwAuthorizationError,
   throwBadRequestError,
@@ -92,14 +94,14 @@ export async function getWildcardSets({
     select: {
       ...wildcardSetSelect,
       categories: {
-        // Filter to Clean only. The resolver excludes Dirty (audit-failed)
-        // and Pending (audit-pending) from pools, so non-Clean categories
-        // can't actually be used in generation — surfacing them on the
-        // client would just be picker noise. Once a category is audited
-        // Clean it appears here; until then the client doesn't know it
-        // exists. (auditStatus is therefore omitted from the select — every
-        // row the client receives is Clean by definition.)
-        where: { auditStatus: 'Clean' },
+        // TEMPORARY: relaxed to `{ not: 'Dirty' }` while the audit pipeline
+        // is still being built. Pending (un-audited) categories pass
+        // through so dev work on the form/picker has data to show. Dirty
+        // categories stay hidden — those are audit-rejected and surfacing
+        // them would defeat the audit guarantee.
+        // TODO(prompt-snippets-v1): tighten back to `'Clean'` once the
+        // audit pipeline is producing verdicts. See prompt-snippets-v1.md.
+        where: { auditStatus: { not: 'Dirty' } },
         select: wildcardSetCategorySelect,
         orderBy: [{ displayOrder: 'asc' }, { id: 'asc' }],
       },
@@ -126,10 +128,11 @@ export async function getMyUserWildcardSet({ userId }: { userId: number }) {
     select: {
       ...wildcardSetSelect,
       categories: {
-        // Clean-only — see getWildcardSets for rationale. Same applies even
-        // for the user's own set: a freshly-saved category sits at Pending
-        // until audit completes; it appears here once Clean.
-        where: { auditStatus: 'Clean' },
+        // TEMPORARY: same `{ not: 'Dirty' }` relaxation as getWildcardSets
+        // while the audit pipeline is being built — see comment above.
+        // TODO(prompt-snippets-v1): tighten back to `'Clean'` once verdicts
+        // are flowing.
+        where: { auditStatus: { not: 'Dirty' } },
         select: wildcardSetCategorySelect,
         orderBy: [{ displayOrder: 'asc' }, { id: 'asc' }],
       },
@@ -385,4 +388,48 @@ async function loadOwnedUserCategory(
     throw throwAuthorizationError();
   }
   return category;
+}
+
+/**
+ * Resolve a `Wildcards`-type `ModelVersion` to a `WildcardSet.id`, importing
+ * the set on-demand if needed. Idempotent — repeated calls with the same
+ * `modelVersionId` always return the same id (the underlying provisioning
+ * service handles the find-or-create + concurrent-import race via the
+ * unique constraint).
+ *
+ * Wired to the form's "Add wildcard set" affordance: when a user picks a
+ * wildcard from the resource select modal, the client hands the version id
+ * here; the result is the `WildcardSet.id` to add to the snippets node's
+ * `wildcardSetIds`.
+ *
+ * Outcomes from the provisioning service map to user-facing behavior:
+ *   - `created` / `already_exists` — return the id, caller adds it to the form
+ *   - `invalidated` — set exists but content is unusable (corrupt zip, etc).
+ *     Returns the id with `invalidated: true` so the caller can show the
+ *     red-badged ActiveWildcards chip rather than silently failing.
+ *   - `unsupported_format` — no `WildcardSet` was created (we'll come back
+ *     when we add support). Surface a friendly error to the user.
+ *   - `failed` — transient transport/transaction error. Surface the error;
+ *     the user can retry.
+ */
+export async function loadWildcardSetFromModelVersion({
+  input,
+}: {
+  userId: number;
+  input: LoadWildcardSetFromModelVersionInput;
+}) {
+  const result = await importWildcardModelVersion(input.modelVersionId);
+  switch (result.status) {
+    case 'created':
+    case 'already_exists':
+      return { wildcardSetId: result.wildcardSetId, invalidated: false };
+    case 'invalidated':
+      return { wildcardSetId: result.wildcardSetId, invalidated: true, reason: result.reason };
+    case 'unsupported_format':
+      throw throwBadRequestError(
+        `This wildcard model uses a file format we don't yet support (${result.fileNames.join(', ')}). The site will pick it up automatically once support lands.`
+      );
+    case 'failed':
+      throw throwBadRequestError(`Couldn't load wildcard set: ${result.error}`);
+  }
 }

@@ -124,7 +124,14 @@ export async function expandSnippetsToTargets({
   //    Single round-trip across both targets.
   const categoryRows = await dbRead.wildcardSetCategory.findMany({
     where: {
-      auditStatus: 'Clean',
+      // TEMPORARY: relaxed to `{ not: 'Dirty' }` while the audit pipeline is
+      // still being built. Without this, Pending (un-audited) categories
+      // resolve to empty pools and Preview / expansion produce literal
+      // `#name` output everywhere — making the dev form unusable. Dirty
+      // stays excluded.
+      // TODO(prompt-snippets-v1): tighten back to `'Clean'` once verdicts
+      // are flowing. See prompt-snippets-v1.md.
+      auditStatus: { not: 'Dirty' },
       name: { in: [...uniqueLookupKeys] }, // citext = case-insensitive
       wildcardSet: {
         id: { in: snippets.wildcardSetIds },

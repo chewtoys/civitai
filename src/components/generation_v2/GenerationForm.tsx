@@ -89,6 +89,13 @@ import { ResourceSelectInput } from './inputs/ResourceSelectInput';
 import { useResourceDataContext } from './inputs/ResourceDataProvider';
 import { ResourceSelectMultipleInput } from './inputs/ResourceSelectMultipleInput';
 import { PromptInput } from './inputs/PromptInput';
+import { ActiveWildcards } from '~/components/Generate/Input/ActiveWildcards';
+import { RichTextarea } from '~/components/Generate/Input/RichTextarea';
+import { useSnippetCategories } from '~/components/Generate/Input/useSnippetCategories';
+import { openResourceSelectModal } from '~/components/Dialog/triggers/resource-select';
+import type { SnippetsNodeValue } from '~/shared/data-graph/generation/common';
+import { showNotification } from '@mantine/notifications';
+import { trpc } from '~/utils/trpc';
 import { AspectRatioInput } from './inputs/AspectRatioInput';
 import { SliderInput } from './inputs/SliderInput';
 import { SelectInput } from './inputs/SelectInput';
@@ -148,12 +155,99 @@ export function GenerationForm() {
     type LooseGraph = { subscribe: (key: string, cb: () => void) => () => void };
     const unsubEcosystem = (graph as LooseGraph).subscribe('ecosystem', () => forceUpdate({}));
     const unsubModel = (graph as LooseGraph).subscribe('model', () => forceUpdate({}));
+    // `snippets` lives on the ecosystem subgraph; subscribe so the
+    // categories list + ActiveWildcards strip re-render when the user
+    // loads/removes a set.
+    const unsubSnippets = (graph as LooseGraph).subscribe('snippets', () => forceUpdate({}));
     return () => {
       unsubWorkflow();
       unsubEcosystem();
       unsubModel();
+      unsubSnippets();
     };
   }, [graph]);
+
+  // Snippets — read the loaded wildcard sets off the graph and resolve the
+  // popover-ready category list for `RichTextarea`. The user's User-kind
+  // set is auto-unioned inside `useSnippetCategories` so the form always
+  // surfaces personal snippets alongside any System-kind sets the user
+  // loaded via "create" on a wildcard model page.
+  //
+  // `snippets` lives on the ecosystem subgraph, so `useGraphValue` can't
+  // see it through the top-level `Ctx` type. Use the same loose-snapshot
+  // pattern the form already uses for `ecosystem`/`model`: cast the
+  // snapshot and force-update on subscription. The `forceUpdate` setter
+  // above already triggers on workflow/ecosystem/model — `snippets` joins
+  // that subscription list below.
+  const snippetsValue = (graph.getSnapshot() as { snippets?: SnippetsNodeValue }).snippets;
+  const wildcardSetIds = snippetsValue?.wildcardSetIds ?? [];
+  const {
+    categories: snippetCategories,
+    loadedSets: loadedWildcardSets,
+    ownSetId: ownWildcardSetId,
+  } = useSnippetCategories(wildcardSetIds);
+
+  // Drop a System-kind set from the form's loaded list. User-kind sets are
+  // implicitly always-loaded and don't get a remove control.
+  const removeWildcardSet = useCallback(
+    (id: number) => {
+      const snap = graph.getSnapshot() as { snippets?: SnippetsNodeValue };
+      const current = snap.snippets;
+      if (!current) return;
+      graph.set({
+        snippets: {
+          ...current,
+          wildcardSetIds: current.wildcardSetIds.filter((x) => x !== id),
+        },
+      } as Parameters<typeof graph.set>[0]);
+    },
+    [graph]
+  );
+
+  // Add a wildcard set to the form via the resource select modal. The
+  // modal hands back a `GenerationResource` whose `id` is the picked
+  // ModelVersion id; the mutation resolves that to a `WildcardSet.id`
+  // (importing on demand if it's the first time anyone picked this
+  // version). Idempotent — picking an already-loaded set is a silent
+  // no-op (we just don't re-add the id).
+  const loadFromModelVersion = trpc.wildcardSet.loadFromModelVersion.useMutation();
+  const handleAddWildcardSet = useCallback(() => {
+    openResourceSelectModal({
+      title: 'Add wildcard set',
+      selectSource: 'addResource',
+      // Filter the modal to Wildcards-type models only. `baseModels`
+      // omitted intentionally — wildcard packs are model-agnostic.
+      options: { resources: [{ type: 'Wildcards' }] },
+      onSelect: async (resource) => {
+        try {
+          const result = await loadFromModelVersion.mutateAsync({ modelVersionId: resource.id });
+          const snap = graph.getSnapshot() as { snippets?: SnippetsNodeValue };
+          const current = snap.snippets ?? { wildcardSetIds: [], mode: 'random', batchCount: 1 };
+          if (current.wildcardSetIds.includes(result.wildcardSetId)) return;
+          graph.set({
+            snippets: {
+              ...current,
+              wildcardSetIds: [...current.wildcardSetIds, result.wildcardSetId],
+            },
+          } as Parameters<typeof graph.set>[0]);
+          if (result.invalidated) {
+            showNotification({
+              title: 'Wildcard set added with warnings',
+              message:
+                result.reason ?? 'The set was added but its content is currently invalidated.',
+              color: 'yellow',
+            });
+          }
+        } catch (e) {
+          showNotification({
+            title: 'Could not add wildcard set',
+            message: e instanceof Error ? e.message : String(e),
+            color: 'red',
+          });
+        }
+      },
+    });
+  }, [graph, loadFromModelVersion]);
 
   // Tour initialization
   const { runTour, running, currentStep, setSteps, activeTour } = useTourContext();
@@ -795,34 +889,28 @@ export function GenerationForm() {
                     }
                     error={error?.message}
                   >
+                    <ActiveWildcards
+                      loadedSets={loadedWildcardSets}
+                      ownSetId={ownWildcardSetId}
+                      onRemoveSet={removeWildcardSet}
+                      onAdd={handleAddWildcardSet}
+                      isAdding={loadFromModelVersion.isPending}
+                      className="mb-2"
+                    />
                     <Paper
                       radius="md"
                       withBorder
                       data-tour="gen:prompt"
                       className="bg-white focus-within:border-blue-6 dark:bg-dark-6 dark:focus-within:border-blue-8"
                     >
-                      <PromptInput
-                        px="sm"
-                        name="prompt"
-                        value={value}
+                      <RichTextarea
+                        value={value as string}
                         onChange={onChange}
-                        onFillForm={(metadata) => {
-                          const { resources, ...data } = metadata;
-                          graph.set(data as Parameters<typeof graph.set>[0]);
-                        }}
+                        snippets={{ categories: snippetCategories }}
+                        attentionEdit
                         placeholder="Your prompt goes here..."
-                        autosize
                         minRows={2}
-                        variant="unstyled"
-                        styles={(theme) => ({
-                          input: {
-                            padding: '10px 0',
-                            backgroundColor: 'transparent',
-                            lineHeight: theme.lineHeights.sm,
-                          },
-                          error: { display: 'none' },
-                          wrapper: { margin: 0 },
-                        })}
+                        className="!border-0 !bg-transparent"
                       />
                       {/* Nested trigger words controller */}
                       <Controller
@@ -878,12 +966,13 @@ export function GenerationForm() {
               graph={graph}
               name="negativePrompt"
               render={({ value, onChange }) => (
-                <PromptInput
-                  value={value}
+                <RichTextarea
+                  value={value as string}
                   onChange={onChange}
+                  snippets={{ categories: snippetCategories }}
+                  attentionEdit
                   label="Negative Prompt"
                   placeholder="What to avoid..."
-                  autosize
                   minRows={1}
                 />
               )}

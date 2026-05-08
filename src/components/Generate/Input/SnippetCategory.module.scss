@@ -1,0 +1,28 @@
+// Chip visual for inline `#category` references inside the prompt editor.
+// Kept minimal — a soft pill with the prompt color so it reads as a token,
+// not a full-blown badge. Padding / border-radius matches Mantine's chip
+// defaults so it sits comfortably alongside body text.
+.snippetChip {
+  display: inline;
+  padding: 0 6px;
+  margin: 0 1px;
+  border-radius: 6px;
+  background-color: var(--mantine-color-blue-light);
+  color: var(--mantine-color-blue-7);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: default;
+
+  // Keep text-selection visible against the tinted background.
+  &::selection {
+    background-color: var(--mantine-color-blue-3);
+  }
+
+  // Orphan state — chip references a category that no longer resolves
+  // (source set removed, category gone Dirty, etc.). The wrapper toggles
+  // this class via a node attribute when validation runs.
+  &.orphan {
+    background-color: var(--mantine-color-red-light);
+    color: var(--mantine-color-red-7);
+  }
+}

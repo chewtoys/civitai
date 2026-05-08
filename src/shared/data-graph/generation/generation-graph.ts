@@ -34,6 +34,7 @@ import {
   workflowOptions,
   type WorkflowOption,
 } from './config/workflows';
+import { snippetsNode } from './common';
 
 // =============================================================================
 // Priority & Output Format Types
@@ -206,6 +207,14 @@ export const generationGraph = new DataGraph<Record<never, never>, GenerationCtx
     },
     ['output', 'workflow']
   )
+
+  // Snippets payload — `{ wildcardSetIds, mode, batchCount }`. Lives at the
+  // top level (not inside the workflow discriminator) so the loaded sets
+  // persist across ecosystem and workflow switches — a user who loaded a
+  // wildcard pack while on SDXL keeps it available on Flux. Storage groups
+  // it alongside `prompt` (see GenerationFormProvider). Static config — no
+  // ctx-dependent fields — so we pass the object directly.
+  .node('snippets', snippetsNode())
 
   // Discriminator: include ecosystem-dependent nodes only for workflows with ecosystem support
   // Workflows without ecosystem support (vid2vid:*) use their own specialized graphs

@@ -51,3 +51,10 @@ export const deleteUserSnippetCategoryInputSchema = z.object({
   categoryId: z.number().int().positive(),
 });
 export type DeleteUserSnippetCategoryInput = z.infer<typeof deleteUserSnippetCategoryInputSchema>;
+
+export const loadWildcardSetFromModelVersionInputSchema = z.object({
+  modelVersionId: z.number().int().positive(),
+});
+export type LoadWildcardSetFromModelVersionInput = z.infer<
+  typeof loadWildcardSetFromModelVersionInputSchema
+>;

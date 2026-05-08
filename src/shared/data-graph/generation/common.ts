@@ -149,6 +149,52 @@ export function negativePromptNode({
 }
 
 // =============================================================================
+// Snippets / Wildcard Sets
+// =============================================================================
+
+/**
+ * Per-form payload that carries which wildcard sets the user has loaded plus
+ * the submission-mode toggles. Lives on the generation graph as a single
+ * `snippets` node so `Controller name="snippets"` reads/writes the whole
+ * shape atomically. v1 only uses `wildcardSetIds` from the UI side — `mode`
+ * and `batchCount` ride at their defaults until a UI control lands; storing
+ * them in the graph now means we don't need a localStorage migration when
+ * those controls ship.
+ *
+ * `targets` (per-target SnippetReferenceSelection arrays from the
+ * resolver/v1 doc) is intentionally NOT held on the graph: v1 has no
+ * per-value picker, so targets are always `selections: []` and are
+ * computed at submit time by the orchestrator from the parsed prompts.
+ */
+export type SnippetsNodeValue = {
+  wildcardSetIds: number[];
+  mode: 'random' | 'batch';
+  batchCount: number;
+};
+
+// Each field carries its v1 default at the schema level so a partial value
+// arriving via input (preset load, remix, dev-page `defaultValues`) parses
+// to the full shape without a separate transform — and the strict output
+// type stays `{ wildcardSetIds, mode, batchCount }` for consumers.
+const snippetsSchema = z.object({
+  wildcardSetIds: z.array(z.number().int().positive()).default([]),
+  mode: z.enum(['random', 'batch']).default('random'),
+  batchCount: z.number().int().positive().default(1),
+});
+
+export function snippetsNode() {
+  return {
+    input: snippetsSchema.optional(),
+    output: snippetsSchema,
+    defaultValue: {
+      wildcardSetIds: [] as number[],
+      mode: 'random' as const,
+      batchCount: 1,
+    } satisfies SnippetsNodeValue,
+  };
+}
+
+// =============================================================================
 // Select Node Builders
 // =============================================================================
 
