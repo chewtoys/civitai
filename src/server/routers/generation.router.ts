@@ -41,6 +41,7 @@ const ecosystemConfigInputSchema = z.object({
   modOnlyIds: z.array(z.number().int().positive()),
   disabledIds: z.array(z.number().int().positive()),
   testingIds: z.array(z.number().int().positive()),
+  nsfwIds: z.array(z.number().int().positive()),
 });
 
 export const generationRouter = router({
@@ -84,11 +85,17 @@ export const generationRouter = router({
     )
     .use(purgeOnSuccess(['generation-status']))
     .mutation(({ input }) => setGenerationStatus(input)),
-  getGenerationConfig: publicProcedure.query(({ ctx }) => getGenerationConfig(ctx.user ?? {})),
+  getGenerationConfig: publicProcedure.query(({ ctx }) =>
+    getGenerationConfig(ctx.user ?? {}, { isGreen: ctx.features.isGreen })
+  ),
   getEcosystemConfig: moderatorProcedure.query(async () => {
-    // Strip the per-user `hasTestingAccess` field — the moderator UI edits the
-    // raw operator-set config that gets persisted to Redis.
-    const { hasTestingAccess: _hasTestingAccess, ...config } = await getGenerationEcosystemConfig();
+    // Strip the runtime-context fields (`hasTestingAccess`, `isGreen`) — the
+    // moderator UI edits the raw operator-set config that gets persisted to Redis.
+    const {
+      hasTestingAccess: _hasTestingAccess,
+      isGreen: _isGreen,
+      ...config
+    } = await getGenerationEcosystemConfig();
     return config;
   }),
   setEcosystemConfig: moderatorProcedure

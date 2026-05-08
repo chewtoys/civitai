@@ -215,7 +215,7 @@ export async function buildGenerationContext(
 ): Promise<GenerationContextResult> {
   const [status, gated] = await Promise.all([
     getGenerationStatus(),
-    getGatedListsForUser(user ?? {}),
+    getGatedListsForUser(user ?? {}, { isGreen: flags?.isGreen }),
   ]);
   const limits = status.limits[userTier];
 

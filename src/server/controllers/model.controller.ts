@@ -212,7 +212,9 @@ export const getModelHandler = async ({
 
     const modelCategories = await getCategoryTags('model');
     const unavailableGenResources = await getUnavailableResources();
-    const ecosystemConfig = await getGenerationEcosystemConfig(ctx.user ?? {});
+    const ecosystemConfig = await getGenerationEcosystemConfig(ctx.user ?? {}, {
+      isGreen: features.isGreen,
+    });
 
     const metrics = model.metrics[0];
     const canManage = ctx.user?.id === model.user.id || ctx.user?.isModerator;
@@ -1472,7 +1474,9 @@ export const getAssociatedResourcesCardDataHandler = async ({
       : [];
 
     const unavailableGenResources = await getUnavailableResources();
-    const ecosystemConfig = await getGenerationEcosystemConfig(user ?? {});
+    const ecosystemConfig = await getGenerationEcosystemConfig(user ?? {}, {
+      isGreen: ctx.features.isGreen,
+    });
     const completeModels = models
       .map(({ hashes, modelVersions, rank, tagsOnModels, ...model }) => {
         const [version] = modelVersions;
