@@ -642,7 +642,6 @@ export const REDIS_SYS_KEYS = {
     BLOCKED_PROMPTS: 'generation:blocked-prompts',
     REMIX_AUDIT_CHECKED: 'generation:remix-audit-checked',
     CLIENT: 'generation:client',
-    CLIENT_TEMP: 'generation:client-temp',
   },
   TRAINING: {
     STATUS: 'training:status',

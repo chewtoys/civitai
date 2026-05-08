@@ -129,20 +129,11 @@ const enforceGenerationVersion = middleware(async ({ ctx, next }) => {
   const version = ctx.req?.headers['x-client-version'] as string;
   if (!version || version === 'unknown') return result;
 
-  const [genClient, genClientTemp] = await Promise.all([
-    sysRedis.hGetAll(REDIS_SYS_KEYS.GENERATION.CLIENT),
-    sysRedis.hGetAll(REDIS_SYS_KEYS.GENERATION.CLIENT_TEMP),
-  ]);
+  const genClient = await sysRedis.hGetAll(REDIS_SYS_KEYS.GENERATION.CLIENT);
 
-  // New implementation: generation-panel-specific modal with notes
   if (genClient.version && semver.lt(version, genClient.version)) {
     ctx.res?.setHeader('x-generation-update-required', genClient.version);
     if (genClient.notes) ctx.res?.setHeader('x-generation-update-notes', genClient.notes);
-  }
-
-  // Legacy fallback: global modal (deprecated after rollout)
-  if (genClientTemp.version && semver.lt(version, genClientTemp.version)) {
-    ctx.res?.setHeader('x-update-required', 'true');
   }
 
   return result;
