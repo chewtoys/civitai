@@ -9,6 +9,7 @@ import {
   upsertProductBadge,
 } from '~/server/services/product-badge.service';
 import { moderatorProcedure, router } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const productBadgeRouter = router({
   getProductsWithBadges: moderatorProcedure.input(getProductsWithBadgesInput).query(({ input }) => {

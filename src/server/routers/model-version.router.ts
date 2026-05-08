@@ -65,6 +65,7 @@ import {
 } from '~/server/trpc';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
 import { EntityType, JobQueueType } from '~/shared/utils/prisma/enums';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const isOwnerOrModerator = middleware(async ({ ctx, input, next }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -89,88 +90,123 @@ const isOwnerOrModerator = middleware(async ({ ctx, input, next }) => {
 });
 
 export const modelVersionRouter = router({
-  getById: publicProcedure.input(getModelVersionSchema).query(getModelVersionHandler),
+  getById: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
+    .input(getModelVersionSchema)
+    .query(getModelVersionHandler),
   // Owner-only variant that reads from the primary DB. Used by the upload/edit
   // wizards and the files modal so a freshly-mutated file or linked-component
   // is immediately visible regardless of replication lag. Owner/moderator
   // middleware guards the primary-read load.
   getByIdForEdit: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
     .input(getModelVersionSchema)
     .use(isOwnerOrModerator)
     .query(getModelVersionForEditHandler),
-  getOwner: publicProcedure.input(getByIdSchema).query(getModelVersionOwnerHandler),
-  getRunStrategies: publicProcedure.input(getByIdSchema).query(getModelVersionRunStrategiesHandler),
+  getOwner: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
+    .input(getByIdSchema)
+    .query(getModelVersionOwnerHandler),
+  getRunStrategies: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
+    .input(getByIdSchema)
+    .query(getModelVersionRunStrategiesHandler),
   getPopularity: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
     .input(getModelVersionPopularityInput)
     .query(({ input }) => getModelVersionPopularity(input)),
   getPopularities: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
     .input(getModelVersionsPopularityInput)
     .query(({ input }) => getModelVersionsPopularity(input)),
   getVersionsByIds: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
     .input(getModelVersionsByIdsInput)
     .query(({ input }) => getVersionsByIds(input)),
   getExplorationPromptsById: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
     .input(getByIdSchema)
     .query(({ input }) => getExplorationPromptsById(input)),
   toggleNotifyEarlyAccess: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(getByIdSchema)
     .use(isFlagProtected('earlyAccessModel'))
     .mutation(toggleNotifyEarlyAccessHandler),
   setLinkedComponents: guardedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(setLinkedComponentsSchema)
     .use(isOwnerOrModerator)
     .mutation(async ({ input }) => setLinkedComponents(input)),
   addLinkedComponent: guardedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(addLinkedComponentSchema)
     .use(isOwnerOrModerator)
     .mutation(async ({ input }) => addLinkedComponent(input)),
   upsert: guardedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(modelVersionUpsertSchema2)
     .use(isOwnerOrModerator)
     .mutation(upsertModelVersionHandler),
   delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsDelete })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(deleteModelVersionHandler),
   publish: guardedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(publishVersionSchema)
     .use(isOwnerOrModerator)
     .mutation(publishModelVersionHandler),
   unpublish: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(unpublishModelSchema)
     .use(isOwnerOrModerator)
     .mutation(unpublishModelVersionHandler),
   upsertExplorationPrompt: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(upsertExplorationPromptSchema)
     .use(isOwnerOrModerator)
     .mutation(({ input }) => upsertExplorationPrompt(input)),
   deleteExplorationPrompt: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(deleteExplorationPromptSchema)
     .use(isOwnerOrModerator)
     .mutation(({ input }) => deleteExplorationPrompt(input)),
   requestReview: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(requestReviewHandler),
   declineReview: moderatorProcedure.input(declineReviewSchema).mutation(declineReviewHandler),
   getModelVersionsByModelType: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
     .input(getModelVersionByModelTypeSchema)
     .query(({ input }) => getModelVersionsByModelType(input)),
   earlyAccessModelVersionsOnTimeframe: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
     .input(earlyAccessModelVersionsOnTimeframeSchema)
     .query(earlyAccessModelVersionsOnTimeframeHandler),
   modelVersionsGeneratedImagesOnTimeframe: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
     .input(modelVersionsGeneratedImagesOnTimeframeSchema)
     .query(modelVersionGeneratedImagesOnTimeframeHandler),
-  getLicense: publicProcedure.input(getByIdSchema).query(getVersionLicenseHandler),
+  getLicense: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
+    .input(getByIdSchema)
+    .query(getVersionLicenseHandler),
   earlyAccessPurchase: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite, blockApiKeys: true })
     .input(modelVersionEarlyAccessPurchase)
     .mutation(modelVersionEarlyAccessPurchaseHandler),
-  donationGoals: publicProcedure.input(getByIdSchema).query(modelVersionDonationGoalsHandler),
+  donationGoals: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
+    .input(getByIdSchema)
+    .query(modelVersionDonationGoalsHandler),
   getTrainingDetails: moderatorProcedure
     .input(getByIdSchema)
     .query(getModelVersionForTrainingReviewHandler),
   publishPrivateModelVersion: guardedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(getByIdSchema)
     .mutation(publishPrivateModelVersionHandler),
   bustCache: moderatorProcedure.input(getByIdSchema).mutation(({ input }) => bustMvCache(input.id)),
@@ -184,10 +220,12 @@ export const modelVersionRouter = router({
     ])
   ),
   recheckTrainingStatus: guardedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(recheckModelVersionTrainingStatusHandler),
   mergeVersions: guardedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
     .input(mergeVersionsSchema)
     .mutation(({ input, ctx }) => mergeVersions({ ...input, userId: ctx.user.id })),
 });

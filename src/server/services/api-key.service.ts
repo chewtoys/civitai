@@ -3,6 +3,7 @@ import { dbWrite, dbRead } from '~/server/db/client';
 import { getDbWithoutLag } from '~/server/db/db-lag-helpers';
 import type {
   AddAPIKeyInput,
+  BuzzLimit,
   DeleteAPIKeyInput,
   GetAPIKeyInput,
   GetUserAPIKeysInput,
@@ -10,12 +11,14 @@ import type {
 import { simpleUserSelect } from '~/server/selectors/user.selector';
 import { generateKey, generateSecretHash } from '~/server/utils/key-generator';
 import { generationServiceCookie } from '~/shared/constants/generation.constants';
+import { bustBuzzLimitCache, deleteAuthSubject } from '~/server/http/orchestrator/api-key-spend';
+import { logToAxiom, safeError } from '~/server/logging/client';
 
 export function getApiKey({ id }: GetAPIKeyInput) {
   return dbRead.apiKey.findUnique({
     where: { id },
     select: {
-      scope: true,
+      tokenScope: true,
       user: { select: simpleUserSelect },
     },
   });
@@ -33,9 +36,11 @@ export async function getUserApiKeys({
     where: { userId, type: 'User' },
     select: {
       id: true,
-      scope: true,
+      tokenScope: true,
       name: true,
       createdAt: true,
+      lastUsedAt: true,
+      buzzLimit: true,
     },
   });
   return keys.filter((x) => x.name !== generationServiceCookie.name);
@@ -44,7 +49,8 @@ export async function getUserApiKeys({
 export async function addApiKey(
   {
     name,
-    scope,
+    tokenScope,
+    buzzLimit,
     userId,
     maxAge,
     type,
@@ -57,7 +63,8 @@ export async function addApiKey(
 
   await dbWrite.apiKey.create({
     data: {
-      scope,
+      tokenScope,
+      buzzLimit: buzzLimit ?? undefined,
       name,
       userId,
       key: secret,
@@ -67,6 +74,43 @@ export async function addApiKey(
   });
 
   return key;
+}
+
+export async function setApiKeyBuzzLimit({
+  id,
+  userId,
+  buzzLimit,
+}: {
+  id: number;
+  userId: number;
+  buzzLimit: BuzzLimit | null;
+}) {
+  // Caller already verified the key belongs to the user; this update is the
+  // source of truth that the orchestrator will re-fetch via /api/v1/me.
+  const updated = await dbWrite.apiKey.update({
+    where: { id, userId },
+    data: { buzzLimit: buzzLimit ?? null },
+    select: { id: true, userId: true, buzzLimit: true },
+  });
+
+  // Best-effort: invalidate the orchestrator's cached limit. Failure is logged
+  // but doesn't fail the user-facing mutation — the orchestrator's cache TTL
+  // will eventually pick up the new value.
+  try {
+    await bustBuzzLimitCache({
+      userId: updated.userId,
+      subject: { type: 'apiKey', id: updated.id },
+    });
+  } catch (err) {
+    // Axiom field cap: stick to known columns. Detail goes inside `error`.
+    logToAxiom({
+      type: 'oauth.bust-cache.failed',
+      message: `bust-cache failed for apiKey ${updated.id} user ${updated.userId}`,
+      error: safeError(err),
+    }).catch(() => {});
+  }
+
+  return updated;
 }
 
 export async function getTemporaryUserApiKey(
@@ -86,11 +130,23 @@ export async function getTemporaryUserApiKey(
   return key;
 }
 
-export function deleteApiKey({ id, userId }: DeleteAPIKeyInput & { userId: number }) {
-  return dbWrite.apiKey.deleteMany({
-    where: {
-      userId,
-      id,
-    },
+export async function deleteApiKey({ id, userId }: DeleteAPIKeyInput & { userId: number }) {
+  const result = await dbWrite.apiKey.deleteMany({
+    where: { userId, id },
   });
+
+  // Best-effort: tell the orchestrator the subject is gone so its Mongo
+  // doesn't accumulate dangling spend records. Skipped silently if the
+  // delete didn't actually match anything.
+  if (result.count > 0) {
+    deleteAuthSubject({ userId, subject: { type: 'apiKey', id } }).catch((err) => {
+      logToAxiom({
+        type: 'oauth.delete-subject.failed',
+        message: `delete-subject failed for apiKey ${id} user ${userId}`,
+        error: safeError(err),
+      }).catch(() => {});
+    });
+  }
+
+  return result;
 }

@@ -17,6 +17,7 @@ import {
 import { upsertBountyEntryInputSchema } from '~/server/schema/bounty-entry.schema';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
 import { dbWrite } from '~/server/db/client';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -43,22 +44,27 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
 
 export const bountyEntryRouter = router({
   getById: publicProcedure
+    .meta({ requiredScope: TokenScope.BountiesRead })
     .input(getByIdSchema)
     .use(isFlagProtected('bounties'))
     .query(getBountyEntryHandler),
   getFiles: publicProcedure
+    .meta({ requiredScope: TokenScope.BountiesRead })
     .input(getByIdSchema)
     .use(isFlagProtected('bounties'))
     .query(getBountyEntryFilteredFilesHandler),
   upsert: guardedProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite })
     .input(upsertBountyEntryInputSchema)
     .use(isFlagProtected('bounties'))
     .mutation(upsertBountyEntryHandler),
   award: protectedProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite })
     .input(getByIdSchema)
     .use(isFlagProtected('bounties'))
     .mutation(awardBountyEntryHandler),
   delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.BountiesDelete })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .use(isFlagProtected('bounties'))

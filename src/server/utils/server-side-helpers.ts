@@ -9,6 +9,7 @@ import type { FeatureAccess } from '~/server/services/feature-flags.service';
 import { getFeatureFlagsAsync } from '~/server/services/feature-flags.service';
 import { getServerAuthSession } from '~/server/auth/get-server-auth-session';
 import { getRequestDomainColor } from '~/server/utils/server-domain';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const getServerProxySSGHelpers = async (
   ctx: GetServerSidePropsContext,
@@ -30,7 +31,9 @@ export const getServerProxySSGHelpers = async (
       fingerprint: null as any,
       domain,
       signal: new AbortController().signal,
-      // Now we can properly get domain from the request
+      tokenScope: TokenScope.Full,
+      apiKeyId: null,
+      subject: null,
     },
     transformer: superjson,
   });

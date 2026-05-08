@@ -18,6 +18,7 @@ import {
   getQuestionsHandler,
   upsertQuestionHandler,
 } from '~/server/controllers/question.controller';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -44,17 +45,26 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
 });
 
 export const questionRouter = router({
-  getById: publicProcedure.input(getByIdSchema).query(getQuestionDetailHandler),
-  getPaged: publicProcedure.input(getQuestionsSchema).query(getQuestionsHandler),
+  getById: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getByIdSchema)
+    .query(getQuestionDetailHandler),
+  getPaged: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getQuestionsSchema)
+    .query(getQuestionsHandler),
   upsert: guardedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(upsertQuestionSchema)
     .use(isOwnerOrModerator)
     .mutation(upsertQuestionHandler),
   delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(deleteQuestionHandler),
   setAnswer: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(setQuestionAnswerSchema)
     .use(isOwnerOrModerator)
     .mutation(setQuestionAnswerHandler),

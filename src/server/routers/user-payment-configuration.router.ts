@@ -5,14 +5,16 @@ import {
   getTipaltiDashboardUrl,
 } from '../services/user-payment-configuration.service';
 import { getTipaltiDashbordUrlSchema } from '~/server/schema/user-payment-configuration.schema';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const userPaymentConfigurationRouter = router({
-  get: protectedProcedure.query(getHandler),
-  getOnboardinLink: protectedProcedure.query(({ ctx }) =>
-    getStripeConnectOnboardingLink({ userId: ctx.user.id })
-  ),
+  get: protectedProcedure.meta({ requiredScope: TokenScope.Full }).query(getHandler),
+  getOnboardinLink: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .query(({ ctx }) => getStripeConnectOnboardingLink({ userId: ctx.user.id })),
 
   getTipaltiDashboardUrl: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(getTipaltiDashbordUrlSchema)
     .query(({ ctx, input }) =>
       getTipaltiDashboardUrl({ userId: ctx.user.id, type: input.type ?? 'setup' })

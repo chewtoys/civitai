@@ -6,6 +6,7 @@ import { dbRead, dbWrite } from '~/server/db/client';
 import { redis, REDIS_KEYS, REDIS_SYS_KEYS, sysRedis } from '~/server/redis/client';
 import { moderatorProcedure, protectedProcedure, router } from '~/server/trpc';
 import { cachedCounter } from '~/server/utils/cache-helpers';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 import { calculateLevelProgression } from '~/server/utils/research-utils';
 import { queueNewRaterLevelWebhook } from '~/server/webhooks/research.webhooks';
 import { getRandomInt } from '~/utils/number-helpers';
@@ -123,79 +124,84 @@ async function getUserSanity(userId: number, sanityIds?: number[], refresh = fal
 }
 
 export const researchRouter = router({
-  raterGetStatus: protectedProcedure.query(async ({ ctx }) => {
-    const count = await ratingsCounter.get(ctx.user.id);
-    const sanityIds = await getSanityIds();
-    let sanityImages: RaterImage[] = [];
-    const { strikes, sane } = await getUserSanity(ctx.user.id, sanityIds);
-    if (sane && sanityIds.length) {
-      sanityImages = await dbRead.$queryRaw<RaterImage[]>`
+  raterGetStatus: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .query(async ({ ctx }) => {
+      const count = await ratingsCounter.get(ctx.user.id);
+      const sanityIds = await getSanityIds();
+      let sanityImages: RaterImage[] = [];
+      const { strikes, sane } = await getUserSanity(ctx.user.id, sanityIds);
+      if (sane && sanityIds.length) {
+        sanityImages = await dbRead.$queryRaw<RaterImage[]>`
         SELECT i.id, i.url, null as "nsfwLevel"
         FROM "Image" i
         WHERE i.id IN (${Prisma.join(sanityIds)});
       `;
-    }
+      }
 
-    return { count, sanityImages, sane, strikes };
-  }),
-  raterGetImages: protectedProcedure.input(raterGetImagesSchema).query(async ({ ctx, input }) => {
-    // Get the user's current position
-    const userPosition = await getUserPosition(ctx.user.id);
-    const tracks = await sysRedis.hGetAll(REDIS_SYS_KEYS.RESEARCH.RATINGS_TRACKS);
-    const foundTrack = userPosition.trackId && tracks[userPosition.trackId];
-    if (!foundTrack) {
-      input.cursor = undefined; // Reset the cursor if we don't have a track
-      const trackIds = Object.keys(tracks);
-      userPosition.trackId = trackIds[getRandomInt(0, trackIds.length)];
-      userPosition.trackPosition = undefined;
-    }
-    const track = trackSchema.parse(JSON.parse(tracks[userPosition.trackId!]));
+      return { count, sanityImages, sane, strikes };
+    }),
+  raterGetImages: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .input(raterGetImagesSchema)
+    .query(async ({ ctx, input }) => {
+      // Get the user's current position
+      const userPosition = await getUserPosition(ctx.user.id);
+      const tracks = await sysRedis.hGetAll(REDIS_SYS_KEYS.RESEARCH.RATINGS_TRACKS);
+      const foundTrack = userPosition.trackId && tracks[userPosition.trackId];
+      if (!foundTrack) {
+        input.cursor = undefined; // Reset the cursor if we don't have a track
+        const trackIds = Object.keys(tracks);
+        userPosition.trackId = trackIds[getRandomInt(0, trackIds.length)];
+        userPosition.trackPosition = undefined;
+      }
+      const track = trackSchema.parse(JSON.parse(tracks[userPosition.trackId!]));
 
-    if (!userPosition.trackPosition) {
-      userPosition.trackPosition = track.startingPoint;
-      const [highestImageId] = await dbRead.$queryRaw<{ id: number }[]>`
+      if (!userPosition.trackPosition) {
+        userPosition.trackPosition = track.startingPoint;
+        const [highestImageId] = await dbRead.$queryRaw<{ id: number }[]>`
         SELECT MAX(rr."imageId") as id
         FROM research_ratings rr
         WHERE rr."userId" = ${ctx.user.id}
           AND rr."imageId" BETWEEN ${track.startingPoint} AND ${track.startingPoint + 300000}
           AND rr."createdAt" > ${track.startTime.toISOString()}::timestamp;
       `;
-      if (highestImageId?.id) userPosition.trackPosition = highestImageId.id;
-    }
+        if (highestImageId?.id) userPosition.trackPosition = highestImageId.id;
+      }
 
-    // Set the user's position if they don't have one
-    if (!foundTrack) {
-      const redisKey = `${REDIS_KEYS.RESEARCH.RATINGS_PROGRESS}:${ctx.user.id}` as const;
-      // two calls because it doesn't work with object
-      await redis.hSet(redisKey, 'currentTrack', userPosition.trackId!.toString());
-      await redis.hSet(
-        redisKey,
-        `track:${userPosition.trackId}`,
-        userPosition.trackPosition!.toString()
-      );
-      await redis.expire(redisKey, CacheTTL.week);
-    }
+      // Set the user's position if they don't have one
+      if (!foundTrack) {
+        const redisKey = `${REDIS_KEYS.RESEARCH.RATINGS_PROGRESS}:${ctx.user.id}` as const;
+        // two calls because it doesn't work with object
+        await redis.hSet(redisKey, 'currentTrack', userPosition.trackId!.toString());
+        await redis.hSet(
+          redisKey,
+          `track:${userPosition.trackId}`,
+          userPosition.trackPosition!.toString()
+        );
+        await redis.expire(redisKey, CacheTTL.week);
+      }
 
-    // Get the images
-    input.cursor ??= userPosition.trackPosition;
-    const where = [Prisma.sql`i.id > ${input.cursor}`];
-    if (track.filters?.tags?.length) {
-      where.push(Prisma.sql`EXISTS (
+      // Get the images
+      input.cursor ??= userPosition.trackPosition;
+      const where = [Prisma.sql`i.id > ${input.cursor}`];
+      if (track.filters?.tags?.length) {
+        where.push(Prisma.sql`EXISTS (
         SELECT 1 FROM "ImageTag" it
         WHERE it."imageId" = i.id
           AND it."tagId" IN (${Prisma.join(track.filters.tags)})
       )`);
-    }
+      }
 
-    if (track.filters?.misaligned) {
-      where.push(Prisma.sql`i."nsfwLevel" != i."aiNsfwLevel" AND i."aiNsfwLevel" > 0`);
-    }
+      if (track.filters?.misaligned) {
+        where.push(Prisma.sql`i."nsfwLevel" != i."aiNsfwLevel" AND i."aiNsfwLevel" > 0`);
+      }
 
-    if (track.filters?.ratingModel) {
-      where.push(Prisma.sql`i."aiModel" = ${track.filters.ratingModel}`);
-    }
+      if (track.filters?.ratingModel) {
+        where.push(Prisma.sql`i."aiModel" = ${track.filters.ratingModel}`);
+      }
 
-    const images = await dbRead.$queryRaw<RaterImage[]>`
+      const images = await dbRead.$queryRaw<RaterImage[]>`
       SELECT i.id, i.url, i."nsfwLevel"
       FROM "Image" i
       JOIN "Post" p ON i."postId" = p.id
@@ -207,12 +213,13 @@ export const researchRouter = router({
       LIMIT 30;
     `;
 
-    return {
-      images,
-      trackId: userPosition.trackId,
-    };
-  }),
+      return {
+        images,
+        trackId: userPosition.trackId,
+      };
+    }),
   raterSetRatings: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(raterSetRatingsSchema)
     .mutation(async ({ input, ctx }) => {
       const currentSanity = await getUserSanity(ctx.user.id);
@@ -256,14 +263,16 @@ export const researchRouter = router({
         await redis.expire(progressKey, CacheTTL.week);
       }
     }),
-  raterReset: protectedProcedure.mutation(async ({ ctx }) => {
-    await dbWrite.$queryRaw`
+  raterReset: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .mutation(async ({ ctx }) => {
+      await dbWrite.$queryRaw`
       INSERT INTO research_ratings_resets ("userId")
       VALUES (${ctx.user.id});
     `;
-    await redis.del(`${REDIS_KEYS.RESEARCH.RATINGS_PROGRESS}:${ctx.user.id}`);
-    ratingsCounter.clear(ctx.user.id);
-  }),
+      await redis.del(`${REDIS_KEYS.RESEARCH.RATINGS_PROGRESS}:${ctx.user.id}`);
+      ratingsCounter.clear(ctx.user.id);
+    }),
   raterGetSanityImages: moderatorProcedure.query(async () => {
     const sanityIds = await getSanityIds();
     const sanityImages = await dbRead.$queryRaw<SanityImage[]>`

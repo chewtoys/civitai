@@ -427,6 +427,8 @@ model User {
   saves                SavedModel[]
   imports              Import[]
   keys                 ApiKey[]
+  oauthClients         OauthClient[]
+  oauthConsents        OauthConsent[]
   links                UserLink[]
   comments             Comment[]
   commentReactions     CommentReaction[]
@@ -2115,18 +2117,61 @@ model KeyValue {
 enum ApiKeyType {
   System
   User
+  Access
+  Refresh
 }
 
 model ApiKey {
-  id        Int        @id @default(autoincrement())
-  key       String     @unique
-  name      String
-  scope     KeyScope[]
+  id         Int          @id @default(autoincrement())
+  key        String       @unique
+  name       String
+  tokenScope Int          @default(33554431) // Bitwise flags — default = Full (all scopes)
+  userId     Int
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime     @default(now())
+  type       ApiKeyType   @default(User)
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+  clientId   String?
+  client     OauthClient? @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  buzzLimit  Json?        // { daily?: number, weekly?: number, monthly?: number }
+
+  @@index([clientId])
+}
+
+model OauthClient {
+  id             String         @id
+  secret         String?
+  name           String
+  description    String         @default("")
+  logoUrl        String?
+  redirectUris   String[]       @default([])
+  grants         String[]       @default(["authorization_code", "refresh_token"])
+  allowedScopes  Int            @default(33554431)
+  isConfidential Boolean        @default(true)
+  userId         Int
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isVerified     Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @default(now()) @updatedAt
+  tokens         ApiKey[]
+  consents       OauthConsent[]
+
+  @@index([userId])
+}
+
+model OauthConsent {
+  id        Int         @id @default(autoincrement())
   userId    Int
-  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt DateTime   @default(now())
-  type      ApiKeyType @default(User)
-  expiresAt DateTime?
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientId  String
+  client    OauthClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  scope     Int
+  buzzLimit Json?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @default(now()) @updatedAt
+
+  @@unique([userId, clientId])
 }
 
 model AdToken {
@@ -2136,12 +2181,6 @@ model AdToken {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt DateTime  @default(now())
   expiresAt DateTime?
-}
-
-enum KeyScope {
-  Read
-  Write
-  Generate
 }
 
 model Comment {

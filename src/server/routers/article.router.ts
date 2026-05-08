@@ -35,6 +35,7 @@ import { CacheTTL } from '~/server/common/constants';
 import { dbRead } from '~/server/db/client';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
 import { isModerator } from '~/server/routers/base.router';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -58,52 +59,66 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
 
 export const articleRouter = router({
   getInfinite: publicProcedure
+    .meta({ requiredScope: TokenScope.ArticlesRead })
     .input(getInfiniteArticlesSchema)
     .query(({ input, ctx }) =>
       getArticles({ ...input, sessionUser: ctx?.user, include: ['cosmetics'] })
     ),
   getCivitaiNews: publicProcedure
+    .meta({ requiredScope: TokenScope.ArticlesRead })
     .use(edgeCacheIt({ ttl: CacheTTL.sm }))
     .query(() => getCivitaiNews()),
-  getEvents: publicProcedure.query(() => getCivitaiEvents()),
-  getById: publicProcedure.input(getByIdSchema).query(({ input, ctx }) =>
-    getArticleById({
-      ...input,
-      userId: ctx.user?.id,
-      isModerator: ctx.user?.isModerator,
-    })
-  ),
+  getEvents: publicProcedure
+    .meta({ requiredScope: TokenScope.ArticlesRead })
+    .query(() => getCivitaiEvents()),
+  getById: publicProcedure
+    .meta({ requiredScope: TokenScope.ArticlesRead })
+    .input(getByIdSchema)
+    .query(({ input, ctx }) =>
+      getArticleById({
+        ...input,
+        userId: ctx.user?.id,
+        isModerator: ctx.user?.isModerator,
+      })
+    ),
   getMyDraftArticles: protectedProcedure
+    .meta({ requiredScope: TokenScope.ArticlesRead })
     .input(getAllQuerySchema)
     .use(isFlagProtected('articles'))
     .query(({ input, ctx }) => getDraftArticlesByUserId({ ...input, userId: ctx.user.id })),
   upsert: guardedProcedure
+    .meta({ requiredScope: TokenScope.ArticlesWrite })
     .input(upsertArticleInput)
     .use(isFlagProtected('articleCreate'))
     .use(rateLimit(articleRateLimits, (input: UpsertArticleInput) => !input.id))
     .mutation(upsertArticleHandler),
   delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.ArticlesDelete })
     .input(getByIdSchema)
     .use(isFlagProtected('articleCreate'))
     .mutation(({ input, ctx }) =>
       deleteArticleById({ ...input, userId: ctx.user.id, isModerator: ctx.user.isModerator })
     ),
   unpublish: protectedProcedure
+    .meta({ requiredScope: TokenScope.ArticlesWrite })
     .input(unpublishArticleSchema)
     .use(isFlagProtected('articles'))
     .use(isOwnerOrModerator)
     .mutation(unpublishArticleHandler),
   restore: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(restoreArticleSchema)
     .use(isFlagProtected('articles'))
     .use(isModerator)
     .mutation(restoreArticleHandler),
   rescan: protectedProcedure
+    .meta({ requiredScope: TokenScope.ArticlesWrite })
     .input(getByIdSchema)
     .use(isFlagProtected('articleImageScanning'))
     .use(isOwnerOrModerator)
     .mutation(({ input, ctx }) => rescanArticle({ ...input, isModerator: ctx.user.isModerator })),
   getScanStatus: publicProcedure
+    .meta({ requiredScope: TokenScope.ArticlesRead })
     .input(getByIdSchema)
     .use(isFlagProtected('articleImageScanning'))
     .query(({ input }) => getArticleScanStatus(input)),

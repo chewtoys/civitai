@@ -25,7 +25,6 @@ export async function getOrchestratorToken(userId: number, ctx: Context) {
       name: generationServiceCookie.name,
       // make the db token live just slightly longer than the cookie token
       maxAge: generationServiceCookie.maxAge + 5,
-      scope: ['Generate'],
       type: 'System',
       userId,
     });

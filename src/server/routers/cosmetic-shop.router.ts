@@ -33,6 +33,7 @@ import {
   router,
   verifiedProcedure,
 } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const cosmeticShopRouter = router({
   // #region [Shop Items]
@@ -41,9 +42,12 @@ export const cosmeticShopRouter = router({
     .query(({ input }) => {
       return getPaginatedCosmeticShopItems(input);
     }),
-  getShopItemById: protectedProcedure.input(getByIdSchema).query(({ input }) => {
-    return getShopItemById(input);
-  }),
+  getShopItemById: protectedProcedure
+    .meta({ requiredScope: TokenScope.CollectionsRead })
+    .input(getByIdSchema)
+    .query(({ input }) => {
+      return getShopItemById(input);
+    }),
   upsertCosmetic: moderatorProcedure.input(upsertCosmeticInput).mutation(({ input }) => {
     return upsertCosmetic(input);
   }),
@@ -63,9 +67,12 @@ export const cosmeticShopRouter = router({
   getAllSections: moderatorProcedure.input(getAllCosmeticShopSections).query(({ input }) => {
     return getShopSections(input);
   }),
-  getSectionById: protectedProcedure.input(getByIdSchema).query(({ input }) => {
-    return getSectionById(input);
-  }),
+  getSectionById: protectedProcedure
+    .meta({ requiredScope: TokenScope.CollectionsRead })
+    .input(getByIdSchema)
+    .query(({ input }) => {
+      return getSectionById(input);
+    }),
   upsertShopSection: moderatorProcedure
     .input(upsertCosmeticShopSectionInput)
     .mutation(({ input, ctx }) => {
@@ -84,13 +91,17 @@ export const cosmeticShopRouter = router({
     }),
   // #endregion
   // #region [Public facing routes]
-  getShop: publicProcedure.input(getShopInput).query(({ input, ctx }) => {
-    return getShopSectionsWithItems({
-      ...input,
-      isModerator: ctx?.user?.isModerator,
-    });
-  }),
+  getShop: publicProcedure
+    .meta({ requiredScope: TokenScope.CollectionsRead })
+    .input(getShopInput)
+    .query(({ input, ctx }) => {
+      return getShopSectionsWithItems({
+        ...input,
+        isModerator: ctx?.user?.isModerator,
+      });
+    }),
   purchaseShopItem: verifiedProcedure
+    .meta({ requiredScope: TokenScope.CollectionsWrite, blockApiKeys: true })
     .input(purchaseCosmeticShopItemInput)
     .mutation(({ input, ctx }) => {
       // Calculate domain-allowed account types at router level
@@ -102,12 +113,15 @@ export const cosmeticShopRouter = router({
         buzzType,
       });
     }),
-  getPreviewImages: protectedProcedure.input(getPreviewImagesInput).query(({ input, ctx }) => {
-    return getUserPreviewImagesForCosmetics({
-      userId: ctx.user.id,
-      features: ctx.features,
-      ...input,
-    });
-  }),
+  getPreviewImages: protectedProcedure
+    .meta({ requiredScope: TokenScope.CollectionsRead })
+    .input(getPreviewImagesInput)
+    .query(({ input, ctx }) => {
+      return getUserPreviewImagesForCosmetics({
+        userId: ctx.user.id,
+        features: ctx.features,
+        ...input,
+      });
+    }),
   // #endregion
 });

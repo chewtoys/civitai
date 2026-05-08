@@ -11,12 +11,23 @@ import {
   upsertUserLinkSchema,
 } from './../schema/user-link.schema';
 import { protectedProcedure, publicProcedure, router } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const userLinkRouter = router({
-  getAll: publicProcedure.input(getUserLinksSchema).query(getUserLinksHandler),
+  getAll: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getUserLinksSchema)
+    .query(getUserLinksHandler),
   upsertMany: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(upsertManyUserLinkSchema)
     .mutation(upsertManyUserLinksHandler),
-  upsert: protectedProcedure.input(upsertUserLinkSchema).mutation(upsertUserLinkHandler),
-  delete: protectedProcedure.input(getByIdSchema).mutation(deleteUserLinkHandler),
+  upsert: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(upsertUserLinkSchema)
+    .mutation(upsertUserLinkHandler),
+  delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(getByIdSchema)
+    .mutation(deleteUserLinkHandler),
 });

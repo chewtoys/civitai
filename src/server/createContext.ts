@@ -9,6 +9,7 @@ import { createCallerFactory } from '@trpc/server';
 import { appRouter } from '~/server/routers';
 import { Fingerprint } from '~/server/utils/fingerprint';
 import { getAllServerHosts, getRequestDomainColor } from '~/server/utils/server-domain';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 type CacheSettings = {
   browserTTL?: number;
@@ -69,6 +70,16 @@ export const createContext = async ({
   res.once('finish', detach);
   res.once('close', detach);
 
+  // tokenScope: from bearer token auth (stored on req.context by getServerAuthSession).
+  // Session auth (cookies) gets Full scope — no restrictions for browser users.
+  const tokenScope = ((req as any).context?.tokenScope as number) ?? TokenScope.Full;
+  const apiKeyId = ((req as any).context?.apiKeyId as number | null) ?? null;
+  const subject =
+    ((req as any).context?.subject as
+      | { type: 'apiKey'; id: number }
+      | { type: 'oauth'; id: string }
+      | null) ?? null;
+
   return {
     user: session?.user,
     acceptableOrigin,
@@ -81,6 +92,9 @@ export const createContext = async ({
     req,
     domain,
     signal: abortController.signal,
+    tokenScope,
+    apiKeyId,
+    subject,
   };
 };
 
@@ -108,6 +122,9 @@ export const publicApiContext2 = async (req: NextApiRequest, res: NextApiRespons
     // Non-client-facing context — use an always-open signal so downstream
     // callers that expect AbortSignal have a valid value.
     signal: new AbortController().signal,
+    tokenScope: TokenScope.Full,
+    apiKeyId: null,
+    subject: null,
   });
 };
 

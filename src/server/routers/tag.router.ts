@@ -29,21 +29,29 @@ import {
 } from '~/server/schema/tag.schema';
 import { getTag, getTagsForReview } from '~/server/services/tag.service';
 import { moderatorProcedure, protectedProcedure, publicProcedure, router } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const tagRouter = router({
   getTagWithModelCount: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getTagByNameSchema)
     .query(getTagWithModelCountHandler),
-  getById: publicProcedure.input(getByIdSchema).query(({ input }) => getTag(input)),
+  getById: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getByIdSchema)
+    .query(({ input }) => getTag(input)),
   getAll: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getTagsInput.optional())
     .use(applyUserPreferences)
     .use(cacheIt({ ttl: 60 }))
     .query(getAllTagsHandler),
   getHomeExcluded: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .use(edgeCacheIt({ ttl: 24 * 60 * 60 }))
     .query(getHomeExcludedTagsHandler),
   getTrending: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getTrendingTagsSchema)
     .use(applyUserPreferences)
     .query(getTrendingTagsHandler),
@@ -52,9 +60,18 @@ export const tagRouter = router({
     .use(edgeCacheIt({ ttl: CacheTTL.day }))
     .query(({ input }) => getTagsForReview(input)),
   getManagableTags: moderatorProcedure.query(getManagableTagsHandler),
-  getVotableTags: publicProcedure.input(getVotableTagsSchema).query(getVotableTagsHandler),
-  addTagVotes: protectedProcedure.input(addTagVotesSchema).mutation(addTagVotesHandler),
-  removeTagVotes: protectedProcedure.input(removeTagVotesSchema).mutation(removeTagVotesHandler),
+  getVotableTags: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getVotableTagsSchema)
+    .query(getVotableTagsHandler),
+  addTagVotes: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
+    .input(addTagVotesSchema)
+    .mutation(addTagVotesHandler),
+  removeTagVotes: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
+    .input(removeTagVotesSchema)
+    .mutation(removeTagVotesHandler),
   addTags: moderatorProcedure.input(adjustTagsSchema).mutation(addTagsHandler),
   disableTags: moderatorProcedure.input(adjustTagsSchema).mutation(disableTagsHandler),
   moderateTags: moderatorProcedure.input(moderateTagsSchema).mutation(moderateTagsHandler),

@@ -17,6 +17,7 @@ import {
 } from '~/server/trpc';
 import { dbRead } from '~/server/db/client';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -43,15 +44,26 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
 });
 
 export const answerRouter = router({
-  getById: publicProcedure.input(getByIdSchema).query(getAnswerDetailHandler),
-  getAll: publicProcedure.input(getAnswersSchema).query(getAnswersHandler),
+  getById: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getByIdSchema)
+    .query(getAnswerDetailHandler),
+  getAll: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getAnswersSchema)
+    .query(getAnswersHandler),
   upsert: guardedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(upsertAnswerSchema)
     .use(isOwnerOrModerator)
     .mutation(upsertAnswerHandler),
   delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(deleteAnswerHandler),
-  vote: protectedProcedure.input(answerVoteSchema).mutation(setAnswerVoteHandler),
+  vote: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
+    .input(answerVoteSchema)
+    .mutation(setAnswerVoteHandler),
 });

@@ -108,9 +108,11 @@ import { createNotification } from '~/server/services/notification.service';
 import { NotificationCategory } from '~/server/common/enums';
 import { invalidateSubscriptionCaches } from '~/server/utils/subscription.utils';
 import { dbRead } from '~/server/db/client';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const userRouter = router({
   getCreator: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getUserByUsernameSchema)
     .use(
       edgeCacheIt({
@@ -123,29 +125,65 @@ export const userRouter = router({
       })
     )
     .query(getUserCreatorHandler),
-  getAll: publicProcedure.input(getAllUsersInput).query(getAllUsersHandler),
+  getAll: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getAllUsersInput)
+    .query(getAllUsersHandler),
   usernameAvailable: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getByUsernameSchema)
     .query(getUsernameAvailableHandler),
-  getById: publicProcedure.input(getByIdSchema).query(getUserByIdHandler),
-  getEngagedModels: protectedProcedure.query(getUserEngagedModelsHandler),
+  getById: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getByIdSchema)
+    .query(getUserByIdHandler),
+  getEngagedModels: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(getUserEngagedModelsHandler),
   getEngagedModelVersions: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getByIdSchema)
     .query(getUserEngagedModelVersionsHandler),
-  getFollowingUsers: protectedProcedure.query(getUserFollowingListHandler),
+  getFollowingUsers: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(getUserFollowingListHandler),
   // getHiddenUsers: protectedProcedure.query(getUserHiddenListHandler),
-  getTags: protectedProcedure.input(getUserTagsSchema.optional()).query(getUserTagsHandler),
-  getCreators: publicProcedure.input(getAllQuerySchema.partial()).query(getCreatorsHandler),
-  getNotificationSettings: protectedProcedure.query(getNotificationSettingsHandler),
-  getLists: publicProcedure.input(getByUsernameSchema).query(getUserListsHandler),
-  getList: publicProcedure.input(getUserListSchema).query(getUserListHandler),
-  getLeaderboard: publicProcedure.input(getAllQuerySchema).query(getLeaderboardHandler),
+  getTags: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getUserTagsSchema.optional())
+    .query(getUserTagsHandler),
+  getCreators: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getAllQuerySchema.partial())
+    .query(getCreatorsHandler),
+  getNotificationSettings: protectedProcedure
+    .meta({ requiredScope: TokenScope.NotificationsRead })
+    .query(getNotificationSettingsHandler),
+  getLists: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getByUsernameSchema)
+    .query(getUserListsHandler),
+  getList: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getUserListSchema)
+    .query(getUserListHandler),
+  getLeaderboard: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getAllQuerySchema)
+    .query(getLeaderboardHandler),
   getCosmetics: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getUserCosmeticsSchema.optional())
     .query(getUserCosmeticsHandler),
-  checkNotifications: protectedProcedure.query(checkUserNotificationsHandler),
-  update: guardedProcedure.input(userUpdateSchema).mutation(updateUserHandler),
+  checkNotifications: protectedProcedure
+    .meta({ requiredScope: TokenScope.NotificationsRead })
+    .query(checkUserNotificationsHandler),
+  update: guardedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(userUpdateSchema)
+    .mutation(updateUserHandler),
   requestEmailChange: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(requestEmailChangeSchema)
     .use(
       rateLimit({
@@ -157,13 +195,20 @@ export const userRouter = router({
     .mutation(async ({ input, ctx }) => {
       return requestEmailChange(ctx.user.id, input.newEmail);
     }),
-  validateEmailToken: publicProcedure.input(validateEmailTokenSchema).query(async ({ input }) => {
-    return validateEmailChangeToken(input.token);
-  }),
-  verifyEmailChange: publicProcedure.input(verifyEmailChangeSchema).mutation(async ({ input }) => {
-    return confirmEmailChange(input.token);
-  }),
+  validateEmailToken: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(validateEmailTokenSchema)
+    .query(async ({ input }) => {
+      return validateEmailChangeToken(input.token);
+    }),
+  verifyEmailChange: publicProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(verifyEmailChangeSchema)
+    .mutation(async ({ input }) => {
+      return confirmEmailChange(input.token);
+    }),
   updateBrowsingMode: guardedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(updateBrowsingModeSchema)
     .mutation(async ({ input, ctx }) => {
       await updateUserById({
@@ -173,18 +218,31 @@ export const userRouter = router({
       });
       await refreshSession(ctx.user.id);
     }),
-  delete: protectedProcedure.input(deleteUserSchema).mutation(deleteUserHandler),
-  toggleFavorite: protectedProcedure.input(toggleFavoriteInput).mutation(toggleFavoriteHandler),
+  delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .input(deleteUserSchema)
+    .mutation(deleteUserHandler),
+  toggleFavorite: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
+    .input(toggleFavoriteInput)
+    .mutation(toggleFavoriteHandler),
   toggleNotifyModel: protectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(toggleModelEngagementInput)
     .mutation(toggleNotifyModelHandler),
   completeOnboardingStep: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(userOnboardingSchema)
     .mutation(completeOnboardingHandler),
-  toggleFollow: verifiedProcedure.input(toggleFollowUserSchema).mutation(toggleFollowUserHandler),
+  toggleFollow: verifiedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
+    .input(toggleFollowUserSchema)
+    .mutation(toggleFollowUserHandler),
   toggleMute: moderatorProcedure.input(getByIdSchema).mutation(toggleMuteHandler),
   toggleBan: moderatorProcedure.input(toggleBanUserSchema).mutation(toggleBanHandler),
-  getToken: protectedProcedure.query(({ ctx }) => ({ token: createToken(ctx.user.id) })),
+  getToken: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .query(({ ctx }) => ({ token: createToken(ctx.user.id) })),
   removeAllContent: moderatorProcedure.input(getByIdSchema).mutation(async ({ input, ctx }) => {
     await removeAllContent(input);
     ctx.track.userActivity({
@@ -192,67 +250,104 @@ export const userRouter = router({
       targetUserId: input.id,
     });
   }),
-  getArticleEngagement: protectedProcedure.query(({ ctx }) =>
-    getUserArticleEngagements({ userId: ctx.user.id })
-  ),
-  getBookmarkedArticles: protectedProcedure.query(({ ctx }) =>
-    getUserBookmarkedArticles({ userId: ctx.user.id })
-  ),
-  getBookmarkedModels: protectedProcedure.query(({ ctx }) =>
-    getUserBookmarkedModels({ userId: ctx.user.id })
-  ),
-  getBountyEngagement: protectedProcedure.query(({ ctx }) =>
-    getUserBountyEngagements({ userId: ctx.user.id })
-  ),
+  getArticleEngagement: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(({ ctx }) => getUserArticleEngagements({ userId: ctx.user.id })),
+  getBookmarkedArticles: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(({ ctx }) => getUserBookmarkedArticles({ userId: ctx.user.id })),
+  getBookmarkedModels: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(({ ctx }) => getUserBookmarkedModels({ userId: ctx.user.id })),
+  getBountyEngagement: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(({ ctx }) => getUserBountyEngagements({ userId: ctx.user.id })),
   toggleArticleEngagement: verifiedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(toggleUserArticleEngagementSchema)
     .mutation(toggleArticleEngagementHandler),
   toggleBookmarkedArticle: verifiedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(getByIdSchema)
     .mutation(({ ctx, input }) =>
       toggleBookmarkedArticle({ articleId: input.id, userId: ctx.user.id })
     ),
   toggleBountyEngagement: verifiedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(toggleUserBountyEngagementSchema)
     .mutation(toggleBountyEngagementHandler),
   userByReferralCode: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(userByReferralCodeSchema)
     .query(userByReferralCodeHandler),
-  userRewardDetails: protectedProcedure.query(userRewardDetailsHandler),
+  userRewardDetails: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(userRewardDetailsHandler),
   cosmeticStatus: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getByIdSchema)
     .query(({ ctx, input }) => cosmeticStatus({ userId: ctx.user.id, id: input.id })),
-  claimCosmetic: protectedProcedure.input(getByIdSchema).mutation(claimCosmeticHandler),
+  claimCosmetic: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(getByIdSchema)
+    .mutation(claimCosmeticHandler),
   equipCosmetic: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(getByIdSchema)
     .mutation(({ ctx, input }) => equipCosmetic({ userId: ctx.user.id, cosmeticId: input.id })),
-  getPaymentMethods: protectedProcedure.query(getUserPaymentMethodsHandler),
+  getPaymentMethods: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .query(getUserPaymentMethodsHandler),
   deletePaymentMethod: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(paymentMethodDeleteInput)
     .mutation(deleteUserPaymentMethodHandler),
-  getFeatureFlags: protectedProcedure.query(getUserFeatureFlagsHandler),
+  getFeatureFlags: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(getUserFeatureFlagsHandler),
   toggleFeature: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(toggleFeatureInputSchema)
     .mutation(toggleUserFeatureFlagHandler),
-  getSettings: protectedProcedure.query(getUserSettingsHandler),
-  setSettings: protectedProcedure.input(setUserSettingsInput).mutation(setUserSettingHandler),
-  dismissAlert: protectedProcedure.input(dismissAlertSchema).mutation(dismissAlertHandler),
-  restoreAlert: protectedProcedure.input(restoreAlertSchema).mutation(restoreAlertHandler),
-  getBookmarkCollections: protectedProcedure.query(getUserBookmarkCollectionsHandler),
-  getUserPurchasedRewards: protectedProcedure.query(getUserPurchasedRewardsHandler),
+  getSettings: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(getUserSettingsHandler),
+  setSettings: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(setUserSettingsInput)
+    .mutation(setUserSettingHandler),
+  dismissAlert: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(dismissAlertSchema)
+    .mutation(dismissAlertHandler),
+  restoreAlert: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(restoreAlertSchema)
+    .mutation(restoreAlertHandler),
+  getBookmarkCollections: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(getUserBookmarkCollectionsHandler),
+  getUserPurchasedRewards: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(getUserPurchasedRewardsHandler),
   setLeaderboardEligibility: moderatorProcedure
     .input(setLeaderboardEligbilitySchema)
     .mutation(setLeaderboardEligibilityHandler),
   ingestFingerprint: publicProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(computeDeviceFingerprintSchema)
     .mutation(({ input, ctx }) =>
       computeFingerprint({ fingerprint: input.fingerprint, userId: ctx.user?.id })
     ),
-  requestAdToken: verifiedProcedure.mutation(({ ctx }) => requestAdToken({ userId: ctx.user.id })),
+  requestAdToken: verifiedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .mutation(({ ctx }) => requestAdToken({ userId: ctx.user.id })),
   updateContentSettings: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(updateContentSettingsSchema)
     .mutation(({ input, ctx }) => updateContentSettings({ userId: ctx.user.id, ...input })),
   getTipaltiStatus: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .use(isFlagProtected('userPaymentConfiguration'))
     .input(getByIdSchema)
     .query(async ({ input }) => {
@@ -263,6 +358,7 @@ export const userRouter = router({
       return { enabled: !!config?.tipaltiAccountId };
     }),
   enableTipalti: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .use(isFlagProtected('userPaymentConfiguration'))
     .input(getByIdSchema)
     .mutation(async ({ input }) => {
@@ -277,6 +373,7 @@ export const userRouter = router({
       await addSystemPermission('creatorsProgram', input.id);
     }),
   resetSubscriptionCaches: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .use(isFlagProtected('userPaymentConfiguration'))
     .input(getByIdSchema)
     .mutation(async ({ input }) => {

@@ -15,9 +15,11 @@ import {
   updateChangelog,
 } from '~/server/services/changelog.service';
 import { isFlagProtected, moderatorProcedure, publicProcedure, router } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const changelogRouter = router({
   getInfinite: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getChangelogsInput)
     .use(applyRequestDomainColor)
     .query(({ input, ctx }) =>
@@ -39,10 +41,12 @@ export const changelogRouter = router({
     .use(isFlagProtected('changelogEdit'))
     .mutation(({ input }) => deleteChangelog(input)),
   getAllTags: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getChangelogsInput.pick({ domain: true }).optional())
     .use(applyRequestDomainColor)
     .query(({ input }) => getAllTags(input)),
   getLatest: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getChangelogsInput.pick({ domain: true }).optional())
     .use(applyRequestDomainColor)
     .use(edgeCacheIt({ ttl: CacheTTL.xs }))

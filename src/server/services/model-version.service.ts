@@ -83,6 +83,7 @@ import { isDefined } from '~/utils/type-guards';
 import { ingestModelById, updateModelLastVersionAt } from './model.service';
 import { filesForModelVersionCache } from './model-file.service';
 import { getBuzzTransactionSupportedAccountTypes } from '~/utils/buzz';
+import { deleteModelFileObjects } from '~/utils/s3-utils';
 import type { BaseModel, BaseModelGroup } from '~/shared/constants/basemodel.constants';
 import { getBaseModelsByGroup } from '~/shared/constants/basemodel.constants';
 import type { ImageMetadata } from '~/server/schema/media.schema';
@@ -572,7 +573,18 @@ export const upsertModelVersion = async ({
 };
 
 export const deleteVersionById = async ({ id }: GetByIdInput) => {
+  // Populated inside the tx so the snapshot is consistent with the cascade.
+  let modelFileUrls: string[] = [];
+
   const version = await dbWrite.$transaction(async (tx) => {
+    // Snapshot URLs inside the tx — must read before the cascade nukes ModelFile rows.
+    modelFileUrls = (
+      await tx.modelFile.findMany({
+        where: { modelVersionId: id },
+        select: { url: true },
+      })
+    ).map((f) => f.url);
+
     const data = await tx.modelVersion.findFirstOrThrow({
       where: { id },
       select: {
@@ -602,8 +614,43 @@ export const deleteVersionById = async ({ id }: GetByIdInput) => {
   // Postgres transaction actually commits. Running them inside the txn would
   // invalidate caches on rollback, and would publish a lag flag for a delete
   // that never happened.
-  await preventModelVersionLag(version.modelId, version.id);
-  await bustMvCache(version.id, version.modelId);
+  // Each step is independently best-effort: a Redis blip on the lag flag must
+  // NOT shortcut the cache bust or the S3 cleanup, otherwise we leak orphan
+  // objects in B2/R2 every time Redis hiccups during a delete.
+  try {
+    await preventModelVersionLag(version.modelId, version.id);
+  } catch (error) {
+    logToAxiom({
+      type: 'error',
+      name: 'model-version-delete-prevent-lag',
+      message: `Failed to set lag flag for deleted model version ${id}`,
+      error,
+    });
+  }
+  try {
+    await bustMvCache(version.id, version.modelId);
+  } catch (error) {
+    logToAxiom({
+      type: 'error',
+      name: 'model-version-delete-bust-cache',
+      message: `Failed to bust cache for deleted model version ${id}`,
+      error,
+    });
+  }
+
+  // Post-commit S3 cleanup — only after Postgres confirms the delete stuck.
+  if (modelFileUrls.length > 0) {
+    try {
+      await deleteModelFileObjects(modelFileUrls);
+    } catch (error) {
+      logToAxiom({
+        type: 'error',
+        name: 'model-version-delete-s3-objects',
+        message: `Failed to delete S3 objects for model version ${id}`,
+        error,
+      });
+    }
+  }
 
   return version;
 };
@@ -2049,6 +2096,10 @@ export const mergeVersions = async ({
     }
   }
 
+  // Populated inside the tx after files are moved to the target — captures any
+  // file row that slipped past the move and would be orphaned by the cascade.
+  let sourceFileUrls: string[] = [];
+
   await dbWrite.$transaction(
     async (tx) => {
       // 1. Remap file types and metadata if provided
@@ -2080,6 +2131,16 @@ export const mergeVersions = async ({
         where: { modelVersionId: { in: sourceVersionIds } },
         data: { modelVersionId: targetVersionId },
       });
+
+      // Capture any file rows that slipped past the move — those are the ones the
+      // cascade in step 12 will actually orphan. Read inside the tx so the snapshot
+      // is consistent with the cascade.
+      sourceFileUrls = (
+        await tx.modelFile.findMany({
+          where: { modelVersionId: { in: sourceVersionIds } },
+          select: { url: true },
+        })
+      ).map((f) => f.url);
 
       // 3. Aggregate ModelVersionMetric stats
       const sourceMetrics = await tx.modelVersionMetric.findMany({
@@ -2254,4 +2315,20 @@ export const mergeVersions = async ({
     preventReplicationLag('model', modelId),
     preventReplicationLag('modelVersion', targetVersionId),
   ]);
+
+  // Post-commit S3 cleanup for any stragglers the move missed.
+  if (sourceFileUrls.length > 0) {
+    try {
+      await deleteModelFileObjects(sourceFileUrls);
+    } catch (error) {
+      logToAxiom({
+        type: 'error',
+        name: 'model-version-merge-s3-objects',
+        message: `Failed to delete S3 objects for merged source versions ${sourceVersionIds.join(
+          ', '
+        )}`,
+        error,
+      });
+    }
+  }
 };
