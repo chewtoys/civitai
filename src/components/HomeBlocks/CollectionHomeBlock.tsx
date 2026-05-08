@@ -86,10 +86,27 @@ const CollectionHomeBlockContent = ({ homeBlockId, metadata }: Props) => {
     data: shuffledData,
   });
 
+  const maxPerUser = metadata.collection?.maxPerUser;
   const items = useMemo(() => {
     const itemsToShow = ITEMS_PER_ROW * rows;
-    return filtered.slice(0, itemsToShow);
-  }, [filtered, rows]);
+    if (!maxPerUser) return filtered.slice(0, itemsToShow);
+
+    const perUserCount = new Map<number, number>();
+    const capped: typeof filtered = [];
+    for (const item of filtered) {
+      if (capped.length >= itemsToShow) break;
+      const userId = (item as any)?.user?.id as number | undefined;
+      if (userId == null) {
+        capped.push(item);
+        continue;
+      }
+      const count = perUserCount.get(userId) ?? 0;
+      if (count >= maxPerUser) continue;
+      perUserCount.set(userId, count + 1);
+      capped.push(item);
+    }
+    return capped;
+  }, [filtered, rows, maxPerUser]);
 
   // useEffect(() => console.log({ homeBlock, filtered, items }), [homeBlock, filtered, items]);
 

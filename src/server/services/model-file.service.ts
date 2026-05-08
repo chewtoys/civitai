@@ -3,6 +3,7 @@ import { TRPCError } from '@trpc/server';
 import { CacheTTL } from '~/server/common/constants';
 import { env } from '~/env/server';
 import { dbRead, dbWrite } from '~/server/db/client';
+import { logToAxiom } from '~/server/logging/client';
 import { REDIS_KEYS } from '~/server/redis/client';
 import type { GetByIdInput } from '~/server/schema/base.schema';
 import type {
@@ -18,6 +19,7 @@ import {
   throwNotFoundError,
 } from '~/server/utils/errorHandling';
 import { ModelStatus, ModelUploadType } from '~/shared/utils/prisma/enums';
+import { deleteModelFileObject } from '~/utils/s3-utils';
 import { prepareFile } from '~/utils/file-helpers';
 
 export type ModelFileCached = AsyncReturnType<typeof fetchModelFilesForCache>[number];
@@ -113,6 +115,7 @@ export async function updateFile({
     where: { id, modelVersion: { model: !isModerator ? { userId } : undefined } },
     select: {
       id: true,
+      url: true,
       metadata: true,
       modelVersionId: true,
       sizeKB: true,
@@ -121,15 +124,53 @@ export async function updateFile({
   });
   if (!modelFile) throw throwNotFoundError();
 
+  // If URL is changing, capture the old one for S3 cleanup
+  const oldUrl = inputData.url && inputData.url !== modelFile.url ? modelFile.url : undefined;
+
   metadata = metadata ? { ...(modelFile.metadata as Prisma.JsonObject), ...metadata } : undefined;
-  await dbWrite.modelFile.updateMany({
-    where: { id },
+  // CAS guard on URL changes: only apply if the row's url is still what we read.
+  // Prevents two concurrent URL-changing updateFile calls from both scheduling a
+  // delete of the same captured `oldUrl`. Pure-metadata updates skip the guard
+  // so they aren't starved by url-change races.
+  const updateResult = await dbWrite.modelFile.updateMany({
+    where: oldUrl ? { id, url: modelFile.url } : { id },
     data: {
       ...inputData,
       metadata,
     },
   });
+
+  // CAS lost: another writer swapped the URL between findUnique and updateMany.
+  // Surface the conflict instead of silently returning success — the caller
+  // needs to know their write did NOT apply. Skip the cache bust too, since
+  // we didn't change anything that would invalidate it.
+  if (oldUrl && updateResult.count === 0) {
+    throw throwBadRequestError(
+      'ModelFile URL was modified concurrently; retry your update'
+    );
+  }
+
   await deleteFilesForModelVersionCache(modelFile.modelVersionId);
+
+  // Clean up old S3 object after DB update succeeds (best-effort).
+  // Only fires when we actually swapped the URL on this call — pure-metadata
+  // updates have no oldUrl to clean up. Terminal .catch on the chain so an
+  // Axiom-side rejection can't leak as an unhandled rejection in this
+  // fire-and-forget path. The refcount check inside deleteModelFileObject is
+  // the load-bearing safety: it skips the delete if any other ModelFile row
+  // still references the URL.
+  if (oldUrl) {
+    deleteModelFileObject(oldUrl)
+      .catch((error) =>
+        logToAxiom({
+          type: 'error',
+          name: 'model-file-delete-s3-object',
+          message: `Failed to delete old S3 object for file ${id}`,
+          error,
+        })
+      )
+      .catch(() => {});
+  }
 
   // Merge committed updates back into the snapshot so the returned record
   // reflects post-update state (e.g. `sizeKB` on a re-upload). `updateMany`
@@ -146,7 +187,10 @@ export async function deleteFile({
   userId,
   isModerator,
 }: GetByIdInput & { userId: number; isModerator?: boolean }) {
-  // Check if deleting a training file for a model still in draft/training state
+  // Check if deleting a training file for a model still in draft/training state.
+  // Don't pull `url` here — it could change between this read and the DELETE
+  // below if a concurrent updateFile lands. We RETURN the url from DELETE
+  // instead, so the S3 cleanup always targets the URL that actually got removed.
   const file = await dbWrite.modelFile.findFirst({
     where: { id, modelVersion: { model: !isModerator ? { userId } : undefined } },
     select: {
@@ -174,7 +218,9 @@ export async function deleteFile({
     );
   }
 
-  const rows = await dbWrite.$queryRaw<{ modelVersionId: number; modelId: number }[]>`
+  const rows = await dbWrite.$queryRaw<
+    { modelVersionId: number; modelId: number; url: string }[]
+  >`
     DELETE FROM "ModelFile" mf
     USING "ModelVersion" mv, "Model" m
     WHERE mf."modelVersionId" = mv.id
@@ -183,11 +229,32 @@ export async function deleteFile({
     ${isModerator ? Prisma.empty : Prisma.raw(`AND m."userId" = ${userId}`)}
     RETURNING
       mv.id as "modelVersionId",
-      m.id as "modelId"
+      m.id as "modelId",
+      mf.url as "url"
   `;
 
   const row = rows[0];
   if (row?.modelVersionId) await deleteFilesForModelVersionCache(row.modelVersionId);
+
+  // Clean up S3 object after DB delete succeeds (best-effort).
+  // Use `row.url` (RETURNING from DELETE) — not the pre-DELETE snapshot — so a
+  // concurrent updateFile that swapped the URL doesn't cause us to delete the
+  // old (still-referenced) object while the row at the new URL is the one
+  // that actually got removed.
+  // Terminal .catch on the chain so an Axiom-side rejection can't leak as
+  // an unhandled rejection in this fire-and-forget path.
+  if (row?.url) {
+    deleteModelFileObject(row.url)
+      .catch((error) =>
+        logToAxiom({
+          type: 'error',
+          name: 'model-file-delete-s3-object',
+          message: `Failed to delete S3 object for file ${id}`,
+          error,
+        })
+      )
+      .catch(() => {});
+  }
 
   return row ? { modelVersionId: row.modelVersionId, modelId: row.modelId } : undefined;
 }

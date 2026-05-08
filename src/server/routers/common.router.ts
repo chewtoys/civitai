@@ -5,10 +5,15 @@ import {
   getEntityClubRequirementHandler,
   updateEntityAvailabilityHandler,
 } from '~/server/controllers/common.controller';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const commonRouter = router({
-  getEntityAccess: publicProcedure.input(getByEntitySchema).query(getEntityAccessHandler),
+  getEntityAccess: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getByEntitySchema)
+    .query(getEntityAccessHandler),
   getEntityClubRequirement: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getByEntitySchema)
     .query(getEntityClubRequirementHandler),
   updateAvailability: moderatorProcedure

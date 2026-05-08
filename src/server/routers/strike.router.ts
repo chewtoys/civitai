@@ -16,14 +16,17 @@ import {
   voidStrikeSchema,
 } from '~/server/schema/strike.schema';
 import { isFlagProtected, moderatorProcedure, protectedProcedure, router } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const strikeRouter = router({
   // User endpoints
   getMyStrikes: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(getMyStrikesSchema)
     .use(isFlagProtected('strikes'))
     .query(getMyStrikesHandler),
   getMyStrikeSummary: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .use(isFlagProtected('strikes'))
     .query(getMyStrikeSummaryHandler),
 

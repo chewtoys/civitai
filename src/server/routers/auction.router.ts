@@ -26,34 +26,44 @@ import {
   router,
 } from '~/server/trpc';
 import { getAllowedAccountTypes } from '~/server/utils/buzz-helpers';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const auctionProcedure = protectedProcedure.use(isFlagProtected('auctions'));
 
 // .use(edgeCacheIt({ ttl: CacheTTL.hour }))
 
 export const auctionRouter = router({
-  getAll: publicProcedure.query(getAllAuctions),
+  getAll: publicProcedure.meta({ requiredScope: TokenScope.BountiesRead }).query(getAllAuctions),
   getBySlug: publicProcedure
+    .meta({ requiredScope: TokenScope.BountiesRead })
     .input(getAuctionBySlugInput)
     .query(({ input }) => getAuctionBySlug(input)),
-  getMyBids: auctionProcedure.query(({ ctx }) => getMyBids({ userId: ctx.user.id })),
-  getMyRecurringBids: auctionProcedure.query(({ ctx }) =>
-    getMyRecurringBids({ userId: ctx.user.id })
-  ),
-  createBid: auctionProcedure.input(createBidInput).mutation(({ input, ctx }) =>
-    createBid({
-      ...input,
-      userId: ctx.user.id,
-      accountTypes: getAllowedAccountTypes(ctx.features),
-    })
-  ),
+  getMyBids: auctionProcedure
+    .meta({ requiredScope: TokenScope.BountiesRead })
+    .query(({ ctx }) => getMyBids({ userId: ctx.user.id })),
+  getMyRecurringBids: auctionProcedure
+    .meta({ requiredScope: TokenScope.BountiesRead })
+    .query(({ ctx }) => getMyRecurringBids({ userId: ctx.user.id })),
+  createBid: auctionProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite, blockApiKeys: true })
+    .input(createBidInput)
+    .mutation(({ input, ctx }) =>
+      createBid({
+        ...input,
+        userId: ctx.user.id,
+        accountTypes: getAllowedAccountTypes(ctx.features),
+      })
+    ),
   deleteBid: auctionProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite })
     .input(deleteBidInput)
     .mutation(({ input, ctx }) => deleteBid({ ...input, userId: ctx.user.id })),
   deleteRecurringBid: auctionProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite })
     .input(deleteBidInput)
     .mutation(({ input, ctx }) => deleteRecurringBid({ ...input, userId: ctx.user.id })),
   togglePauseRecurringBid: auctionProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite })
     .input(togglePauseRecurringBidInput)
     .mutation(({ input, ctx }) => togglePauseRecurringBid({ ...input, userId: ctx.user.id })),
   modGetAuctionBases: moderatorProcedure

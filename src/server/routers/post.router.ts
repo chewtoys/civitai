@@ -39,6 +39,7 @@ import { addPostImage, getPostEditDetail } from './../services/post.service';
 import { guardedProcedure, publicProcedure, verifiedProcedure } from './../trpc';
 import { enqueueJobs } from '~/server/services/job-queue.service';
 import { EntityType, JobQueueType } from '~/shared/utils/prisma/enums';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -89,58 +90,81 @@ const isImageOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => 
 
 export const postRouter = router({
   getInfinite: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(postsQuerySchema)
     .use(applyUserPreferences)
     .query(getPostsInfiniteHandler),
-  get: publicProcedure.input(getByIdSchema).query(getPostHandler),
+  get: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getByIdSchema)
+    .query(getPostHandler),
   getEdit: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getByIdSchema)
     .query(({ ctx, input }) => getPostEditDetail({ ...input, user: ctx.user })),
-  create: guardedProcedure.input(postCreateSchema).mutation(createPostHandler),
+  create: guardedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
+    .input(postCreateSchema)
+    .mutation(createPostHandler),
   update: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(postUpdateSchema)
     .use(isOwnerOrModerator)
     .mutation(updatePostHandler),
   delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaDelete })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(deletePostHandler),
   addImage: guardedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(imageSchema.extend({ postId: z.number() }))
     .mutation(({ ctx, input }) => addPostImage({ ...input, user: ctx.user })),
   updateImage: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(updatePostImageSchema)
     .use(isImageOwnerOrModerator)
     .mutation(updatePostImageHandler),
   addResourceToImage: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(addResourceToPostImageInput)
     .use(isImageOwnerOrModerator)
     .mutation(addResourceToPostImageHandler),
   removeResourceFromImage: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(removeResourceFromPostImageInput)
     .use(isImageOwnerOrModerator)
     .mutation(removeResourceFromPostImageHandler),
   reorderImages: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(reorderPostImagesSchema)
     .use(isOwnerOrModerator)
     .mutation(reorderPostImagesHandler),
   getTags: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getPostTagsSchema)
     .use(applyUserPreferences)
     .query(getPostTagsHandler),
   addTag: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(addPostTagSchema)
     .use(isOwnerOrModerator)
     .mutation(addPostTagHandler),
   removeTag: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(removePostTagSchema)
     .use(isOwnerOrModerator)
     .mutation(removePostTagHandler),
-  getResources: publicProcedure.input(getByIdSchema).query(getPostResourcesHandler),
+  getResources: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getByIdSchema)
+    .query(getPostResourcesHandler),
   getContestCollectionDetails: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getByIdSchema)
     .query(getPostContestCollectionDetailsHandler),
   updateCollectionTagId: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(updatePostCollectionTagIdInput)
     .use(isOwnerOrModerator)
     .mutation(updatePostCollectionTagIdHandler),

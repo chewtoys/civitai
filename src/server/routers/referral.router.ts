@@ -14,6 +14,7 @@ import { ReferralRewardKind, ReferralRewardStatus } from '~/shared/utils/prisma/
 import { signalClient } from '~/utils/signal-client';
 import { SignalMessages } from '~/server/common/enums';
 import type { SubscriptionProductMetadata } from '~/server/schema/subscriptions.schema';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const redeemInput = z.object({ offerIndex: z.number().int().min(0) });
 
@@ -63,129 +64,137 @@ async function generateCleanCode() {
 }
 
 export const referralRouter = router({
-  getDashboard: protectedProcedure.query(async ({ ctx }) => {
-    const userId = ctx.user.id;
-    // Fire-and-forget: backfill any milestones the user has earned but that
-    // weren't written yet (e.g. after the points-rebalance). awardMilestones
-    // is idempotent via a unique (userId, threshold) constraint.
-    awardMilestones(userId).catch(() => undefined);
-    const [
-      code,
-      balance,
-      recentRewards,
-      milestones,
-      redemptions,
-      conversionStats,
-      referralSub,
-      paidMembership,
-    ] = await Promise.all([
-      getOrCreateCode(userId),
-      getReferrerBalance(userId),
-      dbRead.referralReward.findMany({
-        where: {
-          userId,
-          kind: { in: [ReferralRewardKind.MembershipToken, ReferralRewardKind.BuzzKickback] },
-          status: { in: [ReferralRewardStatus.Pending, ReferralRewardStatus.Settled] },
-        },
-        orderBy: { earnedAt: 'desc' },
-        take: 25,
-        select: {
-          id: true,
-          kind: true,
-          status: true,
-          tokenAmount: true,
-          buzzAmount: true,
-          tierGranted: true,
-          earnedAt: true,
-          settledAt: true,
-          expiresAt: true,
-        },
-      }),
-      dbRead.referralMilestone.findMany({ where: { userId }, orderBy: { threshold: 'asc' } }),
-      dbRead.referralRedemption.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'desc' },
-        take: 10,
-      }),
-      dbRead.userReferral.count({
-        where: {
-          userReferralCode: { userId },
-          firstPaidAt: { not: null },
-        },
-      }),
-      dbRead.customerSubscription.findFirst({
-        where: { userId, buzzType: 'referral' },
-        select: {
-          status: true,
-          currentPeriodStart: true,
-          currentPeriodEnd: true,
-          metadata: true,
-          product: { select: { metadata: true } },
-        },
-      }),
-      dbRead.customerSubscription.findFirst({
-        where: { userId, status: 'active', buzzType: { not: 'referral' } },
-        select: {
-          currentPeriodEnd: true,
-          product: { select: { metadata: true } },
-        },
-      }),
-    ]);
+  getDashboard: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(async ({ ctx }) => {
+      const userId = ctx.user.id;
+      // Fire-and-forget: backfill any milestones the user has earned but that
+      // weren't written yet (e.g. after the points-rebalance). awardMilestones
+      // is idempotent via a unique (userId, threshold) constraint.
+      awardMilestones(userId).catch(() => undefined);
+      const [
+        code,
+        balance,
+        recentRewards,
+        milestones,
+        redemptions,
+        conversionStats,
+        referralSub,
+        paidMembership,
+      ] = await Promise.all([
+        getOrCreateCode(userId),
+        getReferrerBalance(userId),
+        dbRead.referralReward.findMany({
+          where: {
+            userId,
+            kind: { in: [ReferralRewardKind.MembershipToken, ReferralRewardKind.BuzzKickback] },
+            status: { in: [ReferralRewardStatus.Pending, ReferralRewardStatus.Settled] },
+          },
+          orderBy: { earnedAt: 'desc' },
+          take: 25,
+          select: {
+            id: true,
+            kind: true,
+            status: true,
+            tokenAmount: true,
+            buzzAmount: true,
+            tierGranted: true,
+            earnedAt: true,
+            settledAt: true,
+            expiresAt: true,
+          },
+        }),
+        dbRead.referralMilestone.findMany({ where: { userId }, orderBy: { threshold: 'asc' } }),
+        dbRead.referralRedemption.findMany({
+          where: { userId },
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+        }),
+        dbRead.userReferral.count({
+          where: {
+            userReferralCode: { userId },
+            firstPaidAt: { not: null },
+          },
+        }),
+        dbRead.customerSubscription.findFirst({
+          where: { userId, buzzType: 'referral' },
+          select: {
+            status: true,
+            currentPeriodStart: true,
+            currentPeriodEnd: true,
+            metadata: true,
+            product: { select: { metadata: true } },
+          },
+        }),
+        dbRead.customerSubscription.findFirst({
+          where: { userId, status: 'active', buzzType: { not: 'referral' } },
+          select: {
+            currentPeriodEnd: true,
+            product: { select: { metadata: true } },
+          },
+        }),
+      ]);
 
-    const activeTier = (
-      (referralSub?.product?.metadata ?? null) as {
-        tier?: string;
-      } | null
-    )?.tier;
-    const referralQueue =
-      (referralSub?.metadata as { referralQueue?: { tier: string; durationDays: number }[] } | null)
-        ?.referralQueue ?? [];
+      const activeTier = (
+        (referralSub?.product?.metadata ?? null) as {
+          tier?: string;
+        } | null
+      )?.tier;
+      const referralQueue =
+        (
+          referralSub?.metadata as {
+            referralQueue?: { tier: string; durationDays: number }[];
+          } | null
+        )?.referralQueue ?? [];
 
-    const paidMembershipTier = (
-      (paidMembership?.product?.metadata ?? null) as { tier?: string } | null
-    )?.tier;
+      const paidMembershipTier = (
+        (paidMembership?.product?.metadata ?? null) as { tier?: string } | null
+      )?.tier;
 
-    return {
-      code: code.code,
-      balance,
-      recentRewards,
-      milestones,
-      redemptions,
-      shopItems: constants.referrals.shopItems,
-      milestoneLadder: constants.referrals.milestones,
-      conversionCount: conversionStats,
-      referralGrant:
-        referralSub && activeTier && referralSub.status === 'active'
-          ? {
-              activeTier,
-              currentPeriodStart: referralSub.currentPeriodStart,
-              currentPeriodEnd: referralSub.currentPeriodEnd,
-              queue: referralQueue,
-            }
-          : null,
-      activeMembership:
-        paidMembershipTier && paidMembership
-          ? {
-              tier: paidMembershipTier,
-              currentPeriodEnd: paidMembership.currentPeriodEnd,
-            }
-          : null,
-    };
-  }),
+      return {
+        code: code.code,
+        balance,
+        recentRewards,
+        milestones,
+        redemptions,
+        shopItems: constants.referrals.shopItems,
+        milestoneLadder: constants.referrals.milestones,
+        conversionCount: conversionStats,
+        referralGrant:
+          referralSub && activeTier && referralSub.status === 'active'
+            ? {
+                activeTier,
+                currentPeriodStart: referralSub.currentPeriodStart,
+                currentPeriodEnd: referralSub.currentPeriodEnd,
+                queue: referralQueue,
+              }
+            : null,
+        activeMembership:
+          paidMembershipTier && paidMembership
+            ? {
+                tier: paidMembershipTier,
+                currentPeriodEnd: paidMembership.currentPeriodEnd,
+              }
+            : null,
+      };
+    }),
 
-  redeem: protectedProcedure.input(redeemInput).mutation(async ({ ctx, input }) => {
-    try {
-      return await redeemTokens({ userId: ctx.user.id, offerIndex: input.offerIndex });
-    } catch (err) {
-      throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
-    }
-  }),
+  redeem: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(redeemInput)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await redeemTokens({ userId: ctx.user.id, offerIndex: input.offerIndex });
+      } catch (err) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: (err as Error).message });
+      }
+    }),
 
-  getShopOffers: protectedProcedure.query(async () => {
+  getShopOffers: protectedProcedure.meta({ requiredScope: TokenScope.UserRead }).query(async () => {
     return getShopOffers();
   }),
 
-  getTierBonuses: publicProcedure.query(async () => {
+  getTierBonuses: publicProcedure.meta({ requiredScope: TokenScope.UserRead }).query(async () => {
     const products = await dbRead.product.findMany({ select: { metadata: true } });
     const monthlyBuzzByTier: Record<string, number> = {};
     const rewardsMultiplierByTier: Record<string, number> = {};
@@ -225,6 +234,7 @@ export const referralRouter = router({
   }),
 
   trackCheckoutView: publicProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(z.object({ code: z.string() }))
     .mutation(async ({ input }) => {
       const code = await dbRead.userReferralCode.findUnique({

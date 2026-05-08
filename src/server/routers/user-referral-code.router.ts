@@ -9,11 +9,19 @@ import {
   upsertUserReferralCodesSchema,
 } from '~/server/schema/user-referral-code.schema';
 import { getByIdSchema } from '~/server/schema/base.schema';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const userReferralCodeRouter = router({
-  getAll: protectedProcedure.input(getUserReferralCodesSchema).query(getUserReferralCodesHandler),
+  getAll: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getUserReferralCodesSchema)
+    .query(getUserReferralCodesHandler),
   upsert: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(upsertUserReferralCodesSchema)
     .mutation(upsertUserReferralCodeHandler),
-  delete: protectedProcedure.input(getByIdSchema).mutation(deleteUserReferralCodeHandler),
+  delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .input(getByIdSchema)
+    .mutation(deleteUserReferralCodeHandler),
 });

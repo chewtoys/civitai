@@ -802,6 +802,11 @@ export const REDIS_KEYS = {
     COUNT: 'generation:count',
     BLOCKED_PROMPTS: 'generation:blocked-prompts',
   },
+  OAUTH: {
+    AUTHORIZATION_CODES: 'packed:oauth:authorization-codes',
+    DEVICE_CODES: 'packed:oauth:device-codes',
+    DEVICE_USER_CODES: 'packed:oauth:device-user-codes',
+  },
   SYSTEM: {
     MODERATED_TAGS: 'packed:system:moderated_tags',
     TAG_RULES: 'system:tag-rules',

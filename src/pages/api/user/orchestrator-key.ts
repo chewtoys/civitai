@@ -17,7 +17,6 @@ export default AuthedEndpoint(
 
       const key = await addApiKey({
         name,
-        scope: ['Generate'],
         type: 'System',
         userId: user.id,
       });

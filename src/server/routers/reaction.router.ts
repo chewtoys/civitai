@@ -3,9 +3,11 @@ import { toggleReactionSchema, reactionRateLimits } from './../schema/reaction.s
 import { router, guardedProcedure } from '~/server/trpc';
 import { rateLimit } from '~/server/middleware.trpc';
 import { handleLogError } from '~/server/utils/errorHandling';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const reactionRouter = router({
   toggle: guardedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(toggleReactionSchema)
     .use(rateLimit(reactionRateLimits))
     .mutation(({ ctx, input }) => {
