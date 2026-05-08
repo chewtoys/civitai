@@ -37,7 +37,10 @@ import { tagIdsForImagesCache } from '~/server/redis/caches';
 import type { MediaMetadata } from '~/server/schema/media.schema';
 import { deleteUserProfilePictureCache } from '~/server/services/user.service';
 import { bustCachesForPosts, updatePostNsfwLevel } from '~/server/services/post.service';
-import { updateComicNsfwLevelsForImage } from '~/server/services/nsfwLevels.service';
+import {
+  queueComicsForPanelImage,
+  updateComicNsfwLevelsForImage,
+} from '~/server/services/nsfwLevels.service';
 import { queueImageSearchIndexUpdate } from '~/server/services/image.service';
 import { signalClient } from '~/utils/signal-client';
 import { addImageToQueue } from '~/server/services/games/new-order.service';
@@ -343,6 +346,11 @@ export async function processImageScanWorkflow({
     // A previously-cached Blocked image can still satisfy the showcase query
     // filters (needsReview IS NULL, nsfwLevel != 0) so drop it from the showcase.
     if (image.postId) await bustCachesForPosts(image.postId);
+    // If this image belongs to a comic panel, the parent project may
+    // have been search-indexed under the old (unblocked) state. Re-queue
+    // it so the next index pass re-evaluates visibility against the
+    // moderation gates in `comics.search-index.ts:WHERE`.
+    await queueComicsForPanelImage(image.id);
   }
   // handle scanned image updates
   else if (toUpdate.ingestion === ImageIngestionStatus.Scanned) {
@@ -360,6 +368,10 @@ export async function processImageScanWorkflow({
       await bustCachesForPosts(image.postId);
     }
     await updateComicNsfwLevelsForImage(image.id);
+    // Refresh the comic project in the search index — even on a clean
+    // Scanned, `needsReview` may have been set, which the index treats
+    // as a visibility gate.
+    await queueComicsForPanelImage(image.id);
 
     await queueImageSearchIndexUpdate({
       ids: [image.id],

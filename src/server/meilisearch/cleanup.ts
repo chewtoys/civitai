@@ -115,20 +115,47 @@ export const CLEANUP_INDEXES: IndexConfig[] = [
     indexName: COMICS_SEARCH_INDEX,
     tableName: 'ComicProject',
     alias: 'cp',
+    // MUST mirror `comics.search-index.ts:WHERE`. Cleanup compares
+    // index docs against this predicate to decide which still belong
+    // — a permissive predicate here means newly TOS-violated, banned-
+    // user, or tainted-image projects are kept "valid" and never
+    // pruned from Meilisearch.
     where: (ids) => Prisma.sql`
       cp.id IN (${Prisma.join(ids)})
       AND cp.status = 'Active'::"ComicProjectStatus"
+      AND cp."tosViolation" = FALSE
       AND cp."userId" != -1
+      AND EXISTS (
+        SELECT 1 FROM "User" u
+        WHERE u.id = cp."userId" AND u."bannedAt" IS NULL
+      )
       AND EXISTS (
         SELECT 1 FROM "ComicChapter" cc
         WHERE cc."projectId" = cp.id
         AND cc.status = 'Published'::"ComicChapterStatus"
         AND EXISTS (
           SELECT 1 FROM "ComicPanel" cpn
+          JOIN "Image" i ON i.id = cpn."imageId"
           WHERE cpn."projectId" = cc."projectId"
           AND cpn."chapterPosition" = cc."position"
           AND cpn.status = 'Ready'::"ComicPanelStatus"
           AND cpn."imageUrl" IS NOT NULL
+          AND i."ingestion" = 'Scanned'::"ImageIngestionStatus"
+          AND i."needsReview" IS NULL
+          AND i."tosViolation" = FALSE
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM "ComicPanel" cpn
+          LEFT JOIN "Image" i ON i.id = cpn."imageId"
+          WHERE cpn."projectId" = cc."projectId"
+          AND cpn."chapterPosition" = cc."position"
+          AND cpn.status = 'Ready'::"ComicPanelStatus"
+          AND (
+            i.id IS NULL
+            OR i."ingestion" != 'Scanned'::"ImageIngestionStatus"
+            OR i."needsReview" IS NOT NULL
+            OR i."tosViolation" = TRUE
+          )
         )
       )
     `,

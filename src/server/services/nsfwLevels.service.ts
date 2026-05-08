@@ -8,6 +8,7 @@ import {
   articlesSearchIndex,
   bountiesSearchIndex,
   collectionsSearchIndex,
+  comicsSearchIndex,
   modelsSearchIndex,
 } from '~/server/search-index';
 import { limitConcurrency } from '~/server/utils/concurrency-helpers';
@@ -642,4 +643,47 @@ export async function updateComicNsfwLevelsForImage(imageId: number) {
   if (!panels.length) return;
   const projectIds = [...new Set(panels.map((p) => p.projectId))];
   await updateComicNsfwLevels(projectIds);
+}
+
+/**
+ * Queue the parent comic project(s) of `imageId` for a Meilisearch refresh.
+ *
+ * Called any time a panel image's moderation-relevant state changes —
+ * `ingestion`, `needsReview`, or `tosViolation`. The comics search index's
+ * WHERE clause (`comics.search-index.ts`) gates project visibility on
+ * those exact fields, so without this hook, mod-driven block/unblock /
+ * appeal flows would leave the comic indexed under its old (visible)
+ * state even after the listing route would hide it.
+ *
+ * Safe to fire-and-forget — only does work when the image is actually
+ * tied to a comic panel.
+ */
+export async function queueComicsForPanelImage(imageId: number) {
+  const panels = await dbRead.comicPanel.findMany({
+    where: { imageId },
+    select: { projectId: true },
+  });
+  if (!panels.length) return;
+  const projectIds = [...new Set(panels.map((p) => p.projectId))];
+  await comicsSearchIndex.queueUpdate(
+    projectIds.map((id) => ({ id, action: SearchIndexUpdateQueueAction.Update }))
+  );
+}
+
+/**
+ * Same as {@link queueComicsForPanelImage} but for a batch of image IDs.
+ * Used by moderator bulk paths (block/unblock/appeal) that touch many
+ * images at once.
+ */
+export async function queueComicsForPanelImages(imageIds: number[]) {
+  if (!imageIds.length) return;
+  const panels = await dbRead.comicPanel.findMany({
+    where: { imageId: { in: imageIds } },
+    select: { projectId: true },
+  });
+  if (!panels.length) return;
+  const projectIds = [...new Set(panels.map((p) => p.projectId))];
+  await comicsSearchIndex.queueUpdate(
+    projectIds.map((id) => ({ id, action: SearchIndexUpdateQueueAction.Update }))
+  );
 }

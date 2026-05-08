@@ -37,6 +37,7 @@ import {
 import { getGallerySettingsByModelId } from '~/server/services/model.service';
 import { trackModActivity } from '~/server/services/moderator.service';
 import { createNotification } from '~/server/services/notification.service';
+import { queueComicsForPanelImage } from '~/server/services/nsfwLevels.service';
 import { bustCachesForPosts } from '~/server/services/post.service';
 import { amIBlockedByUser } from '~/server/services/user.service';
 import {
@@ -239,6 +240,9 @@ export const setTosViolationHandler = async ({
 
     if (image.pHash) await addBlockedImage({ hash: image.pHash, reason: BlockImageReason.TOS });
     await queueImageSearchIndexUpdate({ ids: [id], action: SearchIndexUpdateQueueAction.Delete });
+    // Re-queue the parent comic project (if any) so the search index
+    // re-evaluates visibility against the new (Blocked) Image state.
+    await queueComicsForPanelImage(id);
     if (image.postId) await bustCachesForPosts(image.postId);
 
     // Look up report details for violation type resolution
