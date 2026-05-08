@@ -16,22 +16,33 @@ import {
   unlockTokensForUser,
   getHistoricalPrepaidDeliveries,
 } from '~/server/services/subscriptions.service';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const subscriptionsRouter = router({
-  getPlans: publicProcedure.input(getPlansSchema).query(getPlansHandler),
+  getPlans: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .input(getPlansSchema)
+    .query(getPlansHandler),
   getUserSubscription: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getUserSubscriptionSchema.partial().optional())
     .query(getUserSubscriptionHandler),
-  getAllUserSubscriptions: publicProcedure.query(getAllUserSubscriptionsHandler),
+  getAllUserSubscriptions: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
+    .query(getAllUserSubscriptionsHandler),
   claimPrepaidToken: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
     .input(claimPrepaidTokenSchema)
     .mutation(async ({ input, ctx }) => {
       return claimPrepaidToken({ tokenId: input.tokenId, userId: ctx.user.id });
     }),
-  claimAllPrepaidTokens: protectedProcedure.mutation(async ({ ctx }) => {
-    return claimAllPrepaidTokens({ userId: ctx.user.id });
-  }),
+  claimAllPrepaidTokens: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserWrite })
+    .mutation(async ({ ctx }) => {
+      return claimAllPrepaidTokens({ userId: ctx.user.id });
+    }),
   getHistoricalPrepaidDeliveries: protectedProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(z.object({ accountType: z.enum(['yellow', 'green']).default('yellow') }))
     .query(async ({ input, ctx }) => {
       return getHistoricalPrepaidDeliveries({

@@ -8,16 +8,21 @@ import {
 import { edgeCacheIt } from '~/server/middleware.trpc';
 import { CacheTTL } from '~/server/common/constants';
 import { dbKV } from '~/server/db/db-helpers';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const systemRouter = router({
-  getLiveNow: publicProcedure.use(edgeCacheIt({ ttl: CacheTTL.xs })).query(() => getLiveNow()),
-  getBrowsingSettingAddons: publicProcedure.query(() => {
+  getLiveNow: publicProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .use(edgeCacheIt({ ttl: CacheTTL.xs }))
+    .query(() => getLiveNow()),
+  getBrowsingSettingAddons: publicProcedure.meta({ requiredScope: TokenScope.Full }).query(() => {
     return getBrowsingSettingAddons();
   }),
-  getLiveFeatureFlags: publicProcedure.query(() => {
+  getLiveFeatureFlags: publicProcedure.meta({ requiredScope: TokenScope.Full }).query(() => {
     return getLiveFeatureFlags();
   }),
   getDbKV: publicProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(z.object({ key: z.string() }))
     .use(edgeCacheIt({ ttl: CacheTTL.sm }))
     .query(async ({ input }) => {

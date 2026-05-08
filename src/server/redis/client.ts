@@ -642,7 +642,6 @@ export const REDIS_SYS_KEYS = {
     BLOCKED_PROMPTS: 'generation:blocked-prompts',
     REMIX_AUDIT_CHECKED: 'generation:remix-audit-checked',
     CLIENT: 'generation:client',
-    CLIENT_TEMP: 'generation:client-temp',
   },
   TRAINING: {
     STATUS: 'training:status',
@@ -802,6 +801,11 @@ export const REDIS_KEYS = {
     TOKENS: 'generation:tokens',
     COUNT: 'generation:count',
     BLOCKED_PROMPTS: 'generation:blocked-prompts',
+  },
+  OAUTH: {
+    AUTHORIZATION_CODES: 'packed:oauth:authorization-codes',
+    DEVICE_CODES: 'packed:oauth:device-codes',
+    DEVICE_USER_CODES: 'packed:oauth:device-user-codes',
   },
   SYSTEM: {
     MODERATED_TAGS: 'packed:system:moderated_tags',

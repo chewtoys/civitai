@@ -1,4 +1,4 @@
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type {
   GetUserNotificationsSchema,
   ToggleNotificationSettingInput,
@@ -16,7 +16,7 @@ export const getUserNotificationsInfiniteHandler = async ({
   ctx,
 }: {
   input: Partial<GetUserNotificationsSchema>;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { id: userId } = ctx.user;
   const limit = input.limit ?? DEFAULT_PAGE_SIZE;
@@ -45,7 +45,7 @@ export const upsertUserNotificationSettingsHandler = async ({
   ctx,
 }: {
   input: ToggleNotificationSettingInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     if (input.toggle) {

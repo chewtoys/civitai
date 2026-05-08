@@ -22,13 +22,16 @@ import {
   aspectRatioNode,
   createCheckpointGraph,
   createResourcesGraph,
-  negativePromptNode,
+  negativePromptGraph,
+  promptGraph,
   samplerNode,
   seedNode,
   sliderNode,
+  triggerWordsGraph,
   type VersionGroup,
   type ResourceData,
 } from './common';
+import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // HiDream Variant/Precision Constants
@@ -39,17 +42,6 @@ export type HiDreamPrecision = 'fp8' | 'fp16';
 
 /** HiDream variant type */
 export type HiDreamVariant = 'fast' | 'dev' | 'full';
-
-// =============================================================================
-// Aspect Ratios
-// =============================================================================
-
-/** HiDream aspect ratios (1024px based) */
-const hiDreamAspectRatios = [
-  { label: '2:3', value: '2:3', width: 832, height: 1216 },
-  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
-  { label: '3:2', value: '3:2', width: 1216, height: 832 },
-];
 
 // =============================================================================
 // Variant Subgraphs
@@ -68,7 +60,7 @@ type HiDreamVariantCtx = {
  * Controls are mostly locked in these modes
  */
 const fastDevModeGraph = new DataGraph<HiDreamVariantCtx, GenerationCtx>()
-  .node('aspectRatio', aspectRatioNode({ options: hiDreamAspectRatios, defaultValue: '1:1' }))
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node('seed', seedNode());
 
 /**
@@ -76,8 +68,8 @@ const fastDevModeGraph = new DataGraph<HiDreamVariantCtx, GenerationCtx>()
  */
 const fullModeGraph = new DataGraph<HiDreamVariantCtx, GenerationCtx>()
   .merge(createResourcesGraph())
-  .node('aspectRatio', aspectRatioNode({ options: hiDreamAspectRatios, defaultValue: '1:1' }))
-  .node('negativePrompt', negativePromptNode())
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
+  .merge(negativePromptGraph)
   .node(
     'sampler',
     samplerNode({
@@ -167,4 +159,9 @@ export const hiDreamGraph = new DataGraph<
     fast: fastDevModeGraph,
     dev: fastDevModeGraph,
     full: fullModeGraph,
-  });
+  })
+  // Prompt + triggerWords are common to all variants. Placed at the parent
+  // (after the discriminator) so model/resources from the active branch are
+  // already in ctx by the time these run.
+  .merge(triggerWordsGraph)
+  .merge(promptGraph);

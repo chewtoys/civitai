@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type { GetByIdInput } from '~/server/schema/base.schema';
 import type {
   ModelFileCreateInput,
@@ -12,6 +12,11 @@ import {
   getFilesForModelVersionCache,
   updateFile,
 } from '~/server/services/model-file.service';
+import {
+  createModelFileScanRequest,
+  ModelFileScanSubmissionError,
+} from '~/server/services/orchestrator/orchestrator.service';
+import { FLIPT_FEATURE_FLAGS, isFlipt } from '~/server/flipt/client';
 import { logToAxiom, safeError } from '~/server/logging/client';
 import { handleLogError, throwDbError, throwNotFoundError } from '~/server/utils/errorHandling';
 import { parseB2Url } from '~/utils/s3-utils';
@@ -66,7 +71,7 @@ async function safeRegisterFileLocation(params: {
  * Derive the s3 path for a B2 registration. Prefers the explicit `s3Path`
  * from the client payload, falls back to parsing the committed URL. The
  * fallback covers users running stale client bundles that don't yet send
- * `s3Path` on the tRPC upsert — training pages live for hours during a run,
+ * `s3Path` on the tRPC upsert â€” training pages live for hours during a run,
  * so a frontend deploy can take a long time to reach every open tab.
  */
 function resolveB2Path(args: {
@@ -94,7 +99,7 @@ export const createFileHandler = async ({
   ctx,
 }: {
   input: ModelFileCreateInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     // Extract B2-specific fields before passing to createFile (they aren't DB columns)
@@ -111,7 +116,9 @@ export const createFileHandler = async ({
           select: {
             id: true,
             modelId: true,
+            baseModel: true,
             status: true,
+            model: { select: { type: true } },
             _count: { select: { posts: { where: { publishedAt: { not: null } } } } },
           },
         },
@@ -137,6 +144,56 @@ export const createFileHandler = async ({
       .modelFile({ type: 'Create', id: file.id, modelVersionId: file.modelVersion.id })
       .catch(handleLogError);
 
+    // Submit model file scan workflow to orchestrator. Gated behind the
+    // MODEL_FILE_SCAN_ORCHESTRATOR flag â€” when OFF, the legacy scanFilesJob
+    // cron picks up the file via its Pending poll instead.
+    //
+    // Failures here are non-fatal: scanFilesFallbackJob will retry the file
+    // within 5 minutes since scanRequestedAt is still null. We DO want them in
+    // Axiom though â€” the inline path is the happy case, and a sustained spike
+    // here is the earliest signal the orchestrator is unreachable.
+    if (await isFlipt(FLIPT_FEATURE_FLAGS.MODEL_FILE_SCAN_ORCHESTRATOR)) {
+      await createModelFileScanRequest({
+        fileId: file.id,
+        modelVersionId: file.modelVersion.id,
+        modelId: file.modelVersion.modelId,
+        modelType: file.modelVersion.model.type,
+        baseModel: file.modelVersion.baseModel,
+        url: createInput.url,
+        // Skip pre-flight on inline submission: the file just landed and
+        // storage-resolver may not have finished propagating, so the
+        // pre-flight's 60s retry would block the upload response. If the
+        // file truly is missing, scanFilesFallbackJob will catch it 5 min
+        // later via its own pre-flight and tombstone properly.
+        preflight: false,
+      }).catch((err) => {
+        // Inline path is log-only on failure regardless of code: never
+        // tombstone here. A 'not-found' would only happen if pre-flight had
+        // run, which it didn't. 'transient' is the expected case (orchestrator
+        // outage); fallback job will retry. Inline-path errors stay visible
+        // in Axiom so a sustained spike still surfaces as the earliest
+        // signal the orchestrator is unreachable.
+        const submissionErrorCode =
+          err instanceof ModelFileScanSubmissionError ? err.code : 'transient';
+        logToAxiom(
+          {
+            type: 'error',
+            name: 'model-file-scan',
+            message: 'inline scan submission failed in createFileHandler',
+            fileId: file.id,
+            modelVersionId: file.modelVersion.id,
+            submissionErrorCode,
+            responseStatus: err instanceof ModelFileScanSubmissionError ? err.status : undefined,
+            orchestratorMessages:
+              err instanceof ModelFileScanSubmissionError ? err.orchestratorMessages : undefined,
+            error: err instanceof Error ? err.message : String(err),
+            stack: err instanceof Error ? err.stack : undefined,
+          },
+          'webhooks'
+        ).catch();
+      });
+    }
+
     // Mark this version as recently mutated so subsequent reads route to the
     // primary DB instead of the lagging replica.
     await preventModelVersionLag(file.modelVersion.modelId, file.modelVersion.id);
@@ -153,7 +210,7 @@ export const updateFileHandler = async ({
   ctx,
 }: {
   input: ModelFileUpdateInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { backend, s3Path, ...updateInput } = input;
@@ -196,7 +253,7 @@ export const upsertFileHandler = async ({
   ctx,
 }: {
   input: ModelFileUpsertInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     if (input.id !== undefined) {
@@ -214,7 +271,7 @@ export const deleteFileHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const result = await deleteFile({

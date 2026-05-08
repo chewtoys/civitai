@@ -1650,6 +1650,12 @@ export type GenerationEcosystemConfig = {
   modOnlyIds: number[];
   disabledIds: number[];
   testingIds: number[];
+  /**
+   * Model version IDs hidden on green (SFW-only) domains. Use this for NSFW
+   * models that should remain available on red/blue but disappear on green.
+   * Applied in addition to the ecosystem-level / mod / testing gates.
+   */
+  nsfwIds: number[];
 };
 
 export const DEFAULT_GENERATION_ECOSYSTEM_CONFIG: GenerationEcosystemConfig = {
@@ -1660,6 +1666,7 @@ export const DEFAULT_GENERATION_ECOSYSTEM_CONFIG: GenerationEcosystemConfig = {
   modOnlyIds: [],
   disabledIds: [],
   testingIds: [],
+  nsfwIds: [],
 };
 
 /**
@@ -1671,6 +1678,13 @@ export const DEFAULT_GENERATION_ECOSYSTEM_CONFIG: GenerationEcosystemConfig = {
 export type GenerationEcosystemContext = GenerationEcosystemConfig & {
   /** Whether the current user passes the `generation-testing` Flipt flag (mods always do). */
   hasTestingAccess: boolean;
+  /**
+   * Whether the current request is on a green (SFW-only) domain. Drives the
+   * `nsfwIds` gate. When omitted (undefined), the NSFW gate is skipped — use
+   * this for callers that aren't surfacing the resource to the user-facing
+   * generator (e.g. backend pipelines, file-download endpoints).
+   */
+  isGreen?: boolean;
 };
 
 export const EARLY_ACCESS_CONFIG: {

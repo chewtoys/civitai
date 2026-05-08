@@ -12,16 +12,18 @@ import {
   getLeaderboardLegends,
 } from '~/server/services/leaderboard.service';
 import { publicProcedure, router } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const leaderboardEdgeCache = edgeCacheIt({
   ttl: CacheTTL.xs,
 });
 
 export const leaderboardRouter = router({
-  getLeaderboards: publicProcedure.query(({ ctx }) =>
-    getLeaderboards({ isModerator: ctx?.user?.isModerator ?? false })
-  ),
+  getLeaderboards: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .query(({ ctx }) => getLeaderboards({ isModerator: ctx?.user?.isModerator ?? false })),
   getLeaderboardPositions: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getLeaderboardPositionsSchema)
     .use(cacheIt({ ttl: CacheTTL.day, tags: () => ['leaderboard', 'leaderboard-positions'] }))
     .query(({ input, ctx }) =>
@@ -32,6 +34,7 @@ export const leaderboardRouter = router({
       })
     ),
   getLeaderboard: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getLeaderboardSchema)
     .use(
       cacheIt({
@@ -44,6 +47,7 @@ export const leaderboardRouter = router({
       getLeaderboard({ ...input, isModerator: ctx?.user?.isModerator ?? false })
     ),
   getLeadboardLegends: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getLeaderboardSchema)
     .use(
       cacheIt({

@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import type {
   ToggleHideCommentInput,
   GetCommentsInfiniteInput,
@@ -55,7 +55,7 @@ export const upsertCommentV2Handler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: UpsertCommentV2Input;
 }) => {
   try {
@@ -149,7 +149,7 @@ export const deleteCommentV2Handler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetByIdInput;
 }) => {
   try {
@@ -205,7 +205,7 @@ export const toggleLockThreadDetailsHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: CommentConnectorInput;
 }) => {
   try {
@@ -220,7 +220,7 @@ export const toggleHideCommentHandler = async ({
   ctx,
 }: {
   input: ToggleHideCommentInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { id: userId, isModerator } = ctx.user;
   const { id, entityType } = input;

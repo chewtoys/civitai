@@ -15,17 +15,28 @@
 import z from 'zod';
 import { DataGraph } from '~/libs/data-graph/data-graph';
 import type { GenerationCtx } from './context';
-import { seedNode, aspectRatioNode, enumNode, imagesNode, createCheckpointGraph } from './common';
+import {
+  seedNode,
+  aspectRatioNode,
+  enumNode,
+  imagesNode,
+  createCheckpointGraph,
+  promptGraph,
+  triggerWordsGraph,
+} from './common';
+import {
+  getAspectRatioOptions,
+  type GenerationAspectRatio,
+} from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Constants
 // =============================================================================
 
-/** Sora aspect ratio options */
-const soraAspectRatios = [
-  { label: '16:9', value: '16:9', width: 1920, height: 1080 },
-  { label: '9:16', value: '9:16', width: 1080, height: 1920 },
-];
+const soraAspectRatioList: GenerationAspectRatio[] = ['16:9', '9:16'];
+
+/** Default sora aspect ratios (720p) — exported for legacy consumers */
+const soraAspectRatios = getAspectRatioOptions('720p', soraAspectRatioList);
 
 /** Sora resolution options */
 const soraResolutions = [
@@ -70,23 +81,26 @@ export const soraGraph = new DataGraph<SoraCtx, GenerationCtx>()
   // Seed node
   .node('seed', seedNode())
 
-  // Aspect ratio node - only for txt2vid workflow
-  .node(
-    'aspectRatio',
-    (ctx) => ({
-      ...aspectRatioNode({ options: soraAspectRatios, defaultValue: '9:16' }),
-      when: ctx.workflow === 'txt2vid',
-    }),
-    ['workflow']
-  )
-
-  // Resolution node
+  // Resolution node (declared before aspectRatio so dimensions can scale with it)
   .node('resolution', {
     input: z.enum(['720p', '1080p']).optional(),
     output: z.enum(['720p', '1080p']),
     defaultValue: '720p' as const,
     meta: { options: soraResolutions },
   })
+
+  // Aspect ratio node - only for txt2vid workflow; dimensions scale with resolution
+  .node(
+    'aspectRatio',
+    (ctx) => ({
+      ...aspectRatioNode({
+        options: getAspectRatioOptions(ctx.resolution, soraAspectRatioList),
+        defaultValue: '9:16',
+      }),
+      when: ctx.workflow === 'txt2vid',
+    }),
+    ['workflow', 'resolution']
+  )
 
   // Pro mode toggle
   .node('usePro', {
@@ -96,7 +110,11 @@ export const soraGraph = new DataGraph<SoraCtx, GenerationCtx>()
   })
 
   // Duration node
-  .node('duration', enumNode({ options: soraDurations, defaultValue: 4 }));
+  .node('duration', enumNode({ options: soraDurations, defaultValue: 4 }))
+
+  // Prompt + triggerWords (no negativePrompt for Sora)
+  .merge(triggerWordsGraph)
+  .merge(promptGraph);
 
 // Export constants for use in components
 export { soraAspectRatios, soraResolutions, soraDurations };

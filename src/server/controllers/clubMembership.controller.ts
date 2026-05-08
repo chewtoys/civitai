@@ -4,7 +4,7 @@ import {
   throwBadRequestError,
   throwDbError,
 } from '~/server/utils/errorHandling';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { imageSelect } from '~/server/selectors/image.selector';
 import type {
   ToggleClubMembershipStatusInput,
@@ -36,7 +36,7 @@ export const getInfiniteClubMembershipsHandler = async ({
   ctx,
 }: {
   input: GetInfiniteClubMembershipsSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   const limit = (input.limit ?? 10) + 1;
@@ -82,7 +82,7 @@ export const getClubMembershipOnClubHandler = async ({
   ctx,
 }: {
   input: ClubMembershipOnClubInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { clubId } = input;
   const { user } = ctx;
@@ -124,7 +124,7 @@ export async function createClubMembershipHandler({
   ctx,
 }: {
   input: CreateClubMembershipInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const created = await createClubMembership({
@@ -167,7 +167,7 @@ export async function updateClubMembershipHandler({
   ctx,
 }: {
   input: UpdateClubMembershipInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const updated = await updateClubMembership({
@@ -210,7 +210,7 @@ export const removeAndRefundMemberHandler = async ({
   ctx,
 }: {
   input: OwnerRemoveClubMembershipInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
 
@@ -230,7 +230,7 @@ export const clubOwnerTogglePauseBillingHandler = async ({
   ctx,
 }: {
   input: OwnerRemoveClubMembershipInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
 
@@ -250,7 +250,7 @@ export const cancelClubMembershipHandler = async ({
   ctx,
 }: {
   input: ToggleClubMembershipStatusInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   let { userId } = input;
@@ -277,7 +277,7 @@ export const restoreClubMembershipHandler = async ({
   ctx,
 }: {
   input: ToggleClubMembershipStatusInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   let { userId } = input;

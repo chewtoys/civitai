@@ -6,7 +6,7 @@ import {
   upsertUserLink,
 } from './../services/user-link.service';
 import { purgeCache } from '~/server/cloudflare/client';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import type { UpsertManyUserLinkParams, GetUserLinksQuery } from '~/server/schema/user-link.schema';
 import { getUserLinks } from '~/server/services/user-link.service';
 import { throwAuthorizationError, throwBadRequestError } from '~/server/utils/errorHandling';
@@ -30,7 +30,7 @@ export const upsertManyUserLinksHandler = async ({
   input,
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: UpsertManyUserLinkParams;
 }) => {
   await upsertManyUserLinks({ data: input, userId: ctx.user.id });
@@ -41,7 +41,7 @@ export const upsertUserLinkHandler = async ({
   input,
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: UpsertUserLinkParams;
 }) => {
   await upsertUserLink({ ...input, userId: ctx.user.id });
@@ -52,7 +52,7 @@ export const deleteUserLinkHandler = async ({
   input,
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetByIdInput;
 }) => {
   await deleteUserLink({ id: input.id, userId: ctx.user.id });

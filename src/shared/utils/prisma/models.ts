@@ -52,6 +52,10 @@ export type ModelVersionSponsorshipSettingsType = "FixedPrice" | "Bidding";
 
 export type ModelVersionMonetizationType = "PaidAccess" | "PaidEarlyAccess" | "PaidGeneration" | "CivitaiClubOnly" | "MySubscribersOnly" | "Sponsored";
 
+export type LicensingFeeType = "PerImageBuzz";
+
+export type LicensingFeeSettlementCurrency = "Buzz" | "Cash";
+
 export type ModelVersionEngagementType = "Notify";
 
 export type ModelHashType = "AutoV1" | "AutoV2" | "AutoV3" | "SHA256" | "CRC32" | "BLAKE3";
@@ -96,9 +100,7 @@ export type TagSource = "User" | "Rekognition" | "WD14" | "Computed" | "ImageHas
 
 export type PartnerPricingModel = "Duration" | "PerImage";
 
-export type ApiKeyType = "System" | "User";
-
-export type KeyScope = "Read" | "Write" | "Generate";
+export type ApiKeyType = "System" | "User" | "Access" | "Refresh";
 
 export type TagEngagementType = "Hide" | "Follow" | "Allow";
 
@@ -198,7 +200,7 @@ export type ComicProjectStatus = "Active" | "Deleted";
 
 export type ComicReferenceStatus = "Pending" | "Ready" | "Failed";
 
-export type ComicPanelStatus = "Pending" | "Enqueued" | "Generating" | "AwaitingSelection" | "Ready" | "Failed";
+export type ComicPanelStatus = "Pending" | "Enqueued" | "Generating" | "AwaitingSelection" | "RequireUnlock" | "Ready" | "Failed";
 
 export type ComicChapterStatus = "Draft" | "Published" | "Scheduled";
 
@@ -452,6 +454,7 @@ export interface User {
   blurNsfw: boolean;
   browsingLevel: number;
   onboarding: number;
+  flags: number;
   isModerator: boolean | null;
   createdAt: Date;
   deletedAt: Date | null;
@@ -485,6 +488,8 @@ export interface User {
   saves?: SavedModel[];
   imports?: Import[];
   keys?: ApiKey[];
+  oauthClients?: OauthClient[];
+  oauthConsents?: OauthConsent[];
   links?: UserLink[];
   comments?: Comment[];
   commentReactions?: CommentReaction[];
@@ -869,6 +874,10 @@ export interface ModelVersion {
   uploadType: ModelUploadType;
   usageControl: ModelUsageControl;
   earlyAccessTimeFrame: number;
+  flags: number;
+  licensingFee: number | null;
+  licensingFeeType: LicensingFeeType | null;
+  licensingFeeSettlementCurrency: LicensingFeeSettlementCurrency | null;
   monetization?: ModelVersionMonetization | null;
   metrics?: ModelVersionMetric[];
   files?: ModelFile[];
@@ -1650,12 +1659,47 @@ export interface ApiKey {
   id: number;
   key: string;
   name: string;
-  scope: KeyScope[];
+  tokenScope: number;
   userId: number;
   user?: User;
   createdAt: Date;
   type: ApiKeyType;
   expiresAt: Date | null;
+  lastUsedAt: Date | null;
+  clientId: string | null;
+  client?: OauthClient | null;
+  buzzLimit: JsonValue | null;
+}
+
+export interface OauthClient {
+  id: string;
+  secret: string | null;
+  name: string;
+  description: string;
+  logoUrl: string | null;
+  redirectUris: string[];
+  grants: string[];
+  allowedScopes: number;
+  isConfidential: boolean;
+  userId: number;
+  user?: User;
+  isVerified: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  tokens?: ApiKey[];
+  consents?: OauthConsent[];
+}
+
+export interface OauthConsent {
+  id: number;
+  userId: number;
+  user?: User;
+  clientId: string;
+  client?: OauthClient;
+  scope: number;
+  buzzLimit: JsonValue | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface AdToken {

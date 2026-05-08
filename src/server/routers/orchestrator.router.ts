@@ -73,6 +73,7 @@ import { REDIS_SYS_KEYS, sysRedis } from '~/server/redis/client';
 import { getAllowedAccountTypes } from '../utils/buzz-helpers';
 import { getVideoMetadata } from '~/server/services/orchestrator/videoEnhancement';
 import type { BuzzSpendType } from '~/shared/constants/buzz.constants';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 /**
  * Resolves the currencies to use for a generation request.
@@ -129,20 +130,11 @@ const enforceGenerationVersion = middleware(async ({ ctx, next }) => {
   const version = ctx.req?.headers['x-client-version'] as string;
   if (!version || version === 'unknown') return result;
 
-  const [genClient, genClientTemp] = await Promise.all([
-    sysRedis.hGetAll(REDIS_SYS_KEYS.GENERATION.CLIENT),
-    sysRedis.hGetAll(REDIS_SYS_KEYS.GENERATION.CLIENT_TEMP),
-  ]);
+  const genClient = await sysRedis.hGetAll(REDIS_SYS_KEYS.GENERATION.CLIENT);
 
-  // New implementation: generation-panel-specific modal with notes
   if (genClient.version && semver.lt(version, genClient.version)) {
     ctx.res?.setHeader('x-generation-update-required', genClient.version);
     if (genClient.notes) ctx.res?.setHeader('x-generation-update-notes', genClient.notes);
-  }
-
-  // Legacy fallback: global modal (deprecated after rollout)
-  if (genClientTemp.version && semver.lt(version, genClientTemp.version)) {
-    ctx.res?.setHeader('x-update-required', 'true');
   }
 
   return result;
@@ -220,11 +212,13 @@ const ITERATE_MODEL_CONFIG: Record<
 
 export const orchestratorRouter = router({
   getVideoMetadata: orchestratorProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(z.object({ videoUrl: z.string() }))
     .query(({ ctx, input }) => getVideoMetadata(input)),
 
   // #region [prompt enhancement]
   enhancePrompt: orchestratorGuardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(promptEnhancementSchema)
     .mutation(({ ctx, input }) =>
       enhancePrompt({
@@ -238,6 +232,7 @@ export const orchestratorRouter = router({
     ),
   /** Generic workflow query by tags — used for prompt enhancement history, future text workflows, etc. */
   queryWorkflowsByTags: orchestratorProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(workflowQuerySchema)
     .query(async ({ ctx, input }) => {
       return queryWorkflows({
@@ -247,6 +242,7 @@ export const orchestratorRouter = router({
       });
     }),
   getWorkflow: orchestratorProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(workflowIdSchema)
     .query(({ ctx, input }) =>
       getWorkflow({ token: ctx.token, path: { workflowId: input.workflowId } })
@@ -255,18 +251,22 @@ export const orchestratorRouter = router({
 
   // #region [requests]
   deleteWorkflow: orchestratorProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(workflowIdSchema)
     .mutation(({ ctx, input }) => deleteWorkflow({ ...input, token: ctx.token })),
   cancelWorkflow: orchestratorProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(workflowIdSchema)
     .mutation(({ ctx, input }) => cancelWorkflow({ ...input, token: ctx.token })),
   updateWorkflow: orchestratorProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(workflowUpdateSchema)
     .mutation(({ ctx, input }) => updateWorkflow({ ...input, token: ctx.token })),
   // #endregion
 
   // #region [steps]
   patch: orchestratorProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(patchSchema)
     .mutation(async ({ ctx, input: { workflows, steps, tags, remove } }) => {
       // const toUpdate: { workflowId: string; patches: JsonPatchOperation[] }[] = [];
@@ -321,20 +321,24 @@ export const orchestratorRouter = router({
   // #endregion
 
   // #region [generated images]
-  queryGeneratedImages: orchestratorProcedure.input(workflowQuerySchema).query(({ ctx, input }) =>
-    queryGeneratedImageWorkflows2({
-      ...input,
-      token: ctx.token,
-      user: ctx.user,
-      tags: ctx.domain === 'green' ? [...input.tags, 'green'] : input.tags,
-      hideMatureContent: ctx.hideMatureContent,
-    })
-  ),
+  queryGeneratedImages: orchestratorProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .input(workflowQuerySchema)
+    .query(({ ctx, input }) =>
+      queryGeneratedImageWorkflows2({
+        ...input,
+        token: ctx.token,
+        user: ctx.user,
+        tags: ctx.domain === 'green' ? [...input.tags, 'green'] : input.tags,
+        hideMatureContent: ctx.hideMatureContent,
+      })
+    ),
   // #region [Generation Graph V2 endpoints]
   /**
    * Generate from graph - unified endpoint for all generation types
    */
   generateFromGraph: orchestratorGuardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(z.any())
     .mutation(async ({ ctx, input }) => {
       const {
@@ -349,7 +353,10 @@ export const orchestratorRouter = router({
       } = input;
       const tags = ctx.domain === 'green' ? ['green', ...(inputTags ?? [])] : inputTags ?? [];
       const userTier = ctx.user.tier ?? 'free';
-      const { externalCtx, status } = await buildGenerationContext(userTier, ctx.features);
+      const { externalCtx, status } = await buildGenerationContext(userTier, ctx.features, {
+        id: ctx.user.id,
+        isModerator: ctx.user.isModerator,
+      });
 
       // Check generation status early
       if (!status.available && !ctx.user.isModerator) {
@@ -382,48 +389,52 @@ export const orchestratorRouter = router({
   /**
    * What-if from graph - cost estimation for generation-graph inputs
    */
-  whatIfFromGraph: orchestratorGuardedProcedure.input(z.any()).query(async ({ ctx, input }) => {
-    const userTier = ctx.user.tier ?? 'free';
-    const { externalCtx, status } = await buildGenerationContext(userTier, ctx.features);
+  whatIfFromGraph: orchestratorGuardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .input(z.any())
+    .query(async ({ ctx, input }) => {
+      const userTier = ctx.user.tier ?? 'free';
+      const { externalCtx, status } = await buildGenerationContext(userTier, ctx.features);
 
-    if (!status.available && !ctx.user.isModerator) {
-      throw new TRPCError({
-        code: 'BAD_REQUEST',
-        message: status.message ?? 'Generation is currently disabled',
-      });
-    }
+      if (!status.available && !ctx.user.isModerator) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: status.message ?? 'Generation is currently disabled',
+        });
+      }
 
-    try {
-      return await whatIfFromGraph({
-        input,
-        externalCtx,
-        userId: ctx.user.id,
-        isModerator: ctx.user.isModerator,
-        token: ctx.token,
-        experimental: ctx.experimental,
-        currencies: getAllowedAccountTypes(ctx.features, ['blue']),
-      });
-    } catch (e) {
-      logToAxiom({
-        name: 'what-if-from-graph',
-        type: 'error',
-        payload: input,
-        error:
-          e instanceof TRPCError
-            ? {
-                code: e.code,
-                name: e.name,
-                message: e.message,
-              }
-            : e,
-      }).catch();
-      throw e;
-    }
-  }),
+      try {
+        return await whatIfFromGraph({
+          input,
+          externalCtx,
+          userId: ctx.user.id,
+          isModerator: ctx.user.isModerator,
+          token: ctx.token,
+          experimental: ctx.experimental,
+          currencies: getAllowedAccountTypes(ctx.features, ['blue']),
+        });
+      } catch (e) {
+        logToAxiom({
+          name: 'what-if-from-graph',
+          type: 'error',
+          payload: input,
+          error:
+            e instanceof TRPCError
+              ? {
+                  code: e.code,
+                  name: e.name,
+                  message: e.message,
+                }
+              : e,
+        }).catch();
+        throw e;
+      }
+    }),
   // #endregion
 
   // #region [Image upload]
   imageUpload: orchestratorGuardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(z.object({ sourceImage: z.string() }))
     .mutation(({ ctx, input }) =>
       imageUpload({ token: ctx.token, allowMatureContent: ctx.allowMatureContent, ...input })
@@ -432,6 +443,7 @@ export const orchestratorRouter = router({
 
   // #region [image training]
   createTraining: orchestratorGuardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(imageTrainingRouterInputSchema)
     .mutation(async ({ ctx, input }) => {
       const { buzzType, ...rest } = input;
@@ -445,6 +457,7 @@ export const orchestratorRouter = router({
       return await createTrainingWorkflow(args);
     }),
   createTrainingWhatif: orchestratorProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(imageTrainingRouterWhatIfSchema)
     .query(async ({ ctx, input }) => {
       const args = {
@@ -491,6 +504,7 @@ export const orchestratorRouter = router({
       reviewConsumerStrikes({ consumerId: `civitai-${input.userId}`, moderatorId: ctx.user.id })
     ),
   statusUpdate: orchestratorGuardedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(workflowIdSchema)
     .query(({ ctx, input }) =>
       getWorkflowStatusUpdate({ token: ctx.token, workflowId: input.workflowId })
@@ -499,6 +513,7 @@ export const orchestratorRouter = router({
   // ── Generic iterative image editor endpoints ──
 
   iterateGenerate: protectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(
       z.object({
         prompt: z.string().min(1).max(2000),
@@ -613,6 +628,7 @@ export const orchestratorRouter = router({
     }),
 
   getIterateCostEstimate: protectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(
       z.object({
         baseModel: z.string().nullish(),
@@ -717,6 +733,7 @@ export const orchestratorRouter = router({
     }),
 
   pollIterationStatus: protectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(
       z.object({
         workflowId: z.string().min(1),

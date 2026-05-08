@@ -17,9 +17,12 @@ import {
   aspectRatioNode,
   createCheckpointGraph,
   createResourcesGraph,
+  promptGraph,
   seedNode,
   sliderNode,
+  triggerWordsGraph,
 } from './common';
+import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Constants
@@ -27,17 +30,6 @@ import {
 
 /** Chroma default model version ID */
 const chromaVersionId = 2164239;
-
-// =============================================================================
-// Aspect Ratios
-// =============================================================================
-
-/** Chroma aspect ratios (1024px based) */
-const chromaAspectRatios = [
-  { label: '2:3', value: '2:3', width: 832, height: 1216 },
-  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
-  { label: '3:2', value: '3:2', width: 1216, height: 832 },
-];
 
 // =============================================================================
 // Guidance Presets
@@ -70,7 +62,9 @@ export const chromaGraph = new DataGraph<{ ecosystem: string; workflow: string }
     []
   )
   .merge(createResourcesGraph())
-  .node('aspectRatio', aspectRatioNode({ options: chromaAspectRatios, defaultValue: '1:1' }))
+  .merge(triggerWordsGraph)
+  .merge(promptGraph)
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node(
     'cfgScale',
     sliderNode({ min: 2, max: 20, defaultValue: 3.5, step: 0.5, presets: chromaGuidancePresets })

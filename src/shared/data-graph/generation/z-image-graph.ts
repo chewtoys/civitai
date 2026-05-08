@@ -18,12 +18,15 @@ import {
   aspectRatioNode,
   createCheckpointGraph,
   createResourcesGraph,
+  negativePromptGraph,
+  promptGraph,
   samplerNode,
   schedulerNode,
   seedNode,
   sliderNode,
-  negativePromptNode,
+  triggerWordsGraph,
 } from './common';
+import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // ZImage Mode Constants
@@ -55,17 +58,6 @@ const zImageSamplers = ['euler', 'heun'] as const;
 const zImageSchedules = ['simple', 'discrete'] as const;
 
 // =============================================================================
-// Aspect Ratios
-// =============================================================================
-
-/** ZImage aspect ratios (1024px based) */
-const zImageAspectRatios = [
-  { label: '2:3', value: '2:3', width: 832, height: 1216 },
-  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
-  { label: '3:2', value: '3:2', width: 1216, height: 832 },
-];
-
-// =============================================================================
 // Mode Subgraphs
 // =============================================================================
 
@@ -82,7 +74,7 @@ type ZImageModeCtx = {
  */
 const turboModeGraph = new DataGraph<ZImageModeCtx, GenerationCtx>()
   .merge(createResourcesGraph())
-  .node('aspectRatio', aspectRatioNode({ options: zImageAspectRatios, defaultValue: '1:1' }))
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node('cfgScale', sliderNode({ min: 1, max: 2, step: 0.1, defaultValue: 1 }))
   .node('steps', sliderNode({ min: 1, max: 15, defaultValue: 9 }))
   .node('seed', seedNode());
@@ -93,8 +85,8 @@ const turboModeGraph = new DataGraph<ZImageModeCtx, GenerationCtx>()
  */
 const baseModeGraph = new DataGraph<ZImageModeCtx, GenerationCtx>()
   .merge(createResourcesGraph())
-  .node('negativePrompt', negativePromptNode())
-  .node('aspectRatio', aspectRatioNode({ options: zImageAspectRatios, defaultValue: '1:1' }))
+  .merge(negativePromptGraph)
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node('sampler', samplerNode({ options: zImageSamplers, defaultValue: 'euler' }))
   .node('scheduler', schedulerNode({ options: zImageSchedules, defaultValue: 'simple' }))
   .node('cfgScale', sliderNode({ min: 1, max: 10, step: 0.5, defaultValue: 4 }))
@@ -140,7 +132,10 @@ export const zImageGraph = new DataGraph<{ ecosystem: string; workflow: string }
   .groupedDiscriminator('zImageMode', [
     { values: ['turbo'] as const, graph: turboModeGraph },
     { values: ['base'] as const, graph: baseModeGraph },
-  ]);
+  ])
+  // Prompt + triggerWords are common to both turbo and base.
+  .merge(triggerWordsGraph)
+  .merge(promptGraph);
 
 // Export mode options for use in components
 export { zImageModeVersionOptions, zImageVersionIds };

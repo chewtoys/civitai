@@ -12,6 +12,7 @@ import {
 } from '~/server/services/announcement.service';
 import { getByIdSchema } from '~/server/schema/base.schema';
 import { applyRequestDomainColor } from '~/server/middleware.trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const announcementRouter = router({
   upsertAnnouncement: moderatorProcedure
@@ -21,6 +22,7 @@ export const announcementRouter = router({
     .input(getByIdSchema)
     .mutation(({ input }) => deleteAnnouncement(input.id)),
   getAnnouncements: publicProcedure
+    .meta({ requiredScope: TokenScope.UserRead })
     .input(getCurrentAnnouncementsSchema.optional())
     .use(applyRequestDomainColor)
     .query(({ ctx, input }) => getCurrentAnnouncements({ ...input, userId: ctx.user?.id })),

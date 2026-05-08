@@ -30,6 +30,7 @@ import {
 } from '~/server/schema/bounty.schema';
 import { dbWrite } from '~/server/db/client';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
   if (!ctx.user) throw throwAuthorizationError();
@@ -54,41 +55,50 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
 
 export const bountyRouter = router({
   getInfinite: publicProcedure
+    .meta({ requiredScope: TokenScope.BountiesRead })
     .input(getInfiniteBountySchema)
     .use(isFlagProtected('bounties'))
     .query(getInfiniteBountiesHandler),
   getById: publicProcedure
+    .meta({ requiredScope: TokenScope.BountiesRead })
     .input(getByIdSchema)
     .use(isFlagProtected('bounties'))
     .query(getBountyHandler),
   getEntries: publicProcedure
+    .meta({ requiredScope: TokenScope.BountiesRead })
     .input(getBountyEntriesInputSchema)
     .use(isFlagProtected('bounties'))
     .query(getBountyEntriesHandler),
   getBenefactors: publicProcedure
+    .meta({ requiredScope: TokenScope.BountiesRead })
     .input(getByIdSchema)
     .use(isFlagProtected('bounties'))
     .query(getBountyBenefactorsHandler),
   create: guardedProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite })
     .input(createBountyInputSchema)
     .use(isFlagProtected('bounties'))
     .mutation(createBountyHandler),
   update: guardedProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite })
     .input(updateBountyInputSchema)
     .use(isFlagProtected('bounties'))
     .use(isOwnerOrModerator)
     .mutation(updateBountyHandler),
   upsert: guardedProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite, blockApiKeys: true })
     .input(upsertBountyInputSchema)
     .use(isFlagProtected('bounties'))
     .use(isOwnerOrModerator)
     .mutation(upsertBountyHandler),
   delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.BountiesDelete })
     .input(getByIdSchema)
     .use(isFlagProtected('bounties'))
     .use(isOwnerOrModerator)
     .mutation(deleteBountyHandler),
   addBenefactorUnitAmount: protectedProcedure
+    .meta({ requiredScope: TokenScope.BountiesWrite })
     .input(addBenefactorUnitAmountInputSchema)
     .use(isFlagProtected('bounties'))
     .mutation(addBenefactorUnitAmountHandler),

@@ -1,4 +1,4 @@
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { getUserLinks } from '~/server/services/user-link.service';
 import type {
   GetUserReferralCodesSchema,
@@ -17,7 +17,7 @@ export const getUserReferralCodesHandler = async ({
   ctx,
 }: {
   input: GetUserReferralCodesSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   return await getUserReferralCodes({ userId: ctx.user.id, includeCount: !!input.includeCount });
 };
@@ -27,7 +27,7 @@ export const upsertUserReferralCodeHandler = async ({
   ctx,
 }: {
   input?: UpsertUserReferralCodesSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await upsertUserReferralCode({
@@ -45,7 +45,7 @@ export const deleteUserReferralCodeHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await deleteUserReferralCode({

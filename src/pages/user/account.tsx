@@ -3,6 +3,8 @@ import React from 'react';
 
 import { AccountsCard } from '~/components/Account/AccountsCard';
 import { ApiKeysCard } from '~/components/Account/ApiKeysCard';
+import { OAuthAppsCard } from '~/components/Account/OAuthAppsCard';
+import { ConnectedAppsCard } from '~/components/Account/ConnectedAppsCard';
 import { SocialProfileCard } from '~/components/Account/SocialProfileCard';
 import { DeleteCard } from '~/components/Account/DeleteCard';
 
@@ -25,7 +27,7 @@ import dynamic from 'next/dynamic';
 const NotificationsCard = dynamic(() => import('~/components/Account/NotificationsCard'));
 
 export default function Account() {
-  const { apiKeys, canViewNsfw, strikes } = useFeatureFlags();
+  const { apiKeys, oauthApps, canViewNsfw, strikes } = useFeatureFlags();
   const currentUser = useCurrentUser();
 
   return (
@@ -54,6 +56,8 @@ export default function Account() {
           {/* {buzz && <UserReferralCodesCard />} */}
           <NotificationsCard />
           {apiKeys && <ApiKeysCard />}
+          {oauthApps && <OAuthAppsCard />}
+          {oauthApps && <ConnectedAppsCard />}
           {strikes && <StrikesCard />}
           <RefreshSessionCard />
           <DeleteCard />

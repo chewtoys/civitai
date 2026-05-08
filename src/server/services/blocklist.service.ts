@@ -15,17 +15,15 @@ export type BlocklistDTO = {
   data: string[];
 };
 
-const blocklists = new Map<string, BlocklistDTO>();
-
 function getBlocklistKey(type: string) {
   return `${REDIS_KEYS.SYSTEM.BLOCKLIST}:${type}` as RedisKeyTemplateCache;
 }
 
+// No in-process cache: pod-local copies can't be invalidated cross-pod on upsert.
 async function setCache({ type, data }: { type: string; data: BlocklistDTO }) {
-  await redis.set(`${REDIS_KEYS.SYSTEM.BLOCKLIST}:${type}`, JSON.stringify(data), {
+  await redis.set(getBlocklistKey(type), JSON.stringify(data), {
     EX: CacheTTL.month,
   });
-  blocklists.set(type, data);
 }
 
 export async function upsertBlocklist({ id, type, blocklist }: UpsertBlocklistSchema) {
@@ -52,11 +50,7 @@ export async function upsertBlocklist({ id, type, blocklist }: UpsertBlocklistSc
 }
 
 export async function getBlocklistDTO({ type }: { type: BlocklistType }) {
-  const mapped = blocklists.get(type);
-  if (mapped) return mapped;
-
-  const key = getBlocklistKey(type);
-  const cached = await redis.get(key);
+  const cached = await redis.get(getBlocklistKey(type));
   if (cached) return JSON.parse(cached) as BlocklistDTO;
 
   const result = await dbWrite.blocklist

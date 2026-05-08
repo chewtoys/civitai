@@ -3,7 +3,7 @@ import dayjs from '~/shared/utils/dayjs';
 import { increaseDate } from '~/utils/date-helpers';
 import { env } from '~/env/server';
 import { POST_MINIMUM_SCHEDULE_MINUTES } from '~/server/common/constants';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { getDbWithoutLag } from '~/server/db/db-lag-helpers';
 import { eventEngine } from '~/server/events';
 import { firstDailyPostReward, imagePostedToModelReward } from '~/server/rewards';
@@ -84,7 +84,7 @@ export const createPostHandler = async ({
   ctx,
 }: {
   input: PostCreateInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { ip, fingerprint } = ctx;
@@ -136,7 +136,7 @@ export const updatePostHandler = async ({
   ctx,
 }: {
   input: PostUpdateInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const db = await getDbWithoutLag('post', input.id);
@@ -464,7 +464,7 @@ export const deletePostHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const result = await deletePost({ ...input });
@@ -489,7 +489,7 @@ export const updatePostImageHandler = async ({
   input,
 }: {
   input: UpdatePostImageInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await updatePostImage({ ...input });
@@ -504,7 +504,7 @@ export const addResourceToPostImageHandler = async ({
   ctx,
 }: {
   input: AddResourceToPostImageInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await addResourceToPostImage({ ...input, user: ctx.user });
@@ -519,7 +519,7 @@ export const removeResourceFromPostImageHandler = async ({
   ctx,
 }: {
   input: RemoveResourceFromPostImageInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await removeResourceFromPostImage({ ...input, user: ctx.user });
@@ -533,7 +533,7 @@ export const reorderPostImagesHandler = async ({
   input,
 }: {
   input: ReorderPostImagesInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await reorderPostImages({ ...input });
@@ -559,7 +559,7 @@ export const addPostTagHandler = async ({
   ctx,
 }: {
   input: AddPostTagInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const result = await addPostTag({ ...input });
@@ -603,7 +603,7 @@ export const removePostTagHandler = async ({
   input,
 }: {
   input: RemovePostTagInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await removePostTag({ ...input });

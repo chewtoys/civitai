@@ -1007,6 +1007,7 @@ export const addPostImage = async ({
   const post = await dbRead.post.findFirst({
     where: { id: props.postId },
     select: {
+      userId: true,
       collection: {
         select: {
           metadata: true,
@@ -1014,6 +1015,9 @@ export const addPostImage = async ({
       },
     },
   });
+
+  if (!post) throw throwNotFoundError(`No post with id ${props.postId}`);
+  if (post.userId !== user.id) throw throwAuthorizationError();
 
   const collectionMeta = (post?.collection?.metadata ?? {}) as CollectionMetadataSchema;
 
@@ -1073,9 +1077,7 @@ export const addPostImage = async ({
           where: { id: { in: modelVersionIds } },
           select: { modelId: true },
         })
-        .then((mvs) =>
-          Promise.all(mvs.map((mv) => bustCacheTag(`images-model:${mv.modelId}`)))
-        )
+        .then((mvs) => Promise.all(mvs.map((mv) => bustCacheTag(`images-model:${mv.modelId}`))))
         .then(() => undefined)
     );
   }
@@ -1141,21 +1143,25 @@ export const updatePostImage = async (image: UpdatePostImageInput) => {
     },
     select: { id: true, url: true, userId: true },
   });
-  await imageMetadataCache.refresh(image.id);
-  await imageMetaCache.refresh(image.id);
+  // Parallelize independent cache refreshes — none read what others write.
+  // ingestImage stays sequential after: it does not read these caches but
+  // does have ordering relative to the dbWrite.image.update above.
+  const cacheRefreshPromises: Promise<unknown>[] = [
+    imageMetadataCache.refresh(image.id),
+    imageMetaCache.refresh(image.id),
+    userPostCountCache.refresh(result.userId),
+  ];
+  if (image.hideMeta && currentImage && currentImage.hideMeta !== image.hideMeta) {
+    cacheRefreshPromises.push(purgeResizeCache({ url: result.url }));
+  }
+  await Promise.all(cacheRefreshPromises);
 
   if (shouldIngest) {
     // Ensures a proper rescan of this image.
     await ingestImage({ image: result });
   }
 
-  // If changing hide meta, purge the resize cache so that we strip metadata
-  if (image.hideMeta && currentImage && currentImage.hideMeta !== image.hideMeta) {
-    await purgeResizeCache({ url: result.url });
-  }
-
   purgeImageGenerationDataCache(image.id);
-  await userPostCountCache.refresh(result.userId);
 };
 
 export const addResourceToPostImage = async ({

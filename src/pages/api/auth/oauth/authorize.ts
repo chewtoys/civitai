@@ -1,0 +1,191 @@
+import type { NextApiRequest, NextApiResponse } from 'next';
+import { Prisma } from '@prisma/client';
+import { Request, Response } from '@node-oauth/oauth2-server';
+import requestIp from 'request-ip';
+import { oauthServer } from '~/server/oauth/server';
+import { getServerAuthSession } from '~/server/auth/get-server-auth-session';
+import { dbRead, dbWrite } from '~/server/db/client';
+import { addCorsHeaders } from '~/server/utils/endpoint-helpers';
+import { checkOAuthRateLimit, sendRateLimitResponse } from '~/server/oauth/rate-limit';
+import { logOAuthEvent } from '~/server/oauth/audit-log';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
+import { buzzLimitSchema } from '~/server/schema/api-key.schema';
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method === 'OPTIONS') {
+    addCorsHeaders(req, res, ['GET', 'POST'], { allowCredentials: true });
+    return;
+  }
+
+  // Consent approval MUST come via POST (from the consent form), not GET
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  try {
+    // User must be authenticated (via session cookie)
+    const session = await getServerAuthSession({ req, res });
+    if (!session?.user) {
+      const returnUrl = encodeURIComponent(req.url ?? '/');
+      return res.redirect(`/login?returnUrl=${returnUrl}`);
+    }
+
+    // Rate limit by user ID
+    const allowed = await checkOAuthRateLimit(req, res, 'authorize', session.user.id.toString());
+    if (!allowed) return sendRateLimitResponse(res);
+
+    const params = req.method === 'GET' ? req.query : req.body;
+
+    // Validate client exists
+    const clientId = params.client_id as string;
+    if (!clientId) {
+      return res
+        .status(400)
+        .json({ error: 'invalid_request', error_description: 'Missing client_id' });
+    }
+
+    const client = await dbRead.oauthClient.findUnique({ where: { id: clientId } });
+    if (!client) {
+      return res
+        .status(400)
+        .json({ error: 'invalid_client', error_description: 'Unknown client_id' });
+    }
+
+    // Validate redirect_uri against registered URIs
+    const redirectUri = params.redirect_uri as string;
+    if (!redirectUri || !client.redirectUris.includes(redirectUri)) {
+      return res.status(400).json({
+        error: 'invalid_request',
+        error_description: 'redirect_uri does not match any registered URI',
+      });
+    }
+
+    // PKCE is required
+    if (!params.code_challenge || !params.code_challenge_method) {
+      return res.status(400).json({
+        error: 'invalid_request',
+        error_description: 'PKCE required: provide code_challenge and code_challenge_method=S256',
+      });
+    }
+    if (params.code_challenge_method !== 'S256') {
+      return res.status(400).json({
+        error: 'invalid_request',
+        error_description: 'Only S256 code_challenge_method is supported',
+      });
+    }
+
+    // State is required (CSRF protection)
+    if (!params.state) {
+      return res
+        .status(400)
+        .json({ error: 'invalid_request', error_description: 'state parameter is required' });
+    }
+
+    // Validate and clamp scope
+    const rawScope = parseInt(params.scope as string, 10);
+    if (isNaN(rawScope) || rawScope < 0 || rawScope > TokenScope.Full) {
+      return res
+        .status(400)
+        .json({ error: 'invalid_scope', error_description: 'Invalid scope value' });
+    }
+    const requestedScope = rawScope;
+
+    // Check consent — approval MUST come via POST only (prevents CSRF/bypass via GET params)
+    const isApproval = req.method === 'POST' && params.approved === 'true';
+
+    const existingConsent = await dbRead.oauthConsent.findUnique({
+      where: { userId_clientId: { userId: session.user.id, clientId } },
+    });
+
+    if (isApproval) {
+      // User approved from the consent page — save consent if "remember" checked
+      const shouldRemember = params.remember === 'true';
+
+      // The consent screen optionally collects a buzz spend limit when the
+      // requested scope includes AIServicesWrite. Body field is JSON-encoded
+      // BuzzBudget[] (or empty for "no limit"); validate via the same schema
+      // the rest of the codebase uses so a malformed input is rejected here
+      // instead of silently corrupting the stored consent.
+      let parsedBuzzLimit: Awaited<ReturnType<typeof buzzLimitSchema.parseAsync>> | null = null;
+      const rawBuzzLimit = typeof params.buzz_limit === 'string' ? params.buzz_limit.trim() : '';
+      if (rawBuzzLimit) {
+        let json: unknown;
+        try {
+          json = JSON.parse(rawBuzzLimit);
+        } catch {
+          return res.status(400).json({
+            error: 'invalid_request',
+            error_description: 'buzz_limit is not valid JSON',
+          });
+        }
+        const result = buzzLimitSchema.safeParse(json);
+        if (!result.success) {
+          return res.status(400).json({
+            error: 'invalid_request',
+            error_description: 'buzz_limit failed validation',
+          });
+        }
+        parsedBuzzLimit = result.data;
+      }
+
+      if (shouldRemember) {
+        await dbWrite.oauthConsent.upsert({
+          where: { userId_clientId: { userId: session.user.id, clientId } },
+          create: {
+            userId: session.user.id,
+            clientId,
+            scope: requestedScope,
+            buzzLimit: parsedBuzzLimit ?? Prisma.JsonNull,
+          },
+          update: { scope: requestedScope, buzzLimit: parsedBuzzLimit ?? Prisma.DbNull },
+        });
+      }
+    } else if (!existingConsent || existingConsent.scope !== requestedScope) {
+      // No prior consent (or scope changed) — redirect to consent page
+      const consentUrl = new URL('/login/oauth/authorize', process.env.NEXTAUTH_URL);
+      for (const [key, value] of Object.entries(params)) {
+        if (typeof value === 'string') consentUrl.searchParams.set(key, value);
+      }
+      return res.redirect(consentUrl.toString());
+    }
+
+    // Issue authorization code
+    const request = new Request({
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      query: {},
+      body: {
+        ...params,
+        response_type: 'code',
+      },
+    });
+
+    const response = new Response(res);
+    const code = await oauthServer.authorize(request, response, {
+      authenticateHandler: {
+        handle: () => ({ id: session.user!.id }),
+      },
+    });
+
+    const ip = requestIp.getClientIp(req) ?? '';
+    logOAuthEvent({
+      type: 'authorization.granted',
+      userId: session.user!.id,
+      clientId,
+      scope: requestedScope,
+      ip,
+    });
+
+    // Use validated redirect_uri (from our check, not raw params)
+    const redirectUrl = new URL(redirectUri);
+    redirectUrl.searchParams.set('code', code.authorizationCode);
+    redirectUrl.searchParams.set('state', params.state as string);
+    return res.redirect(redirectUrl.toString());
+  } catch (err: any) {
+    const status = err.statusCode || err.code || 500;
+    return res.status(typeof status === 'number' ? status : 500).json({
+      error: err.name || 'server_error',
+      error_description: err.message,
+    });
+  }
+}

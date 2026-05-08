@@ -86,6 +86,8 @@ import { emerchantpayRouter } from './emerchantpay.router';
 import { comicsRouter } from './comics.router';
 import { strikeRouter } from '~/server/routers/strike.router';
 import { rewardsBonusEventRouter } from './rewards-bonus-event.router';
+import { oauthClientRouter } from '~/server/routers/oauth-client.router';
+import { oauthConsentRouter } from '~/server/routers/oauth-consent.router';
 
 export const appRouter = router({
   account: accountRouter,
@@ -175,6 +177,8 @@ export const appRouter = router({
   comics: comicsRouter,
   strike: strikeRouter,
   rewardsBonusEvent: rewardsBonusEventRouter,
+  oauthClient: oauthClientRouter,
+  oauthConsent: oauthConsentRouter,
 });
 
 // export type definition of API

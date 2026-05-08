@@ -6,7 +6,7 @@ import {
   isBaseModelGenerationSupported,
 } from '~/shared/constants/basemodel.constants';
 import { baseModelLicenses, constants } from '~/server/common/constants';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { eventEngine } from '~/server/events';
 import { dataForModelsCache } from '~/server/redis/caches';
 import type { GetByIdInput } from '~/server/schema/base.schema';
@@ -64,6 +64,8 @@ import {
 } from '~/server/utils/errorHandling';
 import {
   Availability,
+  LicensingFeeSettlementCurrency,
+  LicensingFeeType,
   ModelStatus,
   ModelUsageControl,
   TrainingStatus,
@@ -92,7 +94,7 @@ export type ModelVersionById = AsyncReturnType<typeof getModelVersionHandler>;
 
 // Internal: shared body for the public `getById` and the owner-only
 // `getByIdForEdit`. The `forceWriteDb` flag is set by the caller (controller-
-// level), never by tRPC input — keeping it server-side prevents a public
+// level), never by tRPC input â€” keeping it server-side prevents a public
 // flag from being used to redirect read load onto the primary DB.
 const loadModelVersion = async ({
   input,
@@ -127,6 +129,9 @@ const loadModelVersion = async ({
         trainingStatus: true,
         uploadType: true,
         usageControl: true,
+        licensingFee: true,
+        licensingFeeType: true,
+        licensingFeeSettlementCurrency: true,
         model: {
           select: {
             id: true,
@@ -290,7 +295,7 @@ export const toggleNotifyEarlyAccessHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -309,7 +314,7 @@ export const upsertModelVersionHandler = async ({
   ctx,
 }: {
   input: ModelVersionUpsertInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -371,6 +376,29 @@ export const upsertModelVersionHandler = async ({
       throw throwBadRequestError(
         'Cannot charge for download if downloads are disabled for this model version'
       );
+    }
+
+    if (input.licensingFee != null && input.licensingFee > 0) {
+      const existing = input.id
+        ? await dbRead.modelVersion.findUnique({
+            where: { id: input.id },
+            select: { licensingFee: true, licensingFeeSettlementCurrency: true },
+          })
+        : null;
+      const hadExistingFee = !!existing?.licensingFee && existing.licensingFee > 0;
+      if (!ctx.features.licensingFee && !ctx.user.isModerator && !hadExistingFee) {
+        throw throwBadRequestError('License fees are not enabled for your account.');
+      }
+      if (
+        input.licensingFeeSettlementCurrency === LicensingFeeSettlementCurrency.Cash &&
+        !ctx.user.isModerator &&
+        existing?.licensingFeeSettlementCurrency !== LicensingFeeSettlementCurrency.Cash
+      ) {
+        throw throwBadRequestError('Cash settlement is restricted; please contact support.');
+      }
+      if (!input.licensingFeeType) input.licensingFeeType = LicensingFeeType.PerImageBuzz;
+      if (!input.licensingFeeSettlementCurrency)
+        input.licensingFeeSettlementCurrency = LicensingFeeSettlementCurrency.Buzz;
     }
 
     const version = await upsertModelVersion({
@@ -475,7 +503,7 @@ export const publishModelVersionHandler = async ({
   ctx,
 }: {
   input: PublishVersionInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const version = await getVersionById({
@@ -556,7 +584,7 @@ export const unpublishModelVersionHandler = async ({
   ctx,
 }: {
   input: UnpublishModelSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id } = input;
@@ -622,7 +650,7 @@ export const declineReviewHandler = async ({
   ctx,
 }: {
   input: DeclineReviewSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     if (!ctx.user.isModerator) throw throwAuthorizationError();
@@ -675,7 +703,7 @@ export const earlyAccessModelVersionsOnTimeframeHandler = async ({
   ctx,
 }: {
   input: EarlyAccessModelVersionsOnTimeframeSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return earlyAccessModelVersionsOnTimeframe({
@@ -693,7 +721,7 @@ export const modelVersionGeneratedImagesOnTimeframeHandler = async ({
   ctx,
 }: {
   input: ModelVersionsGeneratedImagesOnTimeframeSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return modelVersionGeneratedImagesOnTimeframe({
@@ -773,7 +801,7 @@ export const modelVersionEarlyAccessPurchaseHandler = async ({
   ctx,
 }: {
   input: ModelVersionEarlyAccessPurchase;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return earlyAccessPurchase({
@@ -921,7 +949,7 @@ export async function recheckModelVersionTrainingStatusHandler({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   const { id: userId, isModerator } = ctx.user;
 
@@ -968,7 +996,7 @@ export async function publishPrivateModelVersionHandler({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   const version = await getVersionById({
     ...input,

@@ -15,8 +15,10 @@
 
 import type {
   AceStepAudioStepTemplate,
+  ChatCompletionStepTemplate,
   ComfyStepTemplate,
   ImageGenStepTemplate,
+  PromptEnhancementStepTemplate,
   TextToImageStepTemplate,
   VideoGenStepTemplate,
   VideoInterpolationStepTemplate,
@@ -70,7 +72,9 @@ export type StepInput =
   | ImageGenStepTemplate
   | VideoGenStepTemplate
   | VideoInterpolationStepTemplate
-  | AceStepAudioStepTemplate;
+  | AceStepAudioStepTemplate
+  | ChatCompletionStepTemplate
+  | PromptEnhancementStepTemplate;
 
 /** Validated output from the generation graph with ecosystem */
 export type EcosystemGraphOutput = Extract<GenerationGraphTypes['Ctx'], { ecosystem: string }>;

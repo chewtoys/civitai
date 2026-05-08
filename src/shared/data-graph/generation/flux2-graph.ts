@@ -20,10 +20,13 @@ import {
   createCheckpointGraph,
   createResourcesGraph,
   imagesNode,
+  promptGraph,
   seedNode,
   sliderNode,
+  triggerWordsGraph,
   type ResourceData,
 } from './common';
+import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Flux.2 Mode Constants
@@ -54,17 +57,6 @@ const flux2ModeVersionOptions = [
 ];
 
 // =============================================================================
-// Aspect Ratios
-// =============================================================================
-
-/** Flux.2 aspect ratios (1024px based) */
-const flux2AspectRatios = [
-  { label: '2:3', value: '2:3', width: 832, height: 1216 },
-  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
-  { label: '3:2', value: '3:2', width: 1216, height: 832 },
-];
-
-// =============================================================================
 // Flux.2 Guidance Presets
 // =============================================================================
 
@@ -92,7 +84,7 @@ type Flux2ModeCtx = {
  * Contains: aspectRatio, cfgScale, steps, seed
  */
 const baseModeGraph = new DataGraph<Flux2ModeCtx, GenerationCtx>()
-  .node('aspectRatio', aspectRatioNode({ options: flux2AspectRatios, defaultValue: '1:1' }))
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node(
     'cfgScale',
     sliderNode({ min: 2, max: 20, defaultValue: 3.5, step: 0.5, presets: flux2GuidancePresets })
@@ -169,7 +161,10 @@ export const flux2Graph = new DataGraph<
     flex: noResourcesModeGraph,
     pro: noResourcesModeGraph,
     max: noResourcesModeGraph,
-  });
+  })
+  // Prompt + triggerWords are common to all flux2 modes.
+  .merge(triggerWordsGraph)
+  .merge(promptGraph);
 
 // Export mode options for use in components
 export { flux2ModeVersionOptions, flux2VersionIds };

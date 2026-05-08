@@ -2,7 +2,7 @@ import { getTRPCErrorFromUnknown } from '@trpc/server';
 import dayjs from '~/shared/utils/dayjs';
 import { v4 as uuid } from 'uuid';
 import { NotificationCategory } from '~/server/common/enums';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { dbWrite } from '~/server/db/client';
 import { dailyBoostReward } from '~/server/rewards/active/dailyBoost.reward';
 import type {
@@ -45,7 +45,7 @@ import {
 } from '../utils/errorHandling';
 import { DEFAULT_PAGE_SIZE } from '../utils/pagination-helpers';
 
-export function getUserAccountHandler({ ctx }: { ctx: DeepNonNullable<Context> }) {
+export function getUserAccountHandler({ ctx }: { ctx: ProtectedContext }) {
   try {
     return getUserBuzzAccount({ accountId: ctx.user.id });
   } catch (error) {
@@ -58,7 +58,7 @@ export async function getBuzzAccountHandler({
   ctx,
 }: {
   input: GetBuzzAccountSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     input.accountId = ctx.user.id;
@@ -74,7 +74,7 @@ export async function getUserTransactionsHandler({
   ctx,
 }: {
   input: GetUserBuzzTransactionsSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     input.limit ??= DEFAULT_PAGE_SIZE;
@@ -91,7 +91,7 @@ export function completeStripeBuzzPurchaseHandler({
   ctx,
 }: {
   input: CompleteStripeBuzzPurchaseTransactionInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id } = ctx.user;
@@ -107,7 +107,7 @@ export async function createBuzzTipTransactionHandler({
   ctx,
 }: {
   input: UserBuzzTransactionInputSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id: fromAccountId } = ctx.user;
@@ -278,7 +278,7 @@ export async function getBuzzAccountTransactionsHandler({
   ctx,
 }: {
   input: GetBuzzAccountTransactionsSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     input.limit ??= DEFAULT_PAGE_SIZE;
@@ -296,7 +296,7 @@ export async function withdrawClubFundsHandler({
   ctx,
 }: {
   input: ClubTransactionSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id } = ctx.user;
@@ -335,7 +335,7 @@ export async function depositClubFundsHandler({
   ctx,
 }: {
   input: ClubTransactionSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id } = ctx.user;
@@ -366,7 +366,7 @@ export async function depositClubFundsHandler({
   }
 }
 
-export const getUserMultipliersHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserMultipliersHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     return getMultipliersForUser(ctx.user.id);
   } catch (error) {
@@ -374,7 +374,7 @@ export const getUserMultipliersHandler = async ({ ctx }: { ctx: DeepNonNullable<
   }
 };
 
-export const claimDailyBoostRewardHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const claimDailyBoostRewardHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const { ip, fingerprint, user } = ctx;
     const { id: userId } = user;
@@ -391,7 +391,7 @@ export function getDailyCompensationRewardHandler({
   ctx,
 }: {
   input: GetDailyBuzzCompensationInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   if (!ctx.user.isModerator) input.userId = ctx.user.id;
   if (!input.userId) input.userId = ctx.user.id;
@@ -408,7 +408,7 @@ export function getTransactionsReportHandler({
   ctx,
 }: {
   input: GetTransactionsReportSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     return getTransactionsReport({ ...input, userId: ctx.user.id });
@@ -422,7 +422,7 @@ export function previewMultiAccountTransactionHandler({
   ctx,
 }: {
   input: Omit<PreviewMultiAccountTransactionInput, 'fromAccountId'>;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     return previewMultiAccountTransaction({

@@ -17,6 +17,10 @@ import {
   throwNotFoundError,
 } from '~/server/utils/errorHandling';
 import {
+  getMaxEarlyAccessDays,
+  getMaxEarlyAccessModels,
+} from '~/server/utils/early-access-helpers';
+import {
   Availability,
   ComicReferenceStatus,
   ComicChapterStatus,
@@ -30,15 +34,20 @@ import { getOrchestratorToken } from '~/server/orchestrator/get-orchestrator-tok
 import { pollIterationWorkflow } from '~/server/services/orchestrator/poll-iteration';
 import { createImageGen } from '~/server/services/orchestrator/imageGen/imageGen';
 import { assertCanGenerate, getUserQueueStatus } from '~/server/services/orchestrator/queue-limits';
-import { getWorkflow, submitWorkflow } from '~/server/services/orchestrator/workflows';
+import { getWorkflow, submitWorkflow, updateWorkflow } from '~/server/services/orchestrator/workflows';
+import { formatGenerationResponse2 } from '~/server/services/orchestrator/orchestration-new.service';
+import { WorkflowData } from '~/shared/orchestrator/workflow-data';
+import { colorDomainNames, type ColorDomain } from '~/shared/constants/domain.constants';
 import { createImageGenStep } from '~/server/services/orchestrator/imageGen/imageGen';
 import { enhanceComicPrompt } from '~/server/services/comics/prompt-enhance';
 import { orchestratorChatCompletionCost } from '~/server/services/comics/orchestrator-chat';
 import { resolveReferenceMentions } from '~/server/services/comics/mention-resolver';
+import { updateComicNsfwLevels } from '~/server/services/nsfwLevels.service';
 import {
-  updateComicChapterNsfwLevels,
-  updateComicProjectNsfwLevels,
-} from '~/server/services/nsfwLevels.service';
+  BlockedByUsers,
+  BlockedUsers,
+  HiddenUsers,
+} from '~/server/services/user-preferences.service';
 import { createImage, ingestImageById } from '~/server/services/image.service';
 import { createNotification } from '~/server/services/notification.service';
 import { planChapterPanels } from '~/server/services/comics/story-plan';
@@ -56,9 +65,11 @@ import { signalClient } from '~/utils/signal-client';
 import { comicsSearchIndex } from '~/server/search-index';
 import {
   publicBrowsingLevelsFlag,
+  sfwBrowsingLevelsFlag,
   hasPublicBrowsingLevel,
   hasSafeBrowsingLevel,
   nsfwBrowsingLevelsFlag,
+  orchestratorNsfwLevelMap,
 } from '~/shared/constants/browsingLevel.constants';
 import { Flags } from '~/shared/utils/flags';
 import {
@@ -67,6 +78,7 @@ import {
   seedreamSizes,
   qwenSizes,
   grokSizes,
+  EARLY_ACCESS_CONFIG,
 } from '~/server/common/constants';
 import { hasEntityAccess } from '~/server/services/common.service';
 import {
@@ -82,6 +94,7 @@ import { getImageUploadBackend } from '~/utils/s3-utils';
 import { registerMediaLocation } from '~/server/services/storage-resolver';
 import { env } from '~/env/server';
 import { randomUUID } from 'crypto';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 // Feature flag gate — all procedures require the comicCreator flag
 const comicFlag = isFlagProtected('comicCreator');
@@ -101,6 +114,16 @@ const COMIC_MODEL_CONFIG: Record<
     sizes: { label: string; width: number; height: number }[];
   }
 > = {
+  NanoBanana2: {
+    // V2 is dispatched via the ecosystem handler at
+    // `src/server/services/orchestrator/ecosystems/nano-banana.handler.ts`,
+    // which keys off the resource versionId to produce the v2 input shape.
+    engine: 'gemini',
+    baseModel: 'NanoBanana',
+    versionId: 2725610,
+    maxReferenceImages: 7,
+    sizes: nanoBananaProSizes,
+  },
   NanoBanana: {
     engine: 'gemini',
     baseModel: 'NanoBanana',
@@ -133,6 +156,21 @@ const COMIC_MODEL_CONFIG: Record<
       { label: '2:3', width: 1024, height: 1536 },
     ],
   },
+  OpenAI2: {
+    // gpt-image-2 — different API shape than v1/v1.5 (width/height, no
+    // background/seed). The ecosystem handler at
+    // `src/server/services/orchestrator/ecosystems/openai.handler.ts`
+    // resolves to that shape based on the resource versionId.
+    engine: 'openai',
+    baseModel: 'OpenAI',
+    versionId: 2880272,
+    maxReferenceImages: 7,
+    sizes: [
+      { label: '1:1', width: 1024, height: 1024 },
+      { label: '3:2', width: 1536, height: 1024 },
+      { label: '2:3', width: 1024, height: 1536 },
+    ],
+  },
   Qwen: {
     engine: 'qwen',
     baseModel: 'Qwen',
@@ -157,11 +195,13 @@ const COMIC_MODEL_CONFIG: Record<
   },
 };
 
-const DEFAULT_COMIC_MODEL = 'NanoBanana';
+const DEFAULT_COMIC_MODEL = 'NanoBanana2';
 const DEFAULT_ASPECT_RATIO = '3:4';
 
 function getComicModelConfig(baseModel?: string | null) {
-  return COMIC_MODEL_CONFIG[baseModel ?? DEFAULT_COMIC_MODEL] ?? COMIC_MODEL_CONFIG[DEFAULT_COMIC_MODEL];
+  return (
+    COMIC_MODEL_CONFIG[baseModel ?? DEFAULT_COMIC_MODEL] ?? COMIC_MODEL_CONFIG[DEFAULT_COMIC_MODEL]
+  );
 }
 
 function getAspectRatioDimensions(
@@ -225,9 +265,7 @@ async function submitComicGeneration({
   });
 
   const versionId = versionIdOverride ?? modelConfig.versionId;
-  const cappedImages = images
-    ? capReferenceImages(images, modelConfig.maxReferenceImages)
-    : null;
+  const cappedImages = images ? capReferenceImages(images, modelConfig.maxReferenceImages) : null;
 
   const tags = isGreen ? ['comics', 'green'] : ['comics'];
 
@@ -270,7 +308,10 @@ async function submitComicGeneration({
  * On green: logged-in users see PG + PG13; logged-out users see PG only.
  */
 function stripNsfwPanelImages(
-  chapters: { nsfwLevel: number; panels: { imageUrl: string | null; image?: { nsfwLevel: number } | null }[] }[],
+  chapters: {
+    nsfwLevel: number;
+    panels: { imageUrl: string | null; image?: { nsfwLevel: number } | null }[];
+  }[],
   loggedIn: boolean
 ) {
   const passesSfwGate = loggedIn ? hasSafeBrowsingLevel : hasPublicBrowsingLevel;
@@ -280,13 +321,28 @@ function stripNsfwPanelImages(
       const panelNsfw = panel.image
         ? !passesSfwGate(panel.image.nsfwLevel)
         : panel.imageUrl
-          ? true // Has image URL but no Image record — assume NSFW to be safe
-          : chapterHasNsfw;
+        ? true // Has image URL but no Image record — assume NSFW to be safe
+        : chapterHasNsfw;
       if (panelNsfw && panel.imageUrl) {
         (panel as any).imageUrl = null;
       }
     }
   }
+}
+
+/**
+ * Normalize an orchestrator-emitted nsfwLevel to the numeric `NsfwLevel`
+ * bitfield. Orchestrator outputs sometimes carry the level as a string
+ * ("pg", "pg13", "r"…); without this, downstream `isMature`/flag checks
+ * silently coerce the string to NaN and treat mature candidates as safe.
+ */
+function normalizeCandidateNsfwLevel(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return orchestratorNsfwLevelMap[normalized];
+  }
+  return undefined;
 }
 
 /** Detect orchestrator/generator offline errors and return a user-friendly message. */
@@ -326,9 +382,7 @@ function sendComicPanelSignal(
     imageUrl?: string | null;
   }
 ) {
-  signalClient
-    .send({ userId, target: SignalMessages.ComicPanelUpdate, data })
-    .catch(() => {}); // Fire-and-forget
+  signalClient.send({ userId, target: SignalMessages.ComicPanelUpdate, data }).catch(() => {}); // Fire-and-forget
 }
 
 // Middleware to check project ownership
@@ -418,7 +472,17 @@ const addReferenceImagesSchema = z.object({
     .max(10),
 });
 
-const comicModelEnum = z.enum(['NanoBanana', 'Flux2', 'Seedream', 'SeedreamLite', 'OpenAI', 'Qwen', 'Grok']);
+const comicModelEnum = z.enum([
+  'NanoBanana2',
+  'NanoBanana',
+  'Flux2',
+  'Seedream',
+  'SeedreamLite',
+  'OpenAI',
+  'OpenAI2',
+  'Qwen',
+  'Grok',
+]);
 
 const createPanelSchema = z.object({
   projectId: z.number().int(),
@@ -560,7 +624,7 @@ const bulkCreatePanelsSchema = z.object({
       z.object({
         // For generation mode (text prompt -> image)
         prompt: z.string().max(2000).optional(),
-              // For upload/enhance mode (source image -> comic panel)
+        // For upload/enhance mode (source image -> comic panel)
         sourceImageUrl: z.string().optional(),
         sourceImageWidth: z.number().int().positive().optional(),
         sourceImageHeight: z.number().int().positive().optional(),
@@ -600,12 +664,83 @@ const updateReferenceSchema = z.object({
     .refine((v) => !v.includes('@'), 'Name cannot contain @ character'),
 });
 
+// Mirror the model-version EA constraints: timeframe is one of the
+// allowed discrete values (3 / 5 / 7 / 9 / 12 / 15 / 30 days), and the
+// minimum buzz price matches the model `downloadPrice` floor (100). The
+// upper-bound `timeframe` cap and concurrent-EA-chapter cap are enforced
+// at the mutation level since they depend on the user's score.
 const chapterEarlyAccessConfigSchema = z
   .object({
-    buzzPrice: z.number().int().min(1).max(10000),
-    timeframe: z.number().int().min(1).max(30),
+    buzzPrice: z.number().int().min(100).max(10000),
+    timeframe: z
+      .number()
+      .int()
+      .refine(
+        (v) => EARLY_ACCESS_CONFIG.timeframeValues.includes(v),
+        `Timeframe must be one of: ${EARLY_ACCESS_CONFIG.timeframeValues.join(', ')} days.`
+      ),
   })
   .nullable();
+
+/** Active EA chapters for a user — counterpart to `getUserEarlyAccessModelVersions`. */
+async function getUserEarlyAccessChapters(userId: number) {
+  return dbRead.comicChapter.findMany({
+    where: {
+      earlyAccessEndsAt: { gt: new Date() },
+      project: { userId, status: ComicProjectStatus.Active },
+    },
+    select: { id: true },
+  });
+}
+
+/**
+ * Apply the same gating model versions use:
+ *   - `timeframe` cannot exceed the user's score-based cap
+ *   - cannot have more than the score-based cap of EA chapters active at once
+ *
+ * Pass `excludeChapterId` when re-publishing / updating a chapter that's
+ * already in EA, so the chapter doesn't count against its own quota.
+ */
+async function assertCanGrantEarlyAccess({
+  ctx,
+  timeframe,
+  excludeChapterId,
+}: {
+  ctx: { user: SessionUser; features: any };
+  timeframe: number;
+  excludeChapterId?: number;
+}) {
+  if (ctx.user.isModerator) return;
+  const maxDays = getMaxEarlyAccessDays({
+    userMeta: ctx.user.meta as any,
+    features: ctx.features,
+  });
+  if (maxDays === 0) {
+    throw throwBadRequestError(
+      'Your creator score is not high enough to put a chapter in early access yet.'
+    );
+  }
+  if (timeframe > maxDays) {
+    throw throwBadRequestError(
+      `Early access timeframe exceeds your current limit of ${maxDays} day${
+        maxDays === 1 ? '' : 's'
+      }.`
+    );
+  }
+  const active = await getUserEarlyAccessChapters(ctx.user.id);
+  const maxActive = getMaxEarlyAccessModels({
+    userMeta: ctx.user.meta as any,
+    features: ctx.features,
+  });
+  const otherActive = excludeChapterId ? active.filter((c) => c.id !== excludeChapterId) : active;
+  if (otherActive.length >= maxActive) {
+    throw throwBadRequestError(
+      `You already have ${otherActive.length} chapter${
+        otherActive.length === 1 ? '' : 's'
+      } in early access — that's the cap for your current creator score.`
+    );
+  }
+}
 
 // Shared helper: resolve a reference's images for generation
 async function getReferenceImages(referenceId: number) {
@@ -806,71 +941,74 @@ async function createSinglePanel(args: {
 
 export const comicsRouter = router({
   // Projects
-  getMyProjects: comicProtectedProcedure.query(async ({ ctx }) => {
-    const projects = await dbRead.comicProject.findMany({
-      where: {
-        userId: ctx.user.id,
-        status: ComicProjectStatus.Active,
-      },
-      include: {
-        coverImage: { select: { id: true, url: true, nsfwLevel: true } },
-        heroImage: { select: { id: true, url: true, nsfwLevel: true } },
-        chapters: {
-          include: {
-            _count: { select: { panels: true } },
-            panels: {
-              take: 1,
-              orderBy: { position: 'asc' },
-              select: { imageUrl: true },
-            },
-          },
-          orderBy: { position: 'asc' },
+  getMyProjects: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .query(async ({ ctx }) => {
+      const projects = await dbRead.comicProject.findMany({
+        where: {
+          userId: ctx.user.id,
+          status: ComicProjectStatus.Active,
         },
-      },
-      orderBy: { updatedAt: 'desc' },
-    });
+        include: {
+          coverImage: { select: { id: true, url: true, nsfwLevel: true } },
+          heroImage: { select: { id: true, url: true, nsfwLevel: true } },
+          chapters: {
+            include: {
+              _count: { select: { panels: true } },
+              panels: {
+                take: 1,
+                orderBy: { position: 'asc' },
+                select: { imageUrl: true },
+              },
+            },
+            orderBy: { position: 'asc' },
+          },
+        },
+        orderBy: { updatedAt: 'desc' },
+      });
 
-    return projects.map((p) => {
-      const panelCount = p.chapters.reduce((sum, ch) => sum + ch._count.panels, 0);
-      const thumbnailUrl =
-        p.chapters.flatMap((ch) => ch.panels).find((panel) => panel.imageUrl)?.imageUrl ?? null;
+      return projects.map((p) => {
+        const panelCount = p.chapters.reduce((sum, ch) => sum + ch._count.panels, 0);
+        const thumbnailUrl =
+          p.chapters.flatMap((ch) => ch.panels).find((panel) => panel.imageUrl)?.imageUrl ?? null;
 
-      // On green, strip NSFW cover/hero/thumbnail images so the card is still
-      // visible and navigable but doesn't display mature imagery. This route is
-      // protected so the viewer is always logged in — allow PG + PG13.
-      const coverImage =
-        ctx.features.isGreen && p.coverImage && !hasSafeBrowsingLevel(p.coverImage.nsfwLevel)
-          ? null
-          : p.coverImage;
-      const heroImage =
-        ctx.features.isGreen && p.heroImage && !hasSafeBrowsingLevel(p.heroImage.nsfwLevel)
-          ? null
-          : p.heroImage;
-      const safeThumbnailUrl =
-        ctx.features.isGreen && Flags.intersects(p.nsfwLevel, nsfwBrowsingLevelsFlag)
-          ? null
-          : thumbnailUrl;
+        // On green, strip NSFW cover/hero/thumbnail images so the card is still
+        // visible and navigable but doesn't display mature imagery. This route is
+        // protected so the viewer is always logged in — allow PG + PG13.
+        const coverImage =
+          ctx.features.isGreen && p.coverImage && !hasSafeBrowsingLevel(p.coverImage.nsfwLevel)
+            ? null
+            : p.coverImage;
+        const heroImage =
+          ctx.features.isGreen && p.heroImage && !hasSafeBrowsingLevel(p.heroImage.nsfwLevel)
+            ? null
+            : p.heroImage;
+        const safeThumbnailUrl =
+          ctx.features.isGreen && Flags.intersects(p.nsfwLevel, nsfwBrowsingLevelsFlag)
+            ? null
+            : thumbnailUrl;
 
-      return {
-        id: p.id,
-        name: p.name,
-        description: p.description,
-        coverImage,
-        heroImage,
-        nsfwLevel: p.nsfwLevel,
-        panelCount,
-        thumbnailUrl: safeThumbnailUrl,
-        createdAt: p.createdAt,
-        updatedAt: p.updatedAt,
-      };
-    });
-  }),
+        return {
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          coverImage,
+          heroImage,
+          nsfwLevel: p.nsfwLevel,
+          panelCount,
+          thumbnailUrl: safeThumbnailUrl,
+          createdAt: p.createdAt,
+          updatedAt: p.updatedAt,
+        };
+      });
+    }),
 
   // Lightweight project shell — project metadata + references + chapter list
   // with precomputed `panelCount` / `hasInProgressPanels`, but NO full panel
   // rows. Use this when the page only needs the chapter list (sidebar, model
   // info, references) and will load actual panels through `getChapter`.
   getProjectShell: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getProjectSchema)
     .query(async ({ ctx, input }) => {
       const project = await dbWrite.comicProject.findUnique({
@@ -943,6 +1081,7 @@ export const comicsRouter = router({
 
   // Full panel data for a single chapter. Pair with `getProjectShell`.
   getChapter: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getChapterSchema)
     .query(async ({ ctx, input }) => {
       // Owner check via the parent project — chapters don't store userId.
@@ -982,6 +1121,7 @@ export const comicsRouter = router({
     }),
 
   getProjectForReader: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getProjectSchema)
     .query(async ({ ctx, input }) => {
       const project = await dbRead.comicProject.findUnique({
@@ -1044,6 +1184,7 @@ export const comicsRouter = router({
 
   // Public queries — no auth required
   getPublicProjects: comicPublicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(
       z.object({
         limit: z.number().int().min(1).max(50).default(20),
@@ -1077,16 +1218,43 @@ export const comicsRouter = router({
       };
 
       if (genre) where.genre = genre;
-      if (userId) where.userId = userId;
 
-      // NSFW browsing level filter — compute allowed nsfwLevel values using bitwise match
-      // On green domain, enforce PG-only even if browsingLevel not passed
-      const effectiveBrowsingLevel =
-        browsingLevel != null && browsingLevel > 0
-          ? browsingLevel
-          : ctx.features.isGreen
-            ? publicBrowsingLevelsFlag
-            : null;
+      // Hide comics authored by users the viewer has hidden/blocked, OR by
+      // users who have blocked the viewer. Mirrors the comments-service
+      // pattern (excludedUserIds = hidden ∪ blocked ∪ blockedBy). Caches are
+      // empty for anonymous viewers so this is a no-op when ctx.user is null.
+      const [hiddenUserIds, blockedByIds, blockedIds] = await Promise.all([
+        HiddenUsers.getCached({ userId: ctx.user?.id }),
+        BlockedByUsers.getCached({ userId: ctx.user?.id }),
+        BlockedUsers.getCached({ userId: ctx.user?.id }),
+      ]);
+      const excludedUserIds = Array.from(
+        new Set([...hiddenUserIds, ...blockedByIds, ...blockedIds].map((u) => u.id))
+      );
+
+      if (userId) {
+        // Explicit author filter: if the requested author is on the exclusion
+        // list (e.g. a stale link to a blocker's profile), force a no-match
+        // userId so the query returns nothing rather than leaking comics.
+        where.userId = excludedUserIds.includes(userId) ? { in: [] } : userId;
+      } else if (excludedUserIds.length) {
+        where.userId = { notIn: excludedUserIds };
+      }
+
+      // NSFW browsing level filter — compute allowed nsfwLevel values using bitwise match.
+      //
+      // Green domain cap mirrors `BrowsingLevelProvider`'s domain-forced
+      // level: anonymous viewers can see PG only, logged-in viewers can
+      // see PG + PG13. Anything the client requests is bitwise-AND'd
+      // against this cap, so a hand-crafted request with a higher level
+      // can't bypass the domain rule.
+      const greenCap = ctx.user ? sfwBrowsingLevelsFlag : publicBrowsingLevelsFlag;
+      const requested = browsingLevel != null && browsingLevel > 0 ? browsingLevel : null;
+      const effectiveBrowsingLevel = ctx.features.isGreen
+        ? requested != null
+          ? requested & greenCap
+          : greenCap
+        : requested;
 
       if (effectiveBrowsingLevel != null) {
         // Comic project nsfwLevel is a bit_or aggregate of all chapter levels.
@@ -1268,6 +1436,7 @@ export const comicsRouter = router({
     }),
 
   getPublicProjectForReader: comicPublicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ id: z.number().int() }))
     .query(async ({ input, ctx }) => {
       const isOwnerOrMod = ctx.user != null;
@@ -1345,6 +1514,23 @@ export const comicsRouter = router({
         ctx.user != null && (project.userId === ctx.user.id || ctx.user.isModerator === true);
       if (project.tosViolation && !isOwnerOrModViewer) {
         throw throwNotFoundError('Comic not found');
+      }
+
+      // Hide projects authored by hidden/blocked users (or users who blocked
+      // the viewer). Owners and moderators bypass this so a self-blocked or
+      // mod-reviewed project remains reachable.
+      if (!isOwnerOrModViewer) {
+        const [hiddenUserIds, blockedByIds, blockedIds] = await Promise.all([
+          HiddenUsers.getCached({ userId: ctx.user?.id }),
+          BlockedByUsers.getCached({ userId: ctx.user?.id }),
+          BlockedUsers.getCached({ userId: ctx.user?.id }),
+        ]);
+        const excludedUserIds = new Set(
+          [...hiddenUserIds, ...blockedByIds, ...blockedIds].map((u) => u.id)
+        );
+        if (excludedUserIds.has(project.userId)) {
+          throw throwNotFoundError('Comic not found');
+        }
       }
 
       // Check if viewer is the owner or a moderator
@@ -1453,6 +1639,7 @@ export const comicsRouter = router({
    * - Smart create (bulk panels)
    */
   getGenerationCostEstimate: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(
       z
         .object({
@@ -1596,27 +1783,30 @@ export const comicsRouter = router({
       }
     }),
 
-  getPromptEnhanceCostEstimate: comicProtectedProcedure.query(async ({ ctx }) => {
-    try {
-      const token = await getOrchestratorToken(ctx.user.id, ctx);
-      return orchestratorChatCompletionCost({
-        token,
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: 'You enhance prompts.' },
-          { role: 'user', content: 'A sample prompt for cost estimation.' },
-        ],
-        maxTokens: 512,
-        currencies: getAllowedAccountTypes(ctx.features, ['blue']),
-      });
-    } catch (error) {
-      console.error('Comics getPromptEnhanceCostEstimate failed:', error);
-      return { cost: 0, ready: false };
-    }
-  }),
+  getPromptEnhanceCostEstimate: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .query(async ({ ctx }) => {
+      try {
+        const token = await getOrchestratorToken(ctx.user.id, ctx);
+        return orchestratorChatCompletionCost({
+          token,
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: 'You enhance prompts.' },
+            { role: 'user', content: 'A sample prompt for cost estimation.' },
+          ],
+          maxTokens: 512,
+          currencies: getAllowedAccountTypes(ctx.features, ['blue']),
+        });
+      } catch (error) {
+        console.error('Comics getPromptEnhanceCostEstimate failed:', error);
+        return { cost: 0, ready: false };
+      }
+    }),
 
   /** Enhances a prompt via LLM and returns the enhanced text without generating an image. */
   enhancePromptText: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(
       z.object({
         projectId: z.number().int(),
@@ -1687,26 +1877,29 @@ export const comicsRouter = router({
       return { enhancedPrompt };
     }),
 
-  getPlanChapterCostEstimate: comicProtectedProcedure.query(async ({ ctx }) => {
-    try {
-      const token = await getOrchestratorToken(ctx.user.id, ctx);
-      return orchestratorChatCompletionCost({
-        token,
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: 'You plan comic panels.' },
-          { role: 'user', content: 'A sample story for cost estimation.' },
-        ],
-        maxTokens: 2048,
-        currencies: getAllowedAccountTypes(ctx.features, ['blue']),
-      });
-    } catch (error) {
-      console.error('Comics getPlanChapterCostEstimate failed:', error);
-      return { cost: 0, ready: false };
-    }
-  }),
+  getPlanChapterCostEstimate: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .query(async ({ ctx }) => {
+      try {
+        const token = await getOrchestratorToken(ctx.user.id, ctx);
+        return orchestratorChatCompletionCost({
+          token,
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: 'You plan comic panels.' },
+            { role: 'user', content: 'A sample story for cost estimation.' },
+          ],
+          maxTokens: 2048,
+          currencies: getAllowedAccountTypes(ctx.features, ['blue']),
+        });
+      } catch (error) {
+        console.error('Comics getPlanChapterCostEstimate failed:', error);
+        return { cost: 0, ready: false };
+      }
+    }),
 
   createProject: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(createProjectSchema)
     .mutation(async ({ ctx, input }) => {
       const project = await dbWrite.comicProject.create({
@@ -1762,6 +1955,7 @@ export const comicsRouter = router({
     }),
 
   deleteProject: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaDelete })
     .input(getProjectSchema)
     .mutation(async ({ ctx, input }) => {
       const project = await dbRead.comicProject.findUnique({
@@ -1785,6 +1979,7 @@ export const comicsRouter = router({
     }),
 
   updateProject: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(updateProjectSchema)
     .mutation(async ({ ctx, input }) => {
       const project = await dbRead.comicProject.findUnique({
@@ -1849,6 +2044,7 @@ export const comicsRouter = router({
 
   // Chapters
   createChapter: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(createChapterSchema)
     .use(isProjectOwner)
     .mutation(async ({ input }) => {
@@ -1872,6 +2068,7 @@ export const comicsRouter = router({
     }),
 
   updateChapter: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(updateChapterSchema)
     .mutation(async ({ ctx, input }) => {
       const chapter = await dbRead.comicChapter.findUnique({
@@ -1895,6 +2092,7 @@ export const comicsRouter = router({
     }),
 
   deleteChapter: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaDelete })
     .input(deleteChapterSchema)
     .mutation(async ({ ctx, input }) => {
       const chapter = await dbRead.comicChapter.findUnique({
@@ -1930,7 +2128,10 @@ export const comicsRouter = router({
             if (remaining[i].position !== i) {
               await tx.comicChapter.update({
                 where: {
-                  projectId_position: { projectId: input.projectId, position: remaining[i].position },
+                  projectId_position: {
+                    projectId: input.projectId,
+                    position: remaining[i].position,
+                  },
                 },
                 data: { position: TEMP_OFFSET + i },
               });
@@ -1957,7 +2158,7 @@ export const comicsRouter = router({
       });
 
       // Recalculate project NSFW level after chapter removal
-      updateComicProjectNsfwLevels([input.projectId]).catch((e) =>
+      await updateComicNsfwLevels([input.projectId]).catch((e) =>
         console.error(`Failed to update project NSFW after chapter delete:`, e)
       );
 
@@ -1965,6 +2166,7 @@ export const comicsRouter = router({
     }),
 
   duplicatePanel: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(duplicatePanelSchema)
     .mutation(async ({ ctx, input }) => {
       const panel = await dbRead.comicPanel.findUnique({
@@ -2034,6 +2236,7 @@ export const comicsRouter = router({
     }),
 
   duplicateChapter: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(duplicateChapterSchema)
     .use(isChapterOwner)
     .mutation(async ({ ctx, input }) => {
@@ -2088,7 +2291,12 @@ export const comicsRouter = router({
         // Phase 2: move from temp to final positions (+1)
         for (const ch of chaptersToShift) {
           await tx.comicChapter.update({
-            where: { projectId_position: { projectId: input.projectId, position: TEMP_OFFSET + ch.position } },
+            where: {
+              projectId_position: {
+                projectId: input.projectId,
+                position: TEMP_OFFSET + ch.position,
+              },
+            },
             data: { position: ch.position + 1 },
           });
         }
@@ -2143,6 +2351,7 @@ export const comicsRouter = router({
     }),
 
   reorderChapters: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(reorderChaptersSchema)
     .use(isProjectOwner)
     .mutation(async ({ input }) => {
@@ -2177,6 +2386,7 @@ export const comicsRouter = router({
   // References — single creation path (images added separately)
 
   createReference: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(createReferenceSchema)
     .mutation(async ({ ctx, input }) => {
       const reference = await dbWrite.comicReference.create({
@@ -2211,6 +2421,7 @@ export const comicsRouter = router({
 
   // Add reference images — creates Image records + join rows + triggers ingestion
   addReferenceImages: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(addReferenceImagesSchema)
     .mutation(async ({ ctx, input }) => {
       const reference = await dbRead.comicReference.findUnique({
@@ -2267,6 +2478,7 @@ export const comicsRouter = router({
 
   // Poll reference status — just return current status + images
   pollReferenceStatus: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ referenceId: z.number().int() }))
     .query(async ({ ctx, input }) => {
       // Use dbWrite for read-after-write consistency when polling after mutations
@@ -2297,6 +2509,7 @@ export const comicsRouter = router({
 
   // Panels — generation via createImageGen (model determined by project)
   createPanel: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(createPanelSchema)
     .use(isChapterOwner)
     .mutation(async ({ ctx, input }) => {
@@ -2434,10 +2647,7 @@ export const comicsRouter = router({
         await assertCanGenerate(token, ctx.user?.tier ?? 'free', 1);
       } catch (error) {
         // Re-throw known tRPC errors (e.g. queue full) as-is
-        if (
-          (error as any)?.code === 'BAD_REQUEST' ||
-          (error as any)?.code === 'TOO_MANY_REQUESTS'
-        )
+        if ((error as any)?.code === 'BAD_REQUEST' || (error as any)?.code === 'TOO_MANY_REQUESTS')
           throw error;
         throw throwBadRequestError(getOrchestratorErrorMessage(error));
       }
@@ -2585,31 +2795,35 @@ export const comicsRouter = router({
       }
     }),
 
-  updatePanel: comicProtectedProcedure.input(updatePanelSchema).mutation(async ({ ctx, input }) => {
-    // Verify ownership via chapter -> project
-    const panel = await dbRead.comicPanel.findUnique({
-      where: { id: input.panelId },
-      include: { chapter: { include: { project: { select: { userId: true } } } } },
-    });
+  updatePanel: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
+    .input(updatePanelSchema)
+    .mutation(async ({ ctx, input }) => {
+      // Verify ownership via chapter -> project
+      const panel = await dbRead.comicPanel.findUnique({
+        where: { id: input.panelId },
+        include: { chapter: { include: { project: { select: { userId: true } } } } },
+      });
 
-    if (!panel || panel.chapter.project.userId !== ctx.user.id) {
-      throw throwAuthorizationError();
-    }
+      if (!panel || panel.chapter.project.userId !== ctx.user.id) {
+        throw throwAuthorizationError();
+      }
 
-    const updated = await dbWrite.comicPanel.update({
-      where: { id: input.panelId },
-      data: {
-        status: input.status,
-        imageUrl: input.imageUrl,
-        civitaiJobId: input.civitaiJobId,
-        errorMessage: input.errorMessage,
-      },
-    });
+      const updated = await dbWrite.comicPanel.update({
+        where: { id: input.panelId },
+        data: {
+          status: input.status,
+          imageUrl: input.imageUrl,
+          civitaiJobId: input.civitaiJobId,
+          errorMessage: input.errorMessage,
+        },
+      });
 
-    return updated;
-  }),
+      return updated;
+    }),
 
   replacePanelImage: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(z.object({ panelId: z.number().int(), imageUrl: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
       const panel = await dbRead.comicPanel.findUnique({
@@ -2635,37 +2849,39 @@ export const comicsRouter = router({
       ingestImageById({ id: image.id }).catch((e) =>
         console.error(`Failed to ingest sketch edit image ${image.id}:`, e)
       );
-      updateComicChapterNsfwLevels([panel.chapter.project.id]).catch(() => {});
-      updateComicProjectNsfwLevels([panel.chapter.project.id]).catch(() => {});
+      updateComicNsfwLevels([panel.chapter.project.id]).catch(() => {});
 
       return updated;
     }),
 
-  deletePanel: comicProtectedProcedure.input(deletePanelSchema).mutation(async ({ ctx, input }) => {
-    // Verify ownership via chapter -> project
-    const panel = await dbRead.comicPanel.findUnique({
-      where: { id: input.panelId },
-      include: { chapter: { include: { project: { select: { userId: true } } } } },
-    });
+  deletePanel: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaDelete })
+    .input(deletePanelSchema)
+    .mutation(async ({ ctx, input }) => {
+      // Verify ownership via chapter -> project
+      const panel = await dbRead.comicPanel.findUnique({
+        where: { id: input.panelId },
+        include: { chapter: { include: { project: { select: { userId: true } } } } },
+      });
 
-    if (!panel || panel.chapter.project.userId !== ctx.user.id) {
-      throw throwAuthorizationError();
-    }
+      if (!panel || panel.chapter.project.userId !== ctx.user.id) {
+        throw throwAuthorizationError();
+      }
 
-    await dbWrite.comicPanel.delete({
-      where: { id: input.panelId },
-    });
+      await dbWrite.comicPanel.delete({
+        where: { id: input.panelId },
+      });
 
-    // Recalculate NSFW levels after panel removal
-    // Project NSFW is derived from chapter NSFW, so chapter must update first
-    updateComicChapterNsfwLevels([panel.projectId])
-      .then(() => updateComicProjectNsfwLevels([panel.projectId]))
-      .catch((e) => console.error(`Failed to update NSFW levels after panel delete:`, e));
+      // Recalculate NSFW levels after panel removal
+      await updateComicNsfwLevels([panel.projectId]).catch((e) =>
+        console.error(`Failed to update NSFW levels after panel delete:`, e)
+      );
 
-    return { success: true };
-  }),
+      return { success: true };
+    }),
 
   reorderPanels: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(reorderPanelsSchema)
     .use(isChapterOwner)
     .mutation(async ({ input }) => {
@@ -2696,6 +2912,7 @@ export const comicsRouter = router({
 
   // Debug info for a panel's generation workflow
   getPanelDebugInfo: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ panelId: z.number().int() }))
     .query(async ({ ctx, input }) => {
       const panel = await dbRead.comicPanel.findUnique({
@@ -2814,6 +3031,7 @@ export const comicsRouter = router({
 
   // Poll panel generation status
   pollPanelStatus: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(z.object({ panelId: z.number().int() }))
     .query(async ({ ctx, input }) => {
       // Use dbWrite for read-after-write consistency when polling after mutations
@@ -2826,14 +3044,39 @@ export const comicsRouter = router({
         throw throwAuthorizationError();
       }
 
-      // Only poll if panel is actively generating with a workflow
+      // Only poll if panel is actively generating with a workflow.
+      //
+      // Two non-terminal states are allowed through:
+      //  * `RequireUnlock` — owner needs to spend yellow Buzz to unlock a
+      //    single-image generation. Re-polling refreshes the transient
+      //    blurred-preview URL (the URL itself is ephemeral and never
+      //    persisted).
+      //  * `AwaitingSelection` with at least one locked candidate — multi-
+      //    image generation where some candidates are mature. Re-polling
+      //    keeps the locked candidates' blurred previews fresh AND, after
+      //    the owner unlocks the workflow, picks up the now-clean URLs and
+      //    backfills S3 keys for previously-locked candidate slots.
+      const persistedCandidates = ((panel.metadata as any)?.candidateImages ?? []) as Array<
+        { key: string } | { requiresUnlock: true; blockedReason: string }
+      >;
+      const hasLockedCandidate = persistedCandidates.some(
+        (c) => c && (c as any).requiresUnlock === true
+      );
+      const panelBlockedReason = (panel.metadata as any)?.blockedReason as
+        | string
+        | undefined;
       if (
         !panel.workflowId ||
         panel.status === ComicPanelStatus.Ready ||
         panel.status === ComicPanelStatus.Failed ||
-        panel.status === ComicPanelStatus.AwaitingSelection
+        (panel.status === ComicPanelStatus.AwaitingSelection && !hasLockedCandidate)
       ) {
-        return { id: panel.id, status: panel.status, imageUrl: panel.imageUrl, errorMessage: panel.errorMessage };
+        return {
+          id: panel.id,
+          status: panel.status,
+          imageUrl: panel.imageUrl,
+          errorMessage: panel.errorMessage,
+        };
       }
 
       // Backstop timeout: orchestrator step timeout is 21 min, use 25 min as hard cap
@@ -2851,7 +3094,12 @@ export const comicsRouter = router({
           projectId: panel.projectId,
           status: updated.status,
         });
-        return { id: updated.id, status: updated.status, imageUrl: updated.imageUrl, errorMessage: updated.errorMessage };
+        return {
+          id: updated.id,
+          status: updated.status,
+          imageUrl: updated.imageUrl,
+          errorMessage: updated.errorMessage,
+        };
       }
 
       // Check orchestrator status
@@ -2862,13 +3110,262 @@ export const comicsRouter = router({
           path: { workflowId: panel.workflowId },
         });
 
-        // Extract image URL from first step output
-        const steps = workflow.steps ?? [];
-        const firstStep = steps[0] as any;
-        const imageUrl =
-          firstStep?.output?.images?.[0]?.url ?? firstStep?.output?.blobs?.[0]?.url ?? null;
+        // Run the workflow through the same `formatGenerationResponse2` →
+        // `WorkflowData` pipeline that the queue and the iterative editor
+        // use. The orchestrator does NOT hand us a final
+        // `blockedReason: 'canUpgrade' | 'siteRestricted'` — those are
+        // *derived* in `BlobData`'s constructor from the output's
+        // `nsfwLevel` plus the (domain, nsfwEnabled, allowMatureContent)
+        // context. Reading raw `step.output.images[i].blockedReason`
+        // misses the derived path, so mature outputs slipped through and
+        // we'd download the blurred preview as if it were a clean image.
+        const [normalized] = await formatGenerationResponse2([workflow as any], ctx.user);
+        const domainFlags: Record<ColorDomain, boolean> = colorDomainNames.reduce(
+          (acc, c) => ({ ...acc, [c]: false }),
+          {} as Record<ColorDomain, boolean>
+        );
+        domainFlags[ctx.domain as ColorDomain] = true;
+        const wfData = new WorkflowData(normalized as any, {
+          domain: domainFlags,
+          nsfwEnabled: !!ctx.user!.showNsfw,
+        });
+        const firstStep = wfData.steps[0];
+        const rawOutputs = firstStep?.output ?? [];
+        const imageUrl = rawOutputs[0]?.url ?? null;
+        // SFW-domain mature output: the orchestrator returns a blurred
+        // preview URL alongside a `blockedReason` (e.g. `canUpgrade`,
+        // `siteRestricted`). Persisting that URL as `panel.imageUrl` (or as
+        // a candidate S3 key) would both lock the user out of their
+        // generation AND expose the CDN link through any surface that reads
+        // it. So we don't.
+        //
+        // For single-image: drop the panel into `RequireUnlock`.
+        // For multi-image: process each candidate independently — clean
+        // ones get downloaded to S3 as before, blocked ones become
+        // `{ requiresUnlock: true, blockedReason }` markers in metadata
+        // (no URL persisted). The picker then lets the owner pick a clean
+        // candidate OR unlock the workflow to recover blocked candidates.
+        // The orchestrator's ephemeral preview URLs are returned only via
+        // the poll response, never through anything persisted.
+        const panelQuantity = (panel.metadata as any)?.quantity ?? 1;
+        const isMultiImage = panelQuantity > 1 && rawOutputs.length > 1;
 
+        // ---- Multi-image: per-candidate clean/locked split ----
+        if (workflow.status === 'succeeded' && isMultiImage) {
+          const genParams = (panel.metadata as any)?.generationParams;
+          const imgWidth = genParams?.width ?? getAspectRatioDimensions(DEFAULT_ASPECT_RATIO).width;
+          const imgHeight =
+            genParams?.height ?? getAspectRatioDimensions(DEFAULT_ASPECT_RATIO).height;
+          void imgWidth; // dimensions captured at selection time, not here
+          void imgHeight;
 
+          // Preserve any S3 keys we already downloaded for this index in a
+          // prior poll — important so unlocking only re-downloads the
+          // newly-clean candidates rather than re-uploading the whole batch.
+          const previousByIndex = persistedCandidates;
+          const newCandidates: Array<
+            | { key: string; nsfwLevel?: number }
+            | { requiresUnlock: true; blockedReason: string; nsfwLevel?: number }
+          > = [];
+          // Per-index transient blurred preview URLs returned to the owner
+          // through the poll response only.
+          const blurredPreviews: Array<string | null> = [];
+          const { s3: s3Multi, bucket: multiBucket, backend: multiBackend } =
+            await getImageUploadBackend();
+
+          for (let i = 0; i < rawOutputs.length; i++) {
+            const candidateImg = rawOutputs[i];
+            // Capture the orchestrator-derived nsfwLevel per slot so the
+            // picker can blur mature candidates by default. Without this,
+            // mature outputs that aren't `blockedReason`'d (e.g. on red with
+            // nsfwEnabled+allowMatureContent) flow to the picker uncensored.
+            const nsfwLevel = normalizeCandidateNsfwLevel(
+              (candidateImg as any)?.nsfwLevel
+            );
+
+            // Locked candidate: marker only. The orchestrator MAY provide a
+            // blurred preview URL (we forward it transiently in the response)
+            // or omit the URL entirely (`available: false`) — either way we
+            // never persist it.
+            if (candidateImg?.blockedReason) {
+              newCandidates.push({
+                requiresUnlock: true,
+                blockedReason: candidateImg.blockedReason as string,
+                ...(nsfwLevel != null ? { nsfwLevel } : {}),
+              });
+              blurredPreviews.push(
+                typeof candidateImg.url === 'string' && candidateImg.url
+                  ? (candidateImg.url as string)
+                  : null
+              );
+              continue;
+            }
+
+            if (!candidateImg?.url) {
+              blurredPreviews.push(null);
+              continue;
+            }
+
+            // Clean candidate: reuse existing S3 key if we already downloaded
+            // this slot in a prior poll.
+            const prev = previousByIndex[i] as any;
+            if (prev && typeof prev.key === 'string') {
+              newCandidates.push({
+                key: prev.key,
+                ...(typeof prev.nsfwLevel === 'number'
+                  ? { nsfwLevel: prev.nsfwLevel }
+                  : nsfwLevel != null
+                    ? { nsfwLevel }
+                    : {}),
+              });
+              blurredPreviews.push(null);
+              continue;
+            }
+
+            try {
+              const resp = await fetch(candidateImg.url);
+              if (!resp.ok) {
+                blurredPreviews.push(null);
+                continue;
+              }
+              const buf = Buffer.from(await resp.arrayBuffer());
+              const s3Key = randomUUID();
+              await s3Multi.send(
+                new PutObjectCommand({
+                  Bucket: multiBucket,
+                  Key: s3Key,
+                  Body: buf,
+                  ContentType: resp.headers.get('content-type') || 'image/jpeg',
+                })
+              );
+              registerMediaLocation(s3Key, multiBackend, buf.length);
+              newCandidates.push({
+                key: s3Key,
+                ...(nsfwLevel != null ? { nsfwLevel } : {}),
+              });
+              blurredPreviews.push(null);
+            } catch (e) {
+              console.error(`Failed to upload candidate image for panel ${panel.id}:`, e);
+              blurredPreviews.push(null);
+            }
+          }
+
+          if (newCandidates.length === 0) {
+            const failed = await dbWrite.comicPanel.update({
+              where: { id: panel.id },
+              data: {
+                status: ComicPanelStatus.Failed,
+                errorMessage: 'Failed to download generated images. Please regenerate.',
+              },
+            });
+            sendComicPanelSignal(ctx.user!.id, {
+              panelId: failed.id,
+              projectId: panel.projectId,
+              status: failed.status,
+            });
+            return {
+              id: failed.id,
+              status: failed.status,
+              imageUrl: null,
+              errorMessage: failed.errorMessage,
+            };
+          }
+
+          // Idempotent persist: only write when the candidate set or status
+          // actually changes. Subsequent polls just refresh the transient
+          // preview URLs for any still-locked entries.
+          const metadataChanged =
+            JSON.stringify(previousByIndex) !== JSON.stringify(newCandidates);
+          if (
+            metadataChanged ||
+            panel.status !== ComicPanelStatus.AwaitingSelection
+          ) {
+            await dbWrite.comicPanel.update({
+              where: { id: panel.id },
+              data: {
+                status: ComicPanelStatus.AwaitingSelection,
+                metadata: {
+                  ...((panel.metadata as any) ?? {}),
+                  candidateImages: newCandidates,
+                },
+              },
+            });
+            sendComicPanelSignal(ctx.user!.id, {
+              panelId: panel.id,
+              projectId: panel.projectId,
+              status: ComicPanelStatus.AwaitingSelection,
+            });
+          }
+
+          return {
+            id: panel.id,
+            status: ComicPanelStatus.AwaitingSelection,
+            imageUrl: panel.imageUrl,
+            // Per-candidate detail. Each entry corresponds to one orchestrator
+            // output slot, in stable order. Locked entries carry the
+            // ephemeral blurred URL for the owner's editor session only.
+            candidates: newCandidates.map((c, i) =>
+              'requiresUnlock' in c
+                ? {
+                    requiresUnlock: true as const,
+                    blockedReason: c.blockedReason,
+                    blurredPreviewUrl: blurredPreviews[i] ?? null,
+                    nsfwLevel: c.nsfwLevel ?? null,
+                  }
+                : { key: c.key, nsfwLevel: c.nsfwLevel ?? null }
+            ),
+            // Backward-compat for any caller still reading the flat string
+            // array — only includes clean (downloaded) candidates.
+            candidateImages: newCandidates
+              .filter((c): c is { key: string; nsfwLevel?: number } => 'key' in c)
+              .map((c) => c.key),
+            workflowId: panel.workflowId,
+          };
+        }
+
+        // ---- Single-image RequireUnlock ----
+        const blockedOutput = rawOutputs.find((o) => o?.blockedReason);
+        const blockedReason = blockedOutput?.blockedReason as string | undefined;
+        if (workflow.status === 'succeeded' && blockedReason) {
+          const errorMessage =
+            blockedReason === 'siteRestricted'
+              ? 'This generation produced mature content that cannot be viewed on this site.'
+              : blockedReason === 'canUpgrade'
+                ? 'This generation produced mature content. Unlock with yellow Buzz to keep the result.'
+                : `Generation blocked: ${blockedReason}.`;
+
+          if (
+            panel.status !== ComicPanelStatus.RequireUnlock ||
+            panelBlockedReason !== blockedReason
+          ) {
+            await dbWrite.comicPanel.update({
+              where: { id: panel.id },
+              data: {
+                status: ComicPanelStatus.RequireUnlock,
+                errorMessage,
+                metadata: {
+                  ...((panel.metadata as any) ?? {}),
+                  blockedReason,
+                },
+              },
+            });
+            sendComicPanelSignal(ctx.user!.id, {
+              panelId: panel.id,
+              projectId: panel.projectId,
+              status: ComicPanelStatus.RequireUnlock,
+            });
+          }
+
+          return {
+            id: panel.id,
+            status: ComicPanelStatus.RequireUnlock,
+            imageUrl: null,
+            errorMessage,
+            blockedReason,
+            blurredPreviewUrl: (blockedOutput?.url as string | undefined) ?? null,
+            workflowId: panel.workflowId,
+          };
+        }
 
         // Only download the image once the workflow has fully succeeded.
         // The URL can appear in step output before the image is actually available,
@@ -2880,86 +3377,19 @@ export const comicsRouter = router({
           const imgHeight =
             genParams?.height ?? getAspectRatioDimensions(DEFAULT_ASPECT_RATIO).height;
 
-          // Check if multi-image generation (quantity > 1)
-          const panelQuantity = (panel.metadata as any)?.quantity ?? 1;
-          const outputImages = firstStep?.output?.images ?? firstStep?.output?.blobs ?? [];
-
-          // Multi-image: upload all candidates and let user pick
-          if (panelQuantity > 1 && outputImages.length > 1) {
-            const candidateImages: { key: string }[] = [];
-            const { s3: s3Multi, bucket: multiBucket, backend: multiBackend } = await getImageUploadBackend();
-
-            for (const candidateImg of outputImages) {
-              if (!candidateImg?.url) continue;
-              try {
-                const resp = await fetch(candidateImg.url);
-                if (!resp.ok) continue;
-                const buf = Buffer.from(await resp.arrayBuffer());
-                const s3Key = randomUUID();
-                await s3Multi.send(
-                  new PutObjectCommand({
-                    Bucket: multiBucket,
-                    Key: s3Key,
-                    Body: buf,
-                    ContentType: resp.headers.get('content-type') || 'image/jpeg',
-                  })
-                );
-                registerMediaLocation(s3Key, multiBackend, buf.length);
-                candidateImages.push({ key: s3Key });
-              } catch (e) {
-                console.error(`Failed to upload candidate image for panel ${panel.id}:`, e);
-              }
-            }
-
-            if (candidateImages.length === 0) {
-              // All candidate uploads failed — mark panel as failed
-              const failed = await dbWrite.comicPanel.update({
-                where: { id: panel.id },
-                data: {
-                  status: ComicPanelStatus.Failed,
-                  errorMessage: 'Failed to download generated images. Please regenerate.',
-                },
-              });
-              sendComicPanelSignal(ctx.user!.id, {
-                panelId: failed.id,
-                projectId: panel.projectId,
-                status: failed.status,
-              });
-              return { id: failed.id, status: failed.status, imageUrl: null, errorMessage: failed.errorMessage };
-            }
-
-            if (candidateImages.length > 1) {
-              // Store candidates in metadata and transition to AwaitingSelection
-              const updatedMeta = { ...(panel.metadata as any), candidateImages };
-              const updated = await dbWrite.comicPanel.update({
-                where: { id: panel.id },
-                data: { metadata: updatedMeta, status: ComicPanelStatus.AwaitingSelection },
-              });
-              sendComicPanelSignal(ctx.user!.id, {
-                panelId: updated.id,
-                projectId: panel.projectId,
-                status: updated.status,
-              });
-              return {
-                id: updated.id,
-                status: updated.status,
-                imageUrl: updated.imageUrl,
-                candidateImages: candidateImages.map((c) => c.key),
-              };
-            }
-            // Fall through to single-image handling if only 1 candidate survived
-          }
-
           // Single-image path (or multi-image with only 1 result)
           let s3ImageKey: string;
           try {
             const imageResponse = await fetch(imageUrl);
-            if (!imageResponse.ok)
-              throw new Error(`Failed to download: ${imageResponse.status}`);
+            if (!imageResponse.ok) throw new Error(`Failed to download: ${imageResponse.status}`);
             const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
 
             s3ImageKey = randomUUID();
-            const { s3: s3Single, bucket: singleBucket, backend: singleBackend } = await getImageUploadBackend();
+            const {
+              s3: s3Single,
+              bucket: singleBucket,
+              backend: singleBackend,
+            } = await getImageUploadBackend();
             await s3Single.send(
               new PutObjectCommand({
                 Bucket: singleBucket,
@@ -2983,7 +3413,12 @@ export const comicsRouter = router({
               projectId: panel.projectId,
               status: ComicPanelStatus.Failed,
             });
-            return { id: panel.id, status: ComicPanelStatus.Failed, imageUrl: null, errorMessage: 'Image upload failed. Please regenerate.' };
+            return {
+              id: panel.id,
+              status: ComicPanelStatus.Failed,
+              imageUrl: null,
+              errorMessage: 'Image upload failed. Please regenerate.',
+            };
           }
 
           // Create Image record via standard pipeline (ingestion + flags)
@@ -3012,7 +3447,12 @@ export const comicsRouter = router({
             imageUrl: updated.imageUrl,
           });
 
-          return { id: updated.id, status: updated.status, imageUrl: updated.imageUrl, errorMessage: null };
+          return {
+            id: updated.id,
+            status: updated.status,
+            imageUrl: updated.imageUrl,
+            errorMessage: null,
+          };
         }
 
         if (workflow.status === 'succeeded' && !imageUrl) {
@@ -3030,7 +3470,12 @@ export const comicsRouter = router({
             status: updated.status,
             imageUrl: updated.imageUrl,
           });
-          return { id: updated.id, status: updated.status, imageUrl: updated.imageUrl, errorMessage: null };
+          return {
+            id: updated.id,
+            status: updated.status,
+            imageUrl: updated.imageUrl,
+            errorMessage: null,
+          };
         }
 
         if (workflow.status === 'failed' || workflow.status === 'canceled') {
@@ -3046,7 +3491,12 @@ export const comicsRouter = router({
             projectId: panel.projectId,
             status: updated.status,
           });
-          return { id: updated.id, status: updated.status, imageUrl: updated.imageUrl, errorMessage: updated.errorMessage };
+          return {
+            id: updated.id,
+            status: updated.status,
+            imageUrl: updated.imageUrl,
+            errorMessage: updated.errorMessage,
+          };
         }
       } catch (error) {
         // If we can't check the workflow, don't fail the poll - just return current state
@@ -3054,10 +3504,309 @@ export const comicsRouter = router({
       }
 
       // Still processing - return as-is
-      return { id: panel.id, status: panel.status, imageUrl: panel.imageUrl, errorMessage: panel.errorMessage };
+      return {
+        id: panel.id,
+        status: panel.status,
+        imageUrl: panel.imageUrl,
+        errorMessage: panel.errorMessage,
+      };
+    }),
+
+  // Lift the SFW-domain mature-content restriction on a single panel's
+  // workflow (yellow-Buzz unlock). Mirrors the QueueItem CanUpgradeBlock
+  // flow: hand `allowMatureContent: true` to the orchestrator, which charges
+  // the difference in yellow Buzz, then reset the panel to `Generating` so
+  // the existing poll loop downloads the now-unblocked image.
+  unlockPanelGeneration: comicProtectedProcedure
+    .input(z.object({ panelId: z.number().int() }))
+    .mutation(async ({ ctx, input }) => {
+      const panel = await dbRead.comicPanel.findUnique({
+        where: { id: input.panelId },
+        include: { chapter: { include: { project: { select: { userId: true } } } } },
+      });
+      if (!panel || panel.chapter.project.userId !== ctx.user!.id) {
+        throw throwAuthorizationError();
+      }
+      if (!panel.workflowId) {
+        throw throwBadRequestError('Panel has no workflow to unlock.');
+      }
+
+      // Don't allow lifting mature restrictions while the user is on the
+      // SFW (green) domain — that would push the unblurred result into the
+      // editor on a domain that's not allowed to show it. Force the
+      // redirect-to-red flow instead.
+      if (ctx.domain === 'green') {
+        throw throwBadRequestError(
+          'Mature content cannot be unlocked on this site. Open the project on civitai.red to unlock.'
+        );
+      }
+
+      // We deliberately do NOT gate on `panel.status` or
+      // `metadata.blockedReason` here. Those values are written by the
+      // poll loop and can be stale (or missing entirely on legacy panels
+      // produced before the RequireUnlock state existed). Whether the
+      // workflow needs unlocking is something only the orchestrator
+      // knows; we let it tell us authoritatively below by re-fetching
+      // after the `allowMatureContent: true` write. If the panel was
+      // already clean we'll fall through harmlessly. If it was stuck in
+      // a legacy state, the inline re-derive recovers it.
+      const meta = (panel.metadata as any) ?? {};
+      const isSinglePanelBlocked = panel.status !== ComicPanelStatus.AwaitingSelection;
+      const candidates: Array<{ key?: string; requiresUnlock?: boolean; blockedReason?: string }> =
+        meta.candidateImages ?? [];
+
+      // 1) Lift the mature restriction at the orchestrator. This is what
+      //    actually charges yellow Buzz and re-emits clean URLs.
+      let token: string;
+      try {
+        token = await getOrchestratorToken(ctx.user!.id, ctx);
+        await updateWorkflow({
+          token,
+          workflowId: panel.workflowId,
+          allowMatureContent: true,
+        });
+      } catch (error) {
+        throw throwBadRequestError(getOrchestratorErrorMessage(error));
+      }
+
+      // 2) Re-fetch the workflow and run it through the same `BlobData`
+      //    pipeline `pollPanelStatus` uses, so the derived `blockedReason`
+      //    reflects the post-unlock state. We do this inline rather than
+      //    waiting for a poll tick — clicking Unlock should produce the
+      //    final result in one round-trip, not after a 25-second sleep.
+      const fresh = await getWorkflow({ token, path: { workflowId: panel.workflowId } });
+      const [normalized] = await formatGenerationResponse2([fresh as any], ctx.user);
+      const domainFlags: Record<ColorDomain, boolean> = colorDomainNames.reduce(
+        (acc, c) => ({ ...acc, [c]: false }),
+        {} as Record<ColorDomain, boolean>
+      );
+      domainFlags[ctx.domain as ColorDomain] = true;
+      const wfData = new WorkflowData(normalized as any, {
+        domain: domainFlags,
+        nsfwEnabled: !!ctx.user!.showNsfw,
+      });
+      const firstStep = wfData.steps[0];
+      const outputs = firstStep?.output ?? [];
+
+      // 3a) Single-image: download the now-clean URL into S3 and mark Ready.
+      if (isSinglePanelBlocked) {
+        const clean = outputs.find((o) => !o.blockedReason && o.url);
+        if (!clean?.url) {
+          // Orchestrator hasn't propagated the unblocked output yet, or the
+          // unlock didn't actually clear the block (e.g. POI/minor flag).
+          // Drop back to `Generating` so the regular poll loop picks it up
+          // when it does become available.
+          const { blockedReason: _drop, ...metaWithoutBlock } = meta;
+          const updated = await dbWrite.comicPanel.update({
+            where: { id: panel.id },
+            data: {
+              status: ComicPanelStatus.Generating,
+              errorMessage: null,
+              metadata: metaWithoutBlock,
+            },
+          });
+          sendComicPanelSignal(ctx.user!.id, {
+            panelId: updated.id,
+            projectId: panel.projectId,
+            status: updated.status,
+          });
+          return {
+            id: updated.id,
+            status: updated.status,
+            imageUrl: null,
+            candidateImages: [] as string[],
+          };
+        }
+
+        const genParams = meta?.generationParams;
+        const imgWidth = genParams?.width ?? getAspectRatioDimensions(DEFAULT_ASPECT_RATIO).width;
+        const imgHeight =
+          genParams?.height ?? getAspectRatioDimensions(DEFAULT_ASPECT_RATIO).height;
+
+        let s3Key: string;
+        try {
+          const resp = await fetch(clean.url);
+          if (!resp.ok) throw new Error(`Failed to download: ${resp.status}`);
+          const buf = Buffer.from(await resp.arrayBuffer());
+          s3Key = randomUUID();
+          const { s3, bucket, backend } = await getImageUploadBackend();
+          await s3.send(
+            new PutObjectCommand({
+              Bucket: bucket,
+              Key: s3Key,
+              Body: buf,
+              ContentType: resp.headers.get('content-type') || 'image/jpeg',
+            })
+          );
+          registerMediaLocation(s3Key, backend, buf.length);
+        } catch (e) {
+          console.error(`Failed to download unlocked panel ${panel.id}:`, e);
+          throw throwBadRequestError('Unlock succeeded but image download failed. Please retry.');
+        }
+
+        const image = await createImage({
+          url: s3Key,
+          type: 'image',
+          userId: ctx.user!.id,
+          width: imgWidth,
+          height: imgHeight,
+          meta: { prompt: panel.prompt } as any,
+        });
+
+        const { blockedReason: _drop, ...metaWithoutBlock } = meta;
+        const updated = await dbWrite.comicPanel.update({
+          where: { id: panel.id },
+          data: {
+            status: ComicPanelStatus.Ready,
+            imageUrl: s3Key,
+            imageId: image.id,
+            errorMessage: null,
+            metadata: metaWithoutBlock,
+          },
+        });
+        sendComicPanelSignal(ctx.user!.id, {
+          panelId: updated.id,
+          projectId: panel.projectId,
+          status: updated.status,
+          imageUrl: updated.imageUrl,
+        });
+        return {
+          id: updated.id,
+          status: updated.status,
+          imageUrl: updated.imageUrl,
+          candidateImages: [] as string[],
+        };
+      }
+
+      // 3b) Multi-image: replace each `requiresUnlock` slot with a freshly
+      //     downloaded S3 key, in stable orchestrator order. Already-clean
+      //     slots keep their existing key (no re-upload).
+      const previousByIndex = candidates;
+      const newCandidates: Array<
+        | { key: string; nsfwLevel?: number }
+        | { requiresUnlock: true; blockedReason: string; nsfwLevel?: number }
+      > = [];
+      const { s3: s3Multi, bucket: multiBucket, backend: multiBackend } =
+        await getImageUploadBackend();
+
+      for (let i = 0; i < outputs.length; i++) {
+        const out = outputs[i];
+        const prev = previousByIndex[i] as any;
+        const slotNsfwLevel = normalizeCandidateNsfwLevel((out as any)?.nsfwLevel);
+
+        if (prev && typeof prev.key === 'string') {
+          newCandidates.push({
+            key: prev.key,
+            ...(typeof prev.nsfwLevel === 'number'
+              ? { nsfwLevel: prev.nsfwLevel }
+              : slotNsfwLevel != null
+                ? { nsfwLevel: slotNsfwLevel }
+                : {}),
+          });
+          continue;
+        }
+
+        if (!out?.url) {
+          // Orchestrator still has nothing for this slot — keep it locked
+          // so a subsequent poll can pick it up if/when it materializes.
+          newCandidates.push({
+            requiresUnlock: true,
+            blockedReason: out?.blockedReason ?? 'canUpgrade',
+            ...(slotNsfwLevel != null ? { nsfwLevel: slotNsfwLevel } : {}),
+          });
+          continue;
+        }
+
+        if (out.blockedReason) {
+          // Still blocked even after the unlock (POI, minor, etc.). Keep
+          // the marker so the picker doesn't render it as selectable.
+          newCandidates.push({
+            requiresUnlock: true,
+            blockedReason: out.blockedReason,
+            ...(slotNsfwLevel != null ? { nsfwLevel: slotNsfwLevel } : {}),
+          });
+          continue;
+        }
+
+        try {
+          const resp = await fetch(out.url);
+          if (!resp.ok) {
+            newCandidates.push({
+              requiresUnlock: true,
+              blockedReason: 'canUpgrade',
+              ...(slotNsfwLevel != null ? { nsfwLevel: slotNsfwLevel } : {}),
+            });
+            continue;
+          }
+          const buf = Buffer.from(await resp.arrayBuffer());
+          const s3Key = randomUUID();
+          await s3Multi.send(
+            new PutObjectCommand({
+              Bucket: multiBucket,
+              Key: s3Key,
+              Body: buf,
+              ContentType: resp.headers.get('content-type') || 'image/jpeg',
+            })
+          );
+          registerMediaLocation(s3Key, multiBackend, buf.length);
+          newCandidates.push({
+            key: s3Key,
+            ...(slotNsfwLevel != null ? { nsfwLevel: slotNsfwLevel } : {}),
+          });
+        } catch (e) {
+          console.error(
+            `Failed to download unlocked candidate for panel ${panel.id} slot ${i}:`,
+            e
+          );
+          newCandidates.push({
+            requiresUnlock: true,
+            blockedReason: 'canUpgrade',
+            ...(slotNsfwLevel != null ? { nsfwLevel: slotNsfwLevel } : {}),
+          });
+        }
+      }
+
+      const updated = await dbWrite.comicPanel.update({
+        where: { id: panel.id },
+        data: {
+          status: ComicPanelStatus.AwaitingSelection,
+          metadata: {
+            ...meta,
+            candidateImages: newCandidates,
+          },
+        },
+      });
+      sendComicPanelSignal(ctx.user!.id, {
+        panelId: updated.id,
+        projectId: panel.projectId,
+        status: updated.status,
+      });
+      return {
+        id: updated.id,
+        status: updated.status,
+        imageUrl: updated.imageUrl,
+        // Per-slot detail with the orchestrator's nsfwLevel so the picker
+        // can blur mature candidates by default. Locked entries lose any
+        // ephemeral preview URL here — the unlock response shouldn't need
+        // them since the workflow restriction was just lifted.
+        candidates: newCandidates.map((c) =>
+          'requiresUnlock' in c
+            ? {
+                requiresUnlock: true as const,
+                blockedReason: c.blockedReason,
+                blurredPreviewUrl: null as string | null,
+                nsfwLevel: c.nsfwLevel ?? null,
+              }
+            : { key: c.key, nsfwLevel: c.nsfwLevel ?? null }
+        ),
+        candidateImages: newCandidates
+          .filter((c): c is { key: string; nsfwLevel?: number } => 'key' in c)
+          .map((c) => c.key),
+      };
     }),
 
   selectPanelImage: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(
       z.object({
         panelId: z.number().int(),
@@ -3075,9 +3824,20 @@ export const comicsRouter = router({
       }
 
       const meta = panel.metadata as any;
-      const candidates: { key: string }[] = meta?.candidateImages ?? [];
-      if (!candidates.some((c) => c.key === input.selectedImageKey)) {
-        throw throwBadRequestError('Selected image is not among candidates');
+      const candidates: Array<{ key?: string; requiresUnlock?: boolean }> =
+        meta?.candidateImages ?? [];
+      // Only clean (downloaded) candidates carry a `key`. Locked candidates
+      // are markers without a URL — they must be unlocked first via
+      // `unlockPanelGeneration`, which re-runs the poll and downloads the
+      // now-clean URL into a real key.
+      if (
+        !candidates.some(
+          (c) => typeof c.key === 'string' && c.key === input.selectedImageKey
+        )
+      ) {
+        throw throwBadRequestError(
+          'Selected image is not among the available (unlocked) candidates'
+        );
       }
 
       const genParams = meta?.generationParams;
@@ -3116,6 +3876,7 @@ export const comicsRouter = router({
 
   // Iterative panel editor — generate image without creating a panel record
   iterateGenerate: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(iterateGenerateSchema)
     .use(isProjectOwner)
     .mutation(async ({ ctx, input }) => {
@@ -3247,6 +4008,7 @@ export const comicsRouter = router({
 
   // Iterative panel editor — poll workflow status without panel involvement
   generateComicImage: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(
       z.object({
         prompt: z.string().min(1).max(2000),
@@ -3297,6 +4059,7 @@ export const comicsRouter = router({
     }),
 
   pollIterationStatus: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(
       z.object({
         workflowId: z.string().min(1),
@@ -3318,6 +4081,7 @@ export const comicsRouter = router({
 
   // Smart Create — Plan chapter panels via GPT
   planChapterPanels: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(planChapterPanelsSchema)
     .use(isProjectOwner)
     .mutation(async ({ ctx, input }) => {
@@ -3356,6 +4120,7 @@ export const comicsRouter = router({
 
   // Smart Create — Create chapter with all panels at once
   smartCreateChapter: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(smartCreateChapterSchema)
     .use(isProjectOwner)
     .mutation(async ({ ctx, input }) => {
@@ -3409,16 +4174,17 @@ export const comicsRouter = router({
       });
       const projectRefIds = new Set(projectRefRows.map((r) => r.referenceId));
 
-      const projectRefs = projectRefIds.size > 0
-        ? await dbRead.comicReference.findMany({
-            where: {
-              id: { in: Array.from(projectRefIds) },
-              userId: ctx.user!.id,
-              status: ComicReferenceStatus.Ready,
-            },
-            select: { id: true, name: true },
-          })
-        : [];
+      const projectRefs =
+        projectRefIds.size > 0
+          ? await dbRead.comicReference.findMany({
+              where: {
+                id: { in: Array.from(projectRefIds) },
+                userId: ctx.user!.id,
+                status: ComicReferenceStatus.Ready,
+              },
+              select: { id: true, name: true },
+            })
+          : [];
 
       // Validate explicitly passed referenceIds belong to this project
       if (input.referenceIds && input.referenceIds.some((id) => !projectRefIds.has(id))) {
@@ -3431,10 +4197,7 @@ export const comicsRouter = router({
         prompt: input.storyDescription,
         references: projectRefs,
       });
-      const relevantRefIds = new Set([
-        ...storyMentionedIds,
-        ...(input.referenceIds ?? []),
-      ]);
+      const relevantRefIds = new Set([...storyMentionedIds, ...(input.referenceIds ?? [])]);
       const relevantRefs = projectRefs.filter((r) => relevantRefIds.has(r.id));
 
       // Pre-load reference images keyed by refId (only used for panels that @mention them)
@@ -3479,12 +4242,10 @@ export const comicsRouter = router({
           (id) => refImagesByRefId.get(id)?.images ?? []
         );
         const panelPrimaryRefName =
-          mentionedIds.length > 0
-            ? (refImagesByRefId.get(mentionedIds[0])?.referenceName ?? '')
-            : '';
-        const mentionedRefNames = mentionedIds.map(
-          (id) => refImagesByRefId.get(id)?.referenceName ?? ''
-        ).filter(Boolean);
+          mentionedIds.length > 0 ? refImagesByRefId.get(mentionedIds[0])?.referenceName ?? '' : '';
+        const mentionedRefNames = mentionedIds
+          .map((id) => refImagesByRefId.get(id)?.referenceName ?? '')
+          .filter(Boolean);
 
         // Submit immediately if slots are available, otherwise enqueue for the job
         const shouldEnqueue = remainingSlots <= 0;
@@ -3533,6 +4294,7 @@ export const comicsRouter = router({
   // ──── Phase 3: Publish/Unpublish ────
 
   publishChapter: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(
       z.object({
         projectId: z.number().int(),
@@ -3568,6 +4330,17 @@ export const comicsRouter = router({
         throw throwAuthorizationError();
       }
 
+      // Gate early access by the same rules model versions use: score-based
+      // max days + concurrent-EA cap. Without this, anyone could lock any
+      // chapter behind a paywall regardless of creator standing.
+      if (input.earlyAccessConfig) {
+        await assertCanGrantEarlyAccess({
+          ctx: ctx as any,
+          timeframe: input.earlyAccessConfig.timeframe,
+          excludeChapterId: chapter.id,
+        });
+      }
+
       // Re-trigger ingestion for any panel images still pending scan, and recalculate nsfwLevels
       const panelsWithImages = await dbRead.comicPanel.findMany({
         where: {
@@ -3587,11 +4360,35 @@ export const comicsRouter = router({
           );
         }
       }
-      await updateComicChapterNsfwLevels([input.projectId]);
-      await updateComicProjectNsfwLevels([input.projectId]);
+      await updateComicNsfwLevels([input.projectId]);
 
       const isScheduled = input.scheduledAt && input.scheduledAt > new Date();
       const isFirstPublish = chapter.status === ComicChapterStatus.Draft;
+
+      // Compute the EA window. Without an explicit `earlyAccessEndsAt` the
+      // purchase mutation short-circuits ("not in early access") even when
+      // a config is set, so we have to write both this AND `availability`
+      // — otherwise the paywall is invisible from the buyer's side.
+      const eaActivatesAt = isScheduled ? input.scheduledAt! : new Date();
+      const earlyAccessEndsAt = input.earlyAccessConfig
+        ? new Date(
+            eaActivatesAt.getTime() + input.earlyAccessConfig.timeframe * 24 * 60 * 60 * 1000
+          )
+        : null;
+
+      // Compute the next `availability`. When EA is being added we move
+      // to `EarlyAccess`. When EA is being removed we revert to `Public`
+      // ONLY if the chapter was previously `EarlyAccess` — otherwise
+      // (e.g. a chapter that was made `Private` by a moderator) we leave
+      // the existing availability alone.
+      let nextAvailability: Availability | undefined;
+      if (input.earlyAccessConfig !== undefined) {
+        if (input.earlyAccessConfig) {
+          nextAvailability = Availability.EarlyAccess;
+        } else if (chapter.availability === Availability.EarlyAccess) {
+          nextAvailability = Availability.Public;
+        }
+      }
 
       const updated = await dbWrite.comicChapter.update({
         where: {
@@ -3601,7 +4398,11 @@ export const comicsRouter = router({
           status: isScheduled ? ComicChapterStatus.Scheduled : ComicChapterStatus.Published,
           publishedAt: isScheduled ? input.scheduledAt : new Date(),
           ...(input.earlyAccessConfig !== undefined
-            ? { earlyAccessConfig: input.earlyAccessConfig ?? undefined }
+            ? {
+                earlyAccessConfig: input.earlyAccessConfig ?? undefined,
+                earlyAccessEndsAt,
+                ...(nextAvailability !== undefined ? { availability: nextAvailability } : {}),
+              }
             : {}),
         },
       });
@@ -3647,6 +4448,7 @@ export const comicsRouter = router({
     }),
 
   unpublishChapter: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(z.object({ projectId: z.number().int(), chapterPosition: z.number().int().min(0) }))
     .use(isChapterOwner)
     .mutation(async ({ ctx, input }) => {
@@ -3683,6 +4485,13 @@ export const comicsRouter = router({
           status: ComicChapterStatus.Draft,
           // Clear publishedAt when canceling a schedule (it was set to the future date)
           ...(isScheduled ? { publishedAt: null } : {}),
+          // Reset EA fields so a stale `availability=EarlyAccess` /
+          // `earlyAccessEndsAt` from the prior publish doesn't linger and
+          // make the chapter look paywalled while it's back in Draft.
+          // `purchaseChapterAccess` already blocks an unpublish with
+          // outstanding purchases, so we never strand a paid user.
+          earlyAccessEndsAt: null,
+          availability: Availability.Public,
         },
       });
 
@@ -3695,6 +4504,7 @@ export const comicsRouter = router({
     }),
 
   purchaseChapterAccess: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite, blockApiKeys: true })
     .input(
       z.object({
         chapterId: z.number().int(),
@@ -3796,6 +4606,7 @@ export const comicsRouter = router({
     }),
 
   updateChapterEarlyAccess: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(
       z.object({
         projectId: z.number().int(),
@@ -3810,8 +4621,12 @@ export const comicsRouter = router({
           projectId_position: { projectId: input.projectId, position: input.chapterPosition },
         },
         select: {
+          id: true,
           status: true,
+          publishedAt: true,
           earlyAccessConfig: true,
+          earlyAccessEndsAt: true,
+          availability: true,
           project: { select: { userId: true } },
         },
       });
@@ -3838,12 +4653,44 @@ export const comicsRouter = router({
         }
       }
 
+      // Same score-based gating applies when (re-)setting EA. Skip the
+      // active-count check when the config is just shrinking (covered by
+      // the `excludeChapterId` arg).
+      if (input.earlyAccessConfig && !currentConfig) {
+        await assertCanGrantEarlyAccess({
+          ctx: ctx as any,
+          timeframe: input.earlyAccessConfig.timeframe,
+          excludeChapterId: chapter.id,
+        });
+      }
+
+      // Recompute the EA window. The window is anchored at the chapter's
+      // publish date, NOT the time of this edit — shrinking the timeframe
+      // shrinks the deadline backward, but doesn't restart the clock.
+      // For Published chapters `publishedAt` is always set; the fallback
+      // is paranoia for direct-DB-edit edge cases.
+      const anchor = chapter.publishedAt ?? new Date();
+      const earlyAccessEndsAt = input.earlyAccessConfig
+        ? new Date(anchor.getTime() + input.earlyAccessConfig.timeframe * 24 * 60 * 60 * 1000)
+        : null;
+
+      // Only change `availability` on a real EA transition — don't clobber
+      // a Private/etc state that a moderator may have set.
+      let nextAvailability: Availability | undefined;
+      if (input.earlyAccessConfig) {
+        nextAvailability = Availability.EarlyAccess;
+      } else if (chapter.availability === Availability.EarlyAccess) {
+        nextAvailability = Availability.Public;
+      }
+
       return dbWrite.comicChapter.update({
         where: {
           projectId_position: { projectId: input.projectId, position: input.chapterPosition },
         },
         data: {
           earlyAccessConfig: input.earlyAccessConfig ?? undefined,
+          earlyAccessEndsAt,
+          ...(nextAvailability !== undefined ? { availability: nextAvailability } : {}),
         },
       });
     }),
@@ -3851,6 +4698,7 @@ export const comicsRouter = router({
   // ──── Moderator Tools ────
 
   setTosViolation: comicModeratorProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(z.object({ id: z.number().int() }))
     .mutation(async ({ ctx, input }) => {
       const project = await dbRead.comicProject.findUnique({
@@ -3898,7 +4746,13 @@ export const comicsRouter = router({
     }),
 
   setProjectNsfwLevel: comicModeratorProcedure
-    .input(z.object({ id: z.number().int(), nsfwLevel: z.number().refine((n) => [1, 2, 4, 8, 16, 32].includes(n), 'Invalid NSFW level') }))
+    .meta({ requiredScope: TokenScope.Full })
+    .input(
+      z.object({
+        id: z.number().int(),
+        nsfwLevel: z.number().refine((n) => [1, 2, 4, 8, 16, 32].includes(n), 'Invalid NSFW level'),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       // Stamp every panel image with the moderator's chosen level. The
       // schema accepts only single-bit values (PG / PG-13 / R / X / XXX /
@@ -3918,8 +4772,7 @@ export const comicsRouter = router({
 
       // Recompute chapter levels from the (now-stamped) images, then bubble
       // up to the project level.
-      await updateComicChapterNsfwLevels([input.id]);
-      await updateComicProjectNsfwLevels([input.id]);
+      await updateComicNsfwLevels([input.id]);
 
       await trackModActivity(ctx.user.id, {
         entityType: 'comicProject',
@@ -3935,6 +4788,7 @@ export const comicsRouter = router({
     }),
 
   setChapterNsfwLevel: comicModeratorProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(
       z.object({
         projectId: z.number().int(),
@@ -3959,8 +4813,7 @@ export const comicsRouter = router({
 
       // Recompute the chapter level from its (now-stamped) images, then
       // bubble up to the project level.
-      await updateComicChapterNsfwLevels([input.projectId]);
-      await updateComicProjectNsfwLevels([input.projectId]);
+      await updateComicNsfwLevels([input.projectId]);
 
       await trackModActivity(ctx.user.id, {
         entityType: 'comicProject',
@@ -3976,6 +4829,7 @@ export const comicsRouter = router({
     }),
 
   moderatorUnpublishChapter: comicModeratorProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(
       z.object({
         projectId: z.number().int(),
@@ -4028,6 +4882,7 @@ export const comicsRouter = router({
   // ──── Phase 3: Comic Engagement (Follow/Hide) ────
 
   toggleComicEngagement: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(
       z.object({
         projectId: z.number().int(),
@@ -4074,6 +4929,7 @@ export const comicsRouter = router({
     }),
 
   getComicEngagement: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ projectId: z.number().int() }))
     .query(async ({ ctx, input }) => {
       const engagement = await dbRead.comicProjectEngagement.findUnique({
@@ -4086,6 +4942,7 @@ export const comicsRouter = router({
   // ──── Phase 3: Chapter Read Tracking (via engagement readChapters) ────
 
   markChapterRead: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(z.object({ projectId: z.number().int(), chapterPosition: z.number().int().min(0) }))
     .mutation(async ({ ctx, input }) => {
       const { projectId, chapterPosition } = input;
@@ -4103,6 +4960,7 @@ export const comicsRouter = router({
     }),
 
   getChapterReadStatus: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ projectId: z.number().int() }))
     .query(async ({ ctx, input }) => {
       const engagement = await dbRead.comicProjectEngagement.findUnique({
@@ -4113,6 +4971,7 @@ export const comicsRouter = router({
     }),
 
   markChapterUnread: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(z.object({ projectId: z.number().int(), chapterPosition: z.number().int().min(0) }))
     .mutation(async ({ ctx, input }) => {
       const { projectId, chapterPosition } = input;
@@ -4128,6 +4987,7 @@ export const comicsRouter = router({
   // ──── Enhance Panel: create from existing image, optionally with img2img ────
 
   enhancePanel: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(enhancePanelSchema)
     .use(isChapterOwner)
     .mutation(async ({ ctx, input }) => {
@@ -4286,7 +5146,12 @@ export const comicsRouter = router({
           where: { id: input.referencePanelId },
           include: { chapter: { select: { projectId: true } } },
         });
-        if (refPanel && refPanel.chapter.projectId === input.projectId && refPanel.status === ComicPanelStatus.Ready && refPanel.imageUrl) {
+        if (
+          refPanel &&
+          refPanel.chapter.projectId === input.projectId &&
+          refPanel.status === ComicPanelStatus.Ready &&
+          refPanel.imageUrl
+        ) {
           referencePanelImageUrl = refPanel.imageUrl;
           const refEdgeUrl = getEdgeUrl(refPanel.imageUrl, { original: true });
           allImages.push({ url: refEdgeUrl, width: panelWidth, height: panelHeight });
@@ -4395,6 +5260,7 @@ export const comicsRouter = router({
   // ──── Bulk Create Panels ────
 
   bulkCreatePanels: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesWrite })
     .input(bulkCreatePanelsSchema)
     .use(isChapterOwner)
     .mutation(async ({ ctx, input }) => {
@@ -4498,11 +5364,8 @@ export const comicsRouter = router({
             },
           });
 
-          updateComicChapterNsfwLevels([input.projectId]).catch((e) =>
-            console.error(`Failed to update chapter NSFW for project ${input.projectId}:`, e)
-          );
-          updateComicProjectNsfwLevels([input.projectId]).catch((e) =>
-            console.error(`Failed to update project NSFW for project ${input.projectId}:`, e)
+          await updateComicNsfwLevels([input.projectId]).catch((e) =>
+            console.error(`Failed to update NSFW levels for project ${input.projectId}:`, e)
           );
 
           createdPanels.push(panel);
@@ -4564,11 +5427,11 @@ export const comicsRouter = router({
           );
           const panelPrimaryRefName =
             mentionedIds.length > 0
-              ? (refImagesByRefId.get(mentionedIds[0])?.referenceName ?? '')
+              ? refImagesByRefId.get(mentionedIds[0])?.referenceName ?? ''
               : '';
-          const mentionedRefNames = mentionedIds.map(
-            (id) => refImagesByRefId.get(id)?.referenceName ?? ''
-          ).filter(Boolean);
+          const mentionedRefNames = mentionedIds
+            .map((id) => refImagesByRefId.get(id)?.referenceName ?? '')
+            .filter(Boolean);
 
           // Prompt is used as-is — enhancement happens client-side
           const fullPrompt = panelDef.prompt;
@@ -4585,7 +5448,7 @@ export const comicsRouter = router({
 
           // For Qwen img2img, use the img2img version if available
           const bulkVersionId = panelDef.sourceImageUrl
-            ? (bulkModelConfig.img2imgVersionId ?? bulkModelConfig.versionId)
+            ? bulkModelConfig.img2imgVersionId ?? bulkModelConfig.versionId
             : bulkModelConfig.versionId;
           const { width: bulkPanelW, height: bulkPanelH } = getAspectRatioDimensions(
             panelDef.aspectRatio,
@@ -4702,11 +5565,11 @@ export const comicsRouter = router({
           );
           const panelPrimaryRefName =
             mentionedIds.length > 0
-              ? (refImagesByRefId.get(mentionedIds[0])?.referenceName ?? '')
+              ? refImagesByRefId.get(mentionedIds[0])?.referenceName ?? ''
               : '';
-          const mentionedRefNames = mentionedIds.map(
-            (id) => refImagesByRefId.get(id)?.referenceName ?? ''
-          ).filter(Boolean);
+          const mentionedRefNames = mentionedIds
+            .map((id) => refImagesByRefId.get(id)?.referenceName ?? '')
+            .filter(Boolean);
 
           const { width: txtPanelW, height: txtPanelH } = getAspectRatioDimensions(
             panelDef.aspectRatio,
@@ -4750,6 +5613,7 @@ export const comicsRouter = router({
   // ──── Phase 2: Create panel from existing Image (manual mode) ────
 
   createPanelFromImage: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(
       z.object({
         projectId: z.number().int(),
@@ -4804,11 +5668,8 @@ export const comicsRouter = router({
       });
 
       // Update NSFW levels — image is already scanned so update directly
-      updateComicChapterNsfwLevels([input.projectId]).catch((e) =>
-        console.error(`Failed to update chapter NSFW for project ${input.projectId}:`, e)
-      );
-      updateComicProjectNsfwLevels([input.projectId]).catch((e) =>
-        console.error(`Failed to update project NSFW for project ${input.projectId}:`, e)
+      await updateComicNsfwLevels([input.projectId]).catch((e) =>
+        console.error(`Failed to update NSFW levels for project ${input.projectId}:`, e)
       );
 
       return panel;
@@ -4817,6 +5678,7 @@ export const comicsRouter = router({
   // ──── Phase 4: Reference aliases ────
 
   getReference: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ referenceId: z.number().int() }))
     .query(async ({ ctx, input }) => {
       const reference = await dbRead.comicReference.findUnique({
@@ -4835,6 +5697,7 @@ export const comicsRouter = router({
     }),
 
   deleteReference: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaDelete })
     .input(deleteReferenceSchema)
     .mutation(async ({ ctx, input }) => {
       const reference = await dbRead.comicReference.findUnique({
@@ -4851,6 +5714,7 @@ export const comicsRouter = router({
     }),
 
   updateReference: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(updateReferenceSchema)
     .mutation(async ({ ctx, input }) => {
       const reference = await dbRead.comicReference.findUnique({
@@ -4868,6 +5732,7 @@ export const comicsRouter = router({
     }),
 
   deleteReferenceImage: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaDelete })
     .input(z.object({ referenceId: z.number().int(), imageId: z.number().int() }))
     .mutation(async ({ ctx, input }) => {
       const reference = await dbRead.comicReference.findUnique({
@@ -4908,6 +5773,7 @@ export const comicsRouter = router({
     }),
 
   reorderReferenceImages: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(
       z.object({
         referenceId: z.number().int(),
@@ -4950,6 +5816,7 @@ export const comicsRouter = router({
     }),
 
   getUserReferences: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(
       z
         .object({
@@ -4976,6 +5843,7 @@ export const comicsRouter = router({
   // ──── Phase 7: Chapter Comments ────
 
   getChapterThread: comicPublicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ projectId: z.number().int(), chapterPosition: z.number().int().min(0) }))
     .query(async ({ input, ctx }) => {
       const thread = await dbRead.thread.findUnique({
@@ -5001,6 +5869,7 @@ export const comicsRouter = router({
     }),
 
   createChapterComment: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.SocialWrite })
     .input(
       z.object({
         projectId: z.number().int(),
@@ -5079,6 +5948,7 @@ export const comicsRouter = router({
   // ──── Project-scoped references ────
 
   addReferenceToProject: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(z.object({ projectId: z.number().int(), referenceId: z.number().int() }))
     .use(isProjectOwner)
     .mutation(async ({ ctx, input }) => {
@@ -5109,6 +5979,7 @@ export const comicsRouter = router({
     }),
 
   removeReferenceFromProject: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(z.object({ projectId: z.number().int(), referenceId: z.number().int() }))
     .use(isProjectOwner)
     .mutation(async ({ ctx, input }) => {
@@ -5123,6 +5994,7 @@ export const comicsRouter = router({
     }),
 
   getImportableReferences: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ projectId: z.number().int() }))
     .use(isProjectOwner)
     .query(async ({ ctx, input }) => {
@@ -5159,9 +6031,11 @@ export const comicsRouter = router({
    * Get the current queue status for the user.
    * Returns used slots, limit, available slots, and whether the user can generate.
    */
-  getQueueStatus: comicProtectedProcedure.query(async ({ ctx }) => {
-    const token = await getOrchestratorToken(ctx.user!.id, ctx);
-    const userTier = ctx.user?.tier ?? 'free';
-    return getUserQueueStatus(token, userTier);
-  }),
+  getQueueStatus: comicProtectedProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .query(async ({ ctx }) => {
+      const token = await getOrchestratorToken(ctx.user!.id, ctx);
+      const userTier = ctx.user?.tier ?? 'free';
+      return getUserQueueStatus(token, userTier);
+    }),
 });

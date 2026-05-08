@@ -1,4 +1,4 @@
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { dbRead } from '~/server/db/client';
 import { redis, REDIS_KEYS, REDIS_SUB_KEYS } from '~/server/redis/client';
 import type { GetByIdInput } from '~/server/schema/base.schema';
@@ -28,7 +28,7 @@ export const upsertResourceReviewHandler = async ({
   ctx,
 }: {
   input: UpsertResourceReviewInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const [access] = await hasEntityAccess({
@@ -53,7 +53,7 @@ export const createResourceReviewHandler = async ({
   ctx,
 }: {
   input: CreateResourceReviewInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const [access] = await hasEntityAccess({
@@ -89,7 +89,7 @@ export const updateResourceReviewHandler = async ({
   ctx,
 }: {
   input: UpdateResourceReviewInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const result = await updateResourceReview({ ...input });
@@ -114,7 +114,7 @@ export const deleteResourceReviewHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const result = await deleteResourceReview(input);
@@ -136,7 +136,7 @@ export const toggleExcludeResourceReviewHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const result = await toggleExcludeResourceReview(input);

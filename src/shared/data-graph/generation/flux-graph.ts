@@ -23,10 +23,13 @@ import {
   aspectRatioNode,
   createCheckpointGraph,
   createResourcesGraph,
+  promptGraph,
   seedNode,
   sliderNode,
+  triggerWordsGraph,
   type ResourceData,
 } from './common';
+import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
 
 // =============================================================================
 // Flux Mode Constants
@@ -61,15 +64,6 @@ const fluxModeVersionOptions = [
 // =============================================================================
 // Aspect Ratios
 // =============================================================================
-
-/** Standard Flux aspect ratios (1024px based) */
-const fluxAspectRatios = [
-  { label: '2:3', value: '2:3', width: 832, height: 1216 },
-  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
-  { label: '3:2', value: '3:2', width: 1216, height: 832 },
-  // { label: '9:16', value: '9:16', width: 768, height: 1344 },
-  // { label: '16:9', value: '16:9', width: 1344, height: 768 },
-];
 
 /** Ultra mode aspect ratios (higher resolution) */
 const fluxUltraAspectRatios = [
@@ -110,7 +104,7 @@ type FluxModeCtx = {
  * Contains: aspectRatio, cfgScale, steps, seed
  */
 const standardModeBaseGraph = new DataGraph<FluxModeCtx, GenerationCtx>()
-  .node('aspectRatio', aspectRatioNode({ options: fluxAspectRatios, defaultValue: '1:1' }))
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node(
     'cfgScale',
     sliderNode({ min: 2, max: 20, defaultValue: 3.5, step: 0.5, presets: fluxGuidancePresets })
@@ -122,7 +116,7 @@ const standardModeBaseGraph = new DataGraph<FluxModeCtx, GenerationCtx>()
  * Pro mode subgraph: aspectRatio, cfgScale, steps, seed (no resources)
  */
 const proModeGraph = new DataGraph<FluxModeCtx, GenerationCtx>()
-  .node('aspectRatio', aspectRatioNode({ options: fluxAspectRatios, defaultValue: '1:1' }))
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node(
     'cfgScale',
     sliderNode({ min: 2, max: 20, defaultValue: 3.5, step: 0.5, presets: fluxGuidancePresets })
@@ -139,7 +133,7 @@ const standardModeWithResourcesGraph = new DataGraph<FluxModeCtx, GenerationCtx>
 
 /** Draft mode subgraph: aspectRatio, seed */
 const draftModeGraph = new DataGraph<FluxModeCtx, GenerationCtx>()
-  .node('aspectRatio', aspectRatioNode({ options: fluxAspectRatios, defaultValue: '1:1' }))
+  .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node('seed', seedNode());
 
 /** Ultra mode subgraph: aspectRatio (different options), fluxUltraRaw, seed */
@@ -255,7 +249,10 @@ export const fluxGraph = new DataGraph<
     krea: standardModeWithResourcesGraph,
     pro: proModeGraph,
     ultra: ultraModeGraph,
-  });
+  })
+  // Prompt + triggerWords are common to all flux modes.
+  .merge(triggerWordsGraph)
+  .merge(promptGraph);
 
 // Export flux mode options for use in components that need to render a mode selector
 export { fluxModeVersionOptions, fluxVersionIds };

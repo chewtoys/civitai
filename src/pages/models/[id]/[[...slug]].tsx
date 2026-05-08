@@ -128,7 +128,7 @@ import {
   showWarningNotification,
 } from '~/utils/notifications';
 import { abbreviateNumber } from '~/utils/number-helpers';
-import { getDisplayName, removeTags, slugit, splitUppercase } from '~/utils/string-helpers';
+import { getDisplayName, getModelUrl, removeTags, slugit, splitUppercase } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
 import { isNumber } from '~/utils/type-guards';
 
@@ -585,9 +585,15 @@ export default function ModelDetailsV2({
     const hasSelected = publishedVersions.some((v) => v.id === selectedVersion?.id);
     if (!hasSelected) setSelectedVersion(queryVersion ?? publishedVersions[0] ?? null);
     if (selectedVersion && queryVersion !== selectedVersion) {
-      router.replace(`/models/${id}?modelVersionId=${selectedVersion.id}`, undefined, {
-        shallow: true,
-      });
+      router.replace(
+        getModelUrl({
+          modelId: id,
+          modelName: model?.name,
+          modelVersionId: selectedVersion.id,
+        }),
+        undefined,
+        { shallow: true }
+      );
     }
   }, [id, publishedVersions, selectedVersion, modelVersionId, loadingModel, router]);
 
@@ -648,8 +654,9 @@ export default function ModelDetailsV2({
 
   const image = versionImages.find((image) => getIsSafeBrowsingLevel(image.nsfwLevel));
   const imageUrl = image ? getEdgeUrl(image.url, { width: 1200 }) : undefined;
-  const totalRatingCount =
-    (model.rank?.thumbsUpCountAllTime ?? 0) + (model.rank?.thumbsDownCountAllTime ?? 0);
+  const thumbsUpCount = model.rank?.thumbsUpCountAllTime ?? 0;
+  const thumbsDownCount = model.rank?.thumbsDownCountAllTime ?? 0;
+  const totalRatingCount = thumbsUpCount + thumbsDownCount;
   const metaSchema = {
     '@context': 'https://schema.org',
     '@type': 'SoftwareApplication',
@@ -669,16 +676,15 @@ export default function ModelDetailsV2({
           }
         : undefined,
     datePublished: model.publishedAt,
-    aggregateRating: {
-      '@type': 'AggregateRating',
-      ratingValue: Math.min(
-        Math.ceil((model.rank?.thumbsUpCountAllTime ?? 0 / totalRatingCount) * 5),
-        5
-      ),
-      reviewCount: totalRatingCount,
-      bestRating: 5,
-      worstRating: 0,
-    },
+    ...(totalRatingCount > 0 && {
+      aggregateRating: {
+        '@type': 'AggregateRating',
+        ratingValue: Math.min(Math.ceil((thumbsUpCount / totalRatingCount) * 5), 5),
+        reviewCount: totalRatingCount,
+        bestRating: 5,
+        worstRating: 1,
+      },
+    }),
   };
 
   const published = model.status === ModelStatus.Published;

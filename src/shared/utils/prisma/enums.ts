@@ -265,6 +265,19 @@ export const ModelVersionMonetizationType = {
 
 export type ModelVersionMonetizationType = (typeof ModelVersionMonetizationType)[keyof typeof ModelVersionMonetizationType];
 
+export const LicensingFeeType = {
+  PerImageBuzz: 'PerImageBuzz',
+} as const;
+
+export type LicensingFeeType = (typeof LicensingFeeType)[keyof typeof LicensingFeeType];
+
+export const LicensingFeeSettlementCurrency = {
+  Buzz: 'Buzz',
+  Cash: 'Cash',
+} as const;
+
+export type LicensingFeeSettlementCurrency = (typeof LicensingFeeSettlementCurrency)[keyof typeof LicensingFeeSettlementCurrency];
+
 export const ModelVersionEngagementType = {
   Notify: 'Notify',
 } as const;
@@ -472,17 +485,11 @@ export type PartnerPricingModel = (typeof PartnerPricingModel)[keyof typeof Part
 export const ApiKeyType = {
   System: 'System',
   User: 'User',
+  Access: 'Access',
+  Refresh: 'Refresh',
 } as const;
 
 export type ApiKeyType = (typeof ApiKeyType)[keyof typeof ApiKeyType];
-
-export const KeyScope = {
-  Read: 'Read',
-  Write: 'Write',
-  Generate: 'Generate',
-} as const;
-
-export type KeyScope = (typeof KeyScope)[keyof typeof KeyScope];
 
 export const TagEngagementType = {
   Hide: 'Hide',
@@ -947,6 +954,7 @@ export const ComicPanelStatus = {
   Enqueued: 'Enqueued',
   Generating: 'Generating',
   AwaitingSelection: 'AwaitingSelection',
+  RequireUnlock: 'RequireUnlock',
   Ready: 'Ready',
   Failed: 'Failed',
 } as const;

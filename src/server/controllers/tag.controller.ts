@@ -1,6 +1,6 @@
 import type { TagsOnTagsType, TagType } from '~/shared/utils/prisma/enums';
 import { constants } from '~/server/common/constants';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { dbRead } from '~/server/db/client';
 import type {
   AddTagVotesSchema,
@@ -136,7 +136,7 @@ export const addTagVotesHandler = async ({
   ctx,
 }: {
   input: AddTagVotesSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     await addTagVotes({
@@ -154,7 +154,7 @@ export const removeTagVotesHandler = async ({
   ctx,
 }: {
   input: RemoveTagVotesSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     await removeTagVotes({ ...input, userId: ctx.user.id, isModerator: ctx.user.isModerator });
@@ -184,7 +184,7 @@ export const moderateTagsHandler = async ({
   ctx,
 }: {
   input: ModerateTagsSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     await moderateTags(input);

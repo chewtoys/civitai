@@ -1,4 +1,4 @@
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
 import {
   createBuzzOrder,
@@ -16,7 +16,7 @@ export const createBuzzOrderHandler = async ({
   input,
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: CreateBuzzCharge;
 }) => {
   if (!ctx.user.email) {
@@ -33,7 +33,7 @@ export const getTransactionStatusHandler = async ({
   ctx,
   input: { id },
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetByIdStringInput;
 }) => {
   return getTransactionStatusByUniqueId({

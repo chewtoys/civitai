@@ -30,7 +30,7 @@ import {
 } from './config';
 import { DataGraph } from '~/libs/data-graph/data-graph';
 import type { GenerationCtx } from './context';
-import { quantityNode, promptNode, enhancedCompatibilityNode } from './common';
+import { quantityNode, enhancedCompatibilityNode } from './common';
 import { fluxGraph } from './flux-graph';
 import { stableDiffusionGraph } from './stable-diffusion-graph';
 import { qwenGraph } from './qwen-graph';
@@ -46,7 +46,7 @@ import { hiDreamGraph } from './hi-dream-graph';
 import { ponyV7Graph } from './pony-v7-graph';
 import { viduGraph } from './vidu-graph';
 import { openaiGraph } from './openai-graph';
-import { klingGraph, klingVersionIds } from './kling-graph';
+import { klingGraph } from './kling-graph';
 import { wanGraph } from './wan-graph';
 import { wanImageGraph } from './wan-image-graph';
 import { hunyuanGraph } from './hunyuan-graph';
@@ -114,13 +114,18 @@ export const ecosystemGraph = new DataGraph<
   // ecosystem depends on workflow to filter compatible ecosystems
   .node(
     'ecosystem',
-    (ctx) => {
-      // Get ecosystems compatible with the selected workflow (as IDs, convert to keys)
+    (ctx, ext) => {
+      // Get ecosystems compatible with the selected workflow (as IDs, convert to keys),
+      // then drop any keys gated for the current user. Server enforces the same
+      // gate via getResourceCanGenerate, but filtering here keeps the UI honest
+      // and prevents validated submissions from referencing a gated ecosystem.
+      const gated = ext.gatedEcosystems;
       const compatibleEcosystemIds = getEcosystemsForWorkflow(ctx.workflow);
       const compatibleEcosystems = compatibleEcosystemIds
         .map((id) => ecosystemById.get(id)?.key)
-        .filter((key): key is string => !!key);
-      // Default ecosystem by output type
+        .filter((key): key is string => !!key && !gated?.includes(key));
+      // Default ecosystem by output type — fall through to first compatible if
+      // the type-default is gated/incompatible, then to SDXL as ultimate fallback.
       const outputDefault =
         ctx.output === 'audio' ? 'Ace' : ctx.output === 'video' ? 'Kling' : 'ZImageTurbo';
       const defaultValue = compatibleEcosystems.includes(outputDefault)
@@ -131,8 +136,18 @@ export const ecosystemGraph = new DataGraph<
         input: z
           .string()
           .optional()
-          .transform((v) => (v ? v : undefined)),
-        output: z.string(),
+          .transform((v) => {
+            if (!v) return undefined;
+            // Drop gated values at the input boundary so a stale stored ecosystem
+            // (e.g. localStorage from before it was gated) falls back to default.
+            if (gated?.includes(v)) return undefined;
+            return v;
+          }),
+        output: gated?.length
+          ? z.string().refine((v) => !gated.includes(v), {
+              message: 'Ecosystem is currently unavailable',
+            })
+          : z.string(),
         defaultValue,
         meta: {
           compatibleEcosystems,
@@ -315,31 +330,10 @@ export const ecosystemGraph = new DataGraph<
       };
     },
     ['workflow', 'output', 'ecosystem', 'model', 'enhancedCompatibility']
-  )
-  .node(
-    'prompt',
-    (ctx) => {
-      const isAudio = ctx.ecosystem === 'Ace';
-      const images = 'images' in ctx ? (ctx.images as unknown[]) : undefined;
-      // const multiShot = 'multiShot' in ctx ? (ctx.multiShot as boolean) : false;
-      const isKlingV3 = ctx.ecosystem === 'Kling' && ctx.model?.id === klingVersionIds.v3;
-      const isGrok = ctx.ecosystem === 'Grok';
-      // Audio workflows use musicDescription — prompt stays in the graph (so handler types
-      // remain non-optional) but is non-required and stripped from stored metadata in
-      // orchestration-new.service.ts before persistence.
-      return {
-        ...promptNode({ required: isAudio ? false : !images?.length || isKlingV3 || isGrok }),
-      };
-    },
-    ['images', 'multiShot', 'ecosystem']
-  )
-  .computed(
-    'triggerWords',
-    (ctx) => {
-      const resources = ('resources' in ctx ? ctx.resources : undefined) ?? [];
-      const model = 'model' in ctx ? ctx.model : undefined;
-      const allResources = model ? [model, ...resources] : resources;
-      return allResources.flatMap((r) => r.trainedWords ?? []);
-    },
-    ['model', 'resources']
   );
+
+// Prompt + triggerWords are now defined per-ecosystem inside each subgraph
+// (see common.ts: promptGraph, negativePromptGraph, triggerWordsGraph,
+// createTextEditorGraph). Each ecosystem owns its own validation rule and
+// merges triggerWordsGraph after model/resources so the dep system propagates
+// correctly.

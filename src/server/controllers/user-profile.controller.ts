@@ -14,7 +14,7 @@ import type {
   ShowcaseItemSchema,
   UserProfileUpdateSchema,
 } from '~/server/schema/user-profile.schema';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { TRPCError } from '@trpc/server';
 import { entityExists } from '~/server/services/util.service';
 import { constants } from '~/server/common/constants';
@@ -28,9 +28,9 @@ export const getUserContentOverviewHandler = async ({
   ctx: Context;
 }) => {
   // Pick the overview variant so the counts match what the user can actually browse:
-  //   anonymous (any domain)     → 'public' (PG only)
-  //   logged-in on green domain  → 'sfw'    (PG + PG-13)
-  //   logged-in on blue/red      → 'all'    (respect user preference)
+  //   anonymous (any domain)     â†’ 'public' (PG only)
+  //   logged-in on green domain  â†’ 'sfw'    (PG + PG-13)
+  //   logged-in on blue/red      â†’ 'all'    (respect user preference)
   const variant = !ctx.user ? 'public' : ctx.domain === 'green' ? 'sfw' : 'all';
   try {
     const overview = await getUserContentOverview({
@@ -75,7 +75,7 @@ export const updateUserProfileHandler = async ({
   ctx,
 }: {
   input: UserProfileUpdateSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user: sessionUser } = ctx;
 
@@ -102,7 +102,7 @@ export const addEntityToShowcaseHandler = async ({
   ctx,
 }: {
   input: ShowcaseItemSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     if (input.entityType !== 'Model' && input.entityType !== 'Image') {

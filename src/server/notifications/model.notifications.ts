@@ -133,6 +133,11 @@ export const modelNotifications = createNotificationProcessor({
         JOIN "Model" m ON m.id = mv."modelId"
         WHERE m."userId" > 0
           AND mv."publishedAt" - m."publishedAt" > INTERVAL '2 hour'
+          -- Wall-clock floor: bound the query window to the last 30 minutes regardless of
+          -- how far behind the cursor is. Prevents death-spiral when a stale cursor would
+          -- otherwise force a giant table scan; older events become unreachable rather
+          -- than blocking every subsequent run.
+          AND mv."publishedAt" > NOW() - INTERVAL '30 minutes'
           AND (
             -- handle scheduled posts - these can take a little while to update via another job
             (mv."publishedAt" BETWEEN '${lastSent}'::timestamptz - interval '59 second' AND now() AND mv.status = 'Published')
@@ -199,6 +204,10 @@ export const modelNotifications = createNotificationProcessor({
           -- missed if its publishedAt falls just before the cursor after the previous run advanced.
           -- Duplicates are safe due to ON CONFLICT upsert in PendingNotification.
           AND m."publishedAt" BETWEEN '${lastSent}'::timestamptz - interval '59 second' AND now()
+          -- Wall-clock floor: bound the query window to the last 30 minutes regardless of
+          -- how far behind the cursor is. Prevents death-spiral when a stale cursor would
+          -- otherwise force a giant Model x UserEngagement scan.
+          AND m."publishedAt" > NOW() - INTERVAL '30 minutes'
           AND m.status IN ('Published', 'Scheduled')
       )
       SELECT
@@ -232,6 +241,9 @@ export const modelNotifications = createNotificationProcessor({
         where
           (mv."earlyAccessConfig"->>'originalTimeframe')::int > 0
         AND mv."publishedAt" >= '${lastSent}'
+        -- Wall-clock floor: bound to last 30 minutes so a stale cursor cannot force a
+        -- giant table scan. See new-model-from-following / new-model-version for details.
+        AND mv."publishedAt" > NOW() - INTERVAL '30 minutes'
       ), early_access_complete AS (
         SELECT DISTINCT
           mve."userId" owner_id,

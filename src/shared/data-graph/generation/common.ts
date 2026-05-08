@@ -559,6 +559,35 @@ export function getAllVersionIds(group: VersionGroup): Set<number> {
 }
 
 /**
+ * Returns a copy of `group` with any option whose `value` is in `hiddenIds`
+ * removed. Recurses into `children`; a parent option is dropped when all of
+ * its children are hidden, and a parent whose own `value` is hidden is
+ * rewritten to point at the first remaining child so selecting the parent
+ * doesn't land on a gated ID.
+ *
+ * Returns `undefined` when every option in the group is gated.
+ */
+export function filterVersionGroup(
+  group: VersionGroup,
+  hiddenIds: number[]
+): VersionGroup | undefined {
+  if (hiddenIds.length === 0) return group;
+  const options: VersionOption[] = [];
+  for (const opt of group.options) {
+    if (opt.children) {
+      const filteredChildren = filterVersionGroup(opt.children, hiddenIds);
+      if (!filteredChildren) continue;
+      const value = hiddenIds.includes(opt.value) ? filteredChildren.options[0].value : opt.value;
+      options.push({ ...opt, value, children: filteredChildren });
+    } else if (!hiddenIds.includes(opt.value)) {
+      options.push(opt);
+    }
+  }
+  if (options.length === 0) return undefined;
+  return { ...group, options };
+}
+
+/**
  * Model node meta type for checkpoint graphs.
  * Kept in sync with the model node factory in createCheckpointGraph via return type annotation.
  */
@@ -782,7 +811,15 @@ export function createCheckpointGraph(
         const modelVersionId = defaultModelId ?? ecosystemDefaults?.model?.id;
         const modelLocked = options?.modelLocked ?? ecosystemDefaults?.modelLocked ?? false;
 
-        const validVersionIds = versions ? getAllVersionIds(versions) : undefined;
+        // Drop gated version IDs (operator-controlled disabled/mod-only/testing)
+        // from the version selector so users never see versions they can't use.
+        // Server enforces the same gate in `getResourceCanGenerate`.
+        const visibleVersions =
+          versions && ext.gatedVersionIds?.length
+            ? filterVersionGroup(versions, ext.gatedVersionIds)
+            : versions;
+
+        const validVersionIds = visibleVersions ? getAllVersionIds(visibleVersions) : undefined;
 
         const checkpointInputSchema = z
           .union([
@@ -825,7 +862,7 @@ export function createCheckpointGraph(
               excludeIds: value ? [value.id] : [],
             },
             modelLocked,
-            versions,
+            versions: visibleVersions,
             defaultModelId: modelVersionId,
           }),
           // Transform model when ecosystem or workflow changes
@@ -1375,3 +1412,203 @@ export function scaleFactorNode({
     },
   };
 }
+
+// =============================================================================
+// Text Editor Subgraphs (prompt, negativePrompt, lyrics, musicDescription, …)
+// =============================================================================
+
+/**
+ * Snippet payload types — mirror docs/features/prompt-snippets.md submission
+ * payload. Defined here so this file stays self-contained until the snippets
+ * feature lands.
+ */
+type SnippetReference = {
+  category: string;
+  selections: { categoryId: number; in: string[]; ex: string[] }[];
+};
+
+type SnippetsValue = {
+  wildcardSetIds: number[];
+  mode?: 'batch' | 'random';
+  batchCount?: number;
+  targets: Record<string, SnippetReference[]>;
+};
+
+/**
+ * Single-source-of-truth `triggerWords` computed. Flattens trainedWords from
+ * the active model + resources. Merge once per ecosystem subgraph that has
+ * model and/or resources, BEFORE any text editors that want to read it —
+ * the runtime walks entries in build order, so editors merged after this
+ * graph re-run when triggerWords changes.
+ *
+ * Subgraphs without model/resources can skip the merge — text editors then
+ * see `triggerWords` missing from ctx and fall back to `[]` in their meta.
+ *
+ * Usage: `.merge(triggerWordsGraph)`.
+ */
+export const triggerWordsGraph = new DataGraph<
+  { model?: ResourceData; resources?: ResourceData[] },
+  GenerationCtx
+>().computed(
+  'triggerWords',
+  (ctx) => {
+    const resources = (('resources' in ctx ? ctx.resources : undefined) ?? []) as ResourceData[];
+    const model = ('model' in ctx ? ctx.model : undefined) as ResourceData | undefined;
+    const all = model ? [model, ...resources] : resources;
+    return all.flatMap((r) => r.trainedWords ?? []);
+  },
+  ['model', 'resources']
+);
+
+/**
+ * Context the text-editor factory expects on the parent. Everything is
+ * optional — the factory only reads what's actually present at runtime.
+ */
+type TextEditorParentCtx = {
+  // Future submission-level snippets node. Optional until the feature ships.
+  snippets?: SnippetsValue;
+  // Surfaced in meta when the parent merged `triggerWordsGraph`.
+  triggerWords?: string[];
+};
+
+type TextEditorRequiredFn = (ctx: Record<string, unknown>) => boolean;
+
+type TextEditorOptions<K extends string> = {
+  /** Node key — also the snippet target key (e.g. 'prompt', 'lyrics'). */
+  name: K;
+  /** Output max length. Defaults to MAX_PROMPT_LENGTH. */
+  maxLength?: number;
+  /** Validation message when `required` is true and the value is empty. */
+  emptyMessage?: string;
+  /**
+   * Whether the field is required. May be a static boolean or a predicate
+   * over the parent ctx (e.g. `ctx => !ctx.images?.length`).
+   */
+  required?: boolean | TextEditorRequiredFn;
+  /**
+   * Deps consumed by the `required` predicate. The factory always adds
+   * `snippets` and `triggerWords` on top of these so editor meta refreshes
+   * when chips change or the model/resources change.
+   */
+  requiredDeps?: readonly string[];
+  /** Override placeholder for this editor (surfaced in `meta.placeholder`). */
+  placeholder?: string;
+  /** Override info-tooltip text for this editor (surfaced in `meta.info`). */
+  info?: string;
+};
+
+/**
+ * Build a text-editor subgraph: a single `.node(name, ...)` with snippet- and
+ * triggerWords-aware meta. Use this for prompt, negativePrompt, lyrics,
+ * musicDescription — anything that's a free-form text input on the form.
+ *
+ * Each editor's meta exposes:
+ * - `required: boolean`
+ * - `targetKey: string` — pairs with future `snippets.targets[targetKey]`
+ * - `snippetTarget: SnippetReference[]` — empty until the snippets node ships
+ * - `triggerWords: string[]` — empty when parent didn't merge `triggerWordsGraph`
+ * - `placeholder?: string` — set by per-ecosystem override; consumer falls back to its own default
+ * - `info?: string` — set by per-ecosystem override; consumer falls back to its own default
+ *
+ * Recommended merge order in an ecosystem subgraph:
+ *   1. createCheckpointGraph()   (model)
+ *   2. createResourcesGraph()    (resources, when applicable)
+ *   3. triggerWordsGraph         (when applicable)
+ *   4. promptGraph / negativePromptGraph / createTextEditorGraph(...)
+ *
+ * Usage:
+ * ```ts
+ * .merge(
+ *   () => createTextEditorGraph({
+ *     name: 'musicDescription',
+ *     required: true,
+ *     emptyMessage: 'Music description is required',
+ *     maxLength: 1000,
+ *   }),
+ *   []
+ * )
+ * ```
+ */
+export function createTextEditorGraph<const K extends string>(opts: TextEditorOptions<K>) {
+  const {
+    name,
+    maxLength = MAX_PROMPT_LENGTH,
+    emptyMessage,
+    required = false,
+    requiredDeps = [],
+    placeholder,
+    info,
+  } = opts;
+
+  // Always react to snippets + triggerWords updates, plus whatever the
+  // required-predicate cares about. Both keys are tolerated as missing
+  // by the dep system, so subgraphs without them just see `[]` fallbacks.
+  const editorDeps = ['snippets', 'triggerWords', ...requiredDeps] as const;
+
+  return new DataGraph<TextEditorParentCtx, GenerationCtx>().node(
+    name,
+    (ctx) => {
+      const isRequired =
+        typeof required === 'function'
+          ? required(ctx as unknown as Record<string, unknown>)
+          : required;
+
+      let output = z.string().trim().max(maxLength, `${name} is too long`);
+      if (isRequired) output = output.nonempty(emptyMessage ?? `${name} is required`);
+
+      // Snippet target slice — empty until the snippets node ships.
+      const snippets = ('snippets' in ctx ? ctx.snippets : undefined) as SnippetsValue | undefined;
+      const snippetTarget = snippets?.targets?.[name] ?? [];
+
+      // Trigger words — populated when the parent subgraph merged
+      // triggerWordsGraph, otherwise falls back to [].
+      const triggerWords = (('triggerWords' in ctx ? ctx.triggerWords : undefined) ??
+        []) as string[];
+
+      return {
+        input: z.string().optional(),
+        output,
+        defaultValue: '',
+        meta: {
+          required: isRequired,
+          targetKey: name,
+          snippetTarget,
+          triggerWords,
+          placeholder,
+          info,
+        },
+      };
+    },
+    editorDeps
+  );
+}
+
+/**
+ * Standard prompt subgraph for image/video ecosystems.
+ * Required when the parent's `images` dep is absent or empty (covers txt-only
+ * ecosystems and img2img cases where the user hasn't attached anything yet).
+ *
+ * Edge cases needing a different rule (Kling V3, Grok always-required,
+ * ace-audio simple/custom) should call `createTextEditorGraph(...)` directly
+ * with their own `required` predicate.
+ *
+ * Usage: `.merge(promptGraph)`.
+ */
+export const promptGraph = createTextEditorGraph({
+  name: 'prompt',
+  required: (ctx) => {
+    const images = ('images' in ctx ? ctx.images : undefined) as unknown[] | undefined;
+    return !images?.length;
+  },
+  requiredDeps: ['images'],
+});
+
+/**
+ * Standard negativePrompt subgraph. Never required.
+ *
+ * Usage: `.merge(negativePromptGraph)`.
+ */
+export const negativePromptGraph = createTextEditorGraph({
+  name: 'negativePrompt',
+  maxLength: MAX_NEGATIVE_PROMPT_LENGTH,
+});
