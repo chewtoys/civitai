@@ -53,6 +53,12 @@ interface CandidateImageModalProps {
    * has to view the result on the mature-content domain).
    */
   unlockHref?: string | null;
+  /**
+   * When true, clean-but-mature candidates render behind a blur with a
+   * Show toggle. Only meaningful on the SFW (green) domain — on red the
+   * user has consented to NSFW, so we just render the tile directly.
+   */
+  blurMatureCandidates?: boolean;
   isSelecting: boolean;
 }
 
@@ -65,6 +71,7 @@ export function CandidateImageModal({
   onUnlock,
   isUnlocking,
   unlockHref,
+  blurMatureCandidates = false,
   isSelecting,
 }: CandidateImageModalProps) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -92,6 +99,11 @@ export function CandidateImageModal({
   // populated only on red, `unlockHref` only on green. We never combine
   // both: in-place unlock is a red-only flow.
   const showInPlaceUnlock = !!onUnlock;
+  // Header copy mentions the blur-and-reveal flow only when it actually
+  // applies. On red the user has consented to mature content via account
+  // settings + domain, so clean candidates render straight without a
+  // hidden Show toggle.
+  const showMatureBlurNotice = hasMature && blurMatureCandidates;
 
   return (
     <>
@@ -104,7 +116,7 @@ export function CandidateImageModal({
       >
         <Text size="sm" c="dimmed" mb="md">
           Select an image for this panel. Click the magnifier to zoom in.
-          {hasMature && (
+          {showMatureBlurNotice && (
             <>
               {' '}Mature results are blurred — click <em>Show</em> on a tile
               before selecting it.
@@ -213,7 +225,13 @@ export function CandidateImageModal({
 
             const isSelected = slot.key === effectiveSelection;
             const matureClean = isCandidateMature(slot);
-            const showBlur = matureClean && !revealedKeys.has(slot.key);
+            // Gate the blur on `blurMatureCandidates`. On red the user has
+            // already consented to mature output (nsfwEnabled + domain) so
+            // the blur+Show treatment is unnecessary friction; on green
+            // mature outputs would normally arrive locked, but if a clean
+            // mature one slips through we keep the blur as a safety net.
+            const showBlur =
+              blurMatureCandidates && matureClean && !revealedKeys.has(slot.key);
             return (
               <div key={slot.key} className="relative">
                 <button
@@ -222,7 +240,7 @@ export function CandidateImageModal({
                     aspectRatio: '3/4',
                     border: isSelected
                       ? '3px solid var(--mantine-color-blue-6)'
-                      : matureClean
+                      : matureClean && showBlur
                         ? '3px solid var(--mantine-color-yellow-6)'
                         : '3px solid transparent',
                     padding: 0,

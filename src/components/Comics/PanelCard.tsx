@@ -763,6 +763,11 @@ export function PanelCard({
         }
         isUnlocking={unlockMutation.isPending}
         unlockHref={isGreen ? unlockHref : null}
+        // Only blur clean-but-mature candidates on green. On red the user
+        // has consented to NSFW already; blurring is unnecessary friction
+        // and previously left the tile with no Show button (we only
+        // surfaced one when locked candidates were also present).
+        blurMatureCandidates={isGreen}
         isSelecting={selectPanelImageMutation.isPending}
       />
     )}
