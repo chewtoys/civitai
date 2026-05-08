@@ -81,6 +81,7 @@ import { searchIndexJobs } from '~/server/jobs/search-index-sync';
 import { searchIndexUserCleanupJob } from '~/server/jobs/search-index-user-cleanup';
 import { sendCollectionNotifications } from '~/server/jobs/send-collection-notifications';
 import { sendNotificationsJob } from '~/server/jobs/send-notifications';
+import { notificationCursorMonitor } from '~/server/jobs/notification-cursor-monitor';
 import { sendWebhooksJob } from '~/server/jobs/send-webhooks';
 import { tempSetMissingNsfwLevel } from '~/server/jobs/temp-set-missing-nsfw-level';
 import { retryFailedTextModeration } from '~/server/jobs/text-moderation-retry';
@@ -102,6 +103,7 @@ export const jobs: Job[] = [
   scanFilesFallbackJob,
   processImportsJob,
   sendNotificationsJob,
+  notificationCursorMonitor,
   sendWebhooksJob,
   addOnDemandRunStrategiesJob,
   deliverPurchasedCosmetics,
