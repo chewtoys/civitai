@@ -6,10 +6,10 @@ import { createImageIngestionRequest } from '~/server/services/orchestrator/orch
 import type { MediaType } from '~/shared/utils/prisma/enums';
 
 /**
- * GET /api/image/ingest/:imageId
+ * GET /api/media/ingest/:mediaId
  *
- * Re-ingests an image through the orchestrator. Intended as a debugging tool for
- * moderators and orchestrator devs.
+ * Re-ingests an image/video through the orchestrator. Intended as a debugging
+ * tool for moderators and orchestrator devs.
  *
  * Auth: pass `?token=$WEBHOOK_TOKEN` OR be signed in as a moderator.
  *
@@ -30,16 +30,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  const imageId = Number(req.query.imageId);
-  if (!Number.isFinite(imageId)) {
-    return res.status(400).json({ error: 'Invalid imageId' });
+  const mediaId = Number(req.query.mediaId);
+  if (!Number.isFinite(mediaId)) {
+    return res.status(400).json({ error: 'Invalid mediaId' });
   }
 
-  const image = await dbRead.image.findUnique({
-    where: { id: imageId },
+  const media = await dbRead.image.findUnique({
+    where: { id: mediaId },
     select: { id: true, url: true, type: true },
   });
-  if (!image) return res.status(404).json({ error: 'Image not found' });
+  if (!media) return res.status(404).json({ error: 'Media not found' });
 
   const callbackUrl =
     env.IMAGE_SCANNING_CALLBACK ??
@@ -47,9 +47,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const { data, body, error, status } = await createImageIngestionRequest({
-      imageId: image.id,
-      url: image.url,
-      type: image.type as MediaType,
+      imageId: media.id,
+      url: media.url,
+      type: media.type as MediaType,
       callbackUrl,
     });
     if (!data) {
