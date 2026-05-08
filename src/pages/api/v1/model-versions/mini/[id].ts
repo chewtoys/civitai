@@ -25,6 +25,9 @@ import type {
 } from '~/shared/utils/prisma/enums';
 import { Availability } from '~/shared/utils/prisma/enums';
 import { stringifyAIR } from '~/shared/utils/air';
+import { Flags } from '~/shared/utils/flags';
+import { UserFlag } from '~/shared/constants/user-flags.constants';
+import { ModelVersionFlag } from '~/shared/constants/model-version-flags.constants';
 
 const schema = z.object({
   id: z.coerce.number(),
@@ -56,6 +59,8 @@ type VersionRow = {
   licensingFee: number | null;
   licensingFeeType: LicensingFeeType | null;
   licensingFeeSettlementCurrency: LicensingFeeSettlementCurrency | null;
+  versionFlags: number;
+  userFlags: number;
 };
 type FileRow = {
   id: number;
@@ -103,6 +108,8 @@ export default MixedAuthEndpoint(async function handler(
       mv."licensingFee",
       mv."licensingFeeType",
       mv."licensingFeeSettlementCurrency",
+      mv."flags" AS "versionFlags",
+      u."flags" AS "userFlags",
       (
         (
             mv."earlyAccessEndsAt" > NOW()
@@ -128,6 +135,7 @@ export default MixedAuthEndpoint(async function handler(
       ) AS "freeTrialLimit"
     FROM "ModelVersion" mv
     JOIN "Model" m ON m.id = mv."modelId"
+    JOIN "User" u ON u.id = m."userId"
     WHERE ${Prisma.join(where, ' AND ')}
   `;
   if (!modelVersion) return res.status(404).json({ error: 'Model not found' });
@@ -253,6 +261,10 @@ export default MixedAuthEndpoint(async function handler(
         }
       : undefined;
 
+  const creatorTips =
+    !Flags.hasFlag(modelVersion.userFlags, UserFlag.DisableTips) &&
+    !Flags.hasFlag(modelVersion.versionFlags, ModelVersionFlag.DisableTips);
+
   const data = {
     air,
     versionName: modelVersion.versionName,
@@ -277,6 +289,7 @@ export default MixedAuthEndpoint(async function handler(
     minor: modelVersion.minor,
     sfwOnly: modelVersion.sfwOnly,
     fee,
+    creatorTips,
   };
   res.status(200).json(data);
 });

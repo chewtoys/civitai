@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "User"
+  ADD COLUMN "flags" INTEGER NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "ModelVersion"
+  ADD COLUMN "flags" INTEGER NOT NULL DEFAULT 0;
