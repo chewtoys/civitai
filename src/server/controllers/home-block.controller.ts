@@ -1,4 +1,4 @@
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import {
   throwAuthorizationError,
   throwDbError,
@@ -161,7 +161,7 @@ export const createCollectionHomeBlockHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: CreateCollectionHomeBlockInputSchema;
 }) => {
   const collection = await getCollectionById({ input: { id: input.collectionId } });
@@ -204,7 +204,7 @@ export const deleteUserHomeBlockHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { id: userId, isModerator } = ctx.user;
 
@@ -229,7 +229,7 @@ export const setHomeBlocksOrderHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: SetHomeBlocksOrderInputSchema;
 }) => {
   try {
@@ -271,7 +271,7 @@ export const getFeaturedCollectionsPoolHandler = async () => {
       const c = byId.get(id);
       const entry = state?.perCollection[id];
       if (!c) {
-        // Ghost entry — collection deleted or no longer accessible. Surface it so mods can
+        // Ghost entry â€” collection deleted or no longer accessible. Surface it so mods can
         // remove the dangling id from the pool. `missing: true` is the UI's cue.
         return {
           id,
@@ -321,7 +321,7 @@ async function bustFeaturedCollectionsCache(homeBlockId: number) {
 export const addCollectionToFeaturedPoolHandler = async ({
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: ToggleFeaturedCollectionInputSchema;
 }) => {
   try {
@@ -337,7 +337,7 @@ export const addCollectionToFeaturedPoolHandler = async ({
 export const removeCollectionFromFeaturedPoolHandler = async ({
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: ToggleFeaturedCollectionInputSchema;
 }) => {
   try {
@@ -353,7 +353,7 @@ export const removeCollectionFromFeaturedPoolHandler = async ({
 export const acknowledgeFeaturedCollectionHandler = async ({
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: ToggleFeaturedCollectionInputSchema;
 }) => {
   try {

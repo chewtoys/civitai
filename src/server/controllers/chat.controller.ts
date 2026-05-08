@@ -3,7 +3,7 @@ import { TRPCError } from '@trpc/server';
 import { uniq } from 'lodash-es';
 import { env } from '~/env/server';
 import { SignalMessages } from '~/server/common/enums';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { dbRead, dbWrite } from '~/server/db/client';
 import type {
   AddUsersInput,
@@ -34,7 +34,7 @@ import type { ChatCreateChat } from '~/types/router';
 /**
  * Get user chat settings
  */
-export const getUserSettingsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserSettingsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const { id: userId } = ctx.user;
     const { chat = { muteSounds: false, replaceBadWords: false, acknowledged: false } } =
@@ -55,7 +55,7 @@ export const setUserSettingsHandler = async ({
   ctx,
 }: {
   input: UserSettingsChat;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -74,7 +74,7 @@ export const setUserSettingsHandler = async ({
 /**
  * Get all chats for a single user
  */
-export const getChatsForUserHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getChatsForUserHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const { id: userId } = ctx.user;
 
@@ -104,7 +104,7 @@ export const getUnreadMessagesForUserHandler = async ({
   ctx,
 }: {
   // input: GetUnreadInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -150,7 +150,7 @@ export const createChatHandler = async ({
   ctx,
 }: {
   input: CreateChatInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId, bannedAt } = ctx.user;
@@ -201,7 +201,7 @@ export const addUsersHandler = async ({
   ctx,
 }: {
   input: AddUsersInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -293,7 +293,7 @@ export const modifyUserHandler = async ({
   ctx,
 }: {
   input: ModifyUserInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -411,7 +411,7 @@ export const modifyUserHandler = async ({
 /**
  * Mark all messages as read for active chats
  */
-export const markAllAsReadHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const markAllAsReadHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     const { id: userId } = ctx.user;
 
@@ -443,7 +443,7 @@ export const getInfiniteMessagesHandler = async ({
   ctx,
 }: {
   input: GetInfiniteMessagesInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -515,7 +515,7 @@ export const getMessageByIdHandler = async ({
   ctx,
 }: {
   input: GetMessageByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -576,7 +576,7 @@ export const createMessageHandler = async ({
   ctx,
 }: {
   input: CreateMessageInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId, muted, isModerator, bannedAt } = ctx.user;
@@ -597,7 +597,7 @@ export const updateMessageHandler = async ({
   ctx,
 }: {
   input: UpdateMessageInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -634,7 +634,7 @@ export const isTypingHandler = async ({
   ctx,
 }: {
   input: IsTypingInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     if (!env.SIGNALS_ENDPOINT) throw throwInternalServerError(new Error('No signals endpoint'));

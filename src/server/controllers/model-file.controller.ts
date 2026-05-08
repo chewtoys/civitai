@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type { GetByIdInput } from '~/server/schema/base.schema';
 import type {
   ModelFileCreateInput,
@@ -71,7 +71,7 @@ async function safeRegisterFileLocation(params: {
  * Derive the s3 path for a B2 registration. Prefers the explicit `s3Path`
  * from the client payload, falls back to parsing the committed URL. The
  * fallback covers users running stale client bundles that don't yet send
- * `s3Path` on the tRPC upsert — training pages live for hours during a run,
+ * `s3Path` on the tRPC upsert â€” training pages live for hours during a run,
  * so a frontend deploy can take a long time to reach every open tab.
  */
 function resolveB2Path(args: {
@@ -99,7 +99,7 @@ export const createFileHandler = async ({
   ctx,
 }: {
   input: ModelFileCreateInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     // Extract B2-specific fields before passing to createFile (they aren't DB columns)
@@ -145,12 +145,12 @@ export const createFileHandler = async ({
       .catch(handleLogError);
 
     // Submit model file scan workflow to orchestrator. Gated behind the
-    // MODEL_FILE_SCAN_ORCHESTRATOR flag — when OFF, the legacy scanFilesJob
+    // MODEL_FILE_SCAN_ORCHESTRATOR flag â€” when OFF, the legacy scanFilesJob
     // cron picks up the file via its Pending poll instead.
     //
     // Failures here are non-fatal: scanFilesFallbackJob will retry the file
     // within 5 minutes since scanRequestedAt is still null. We DO want them in
-    // Axiom though — the inline path is the happy case, and a sustained spike
+    // Axiom though â€” the inline path is the happy case, and a sustained spike
     // here is the earliest signal the orchestrator is unreachable.
     if (await isFlipt(FLIPT_FEATURE_FLAGS.MODEL_FILE_SCAN_ORCHESTRATOR)) {
       await createModelFileScanRequest({
@@ -210,7 +210,7 @@ export const updateFileHandler = async ({
   ctx,
 }: {
   input: ModelFileUpdateInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { backend, s3Path, ...updateInput } = input;
@@ -253,7 +253,7 @@ export const upsertFileHandler = async ({
   ctx,
 }: {
   input: ModelFileUpsertInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     if (input.id !== undefined) {
@@ -271,7 +271,7 @@ export const deleteFileHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const result = await deleteFile({

@@ -1,10 +1,10 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type { HideDownloadInput } from '~/server/schema/download.schema';
 import { getUserDownloads, hideDownload } from '~/server/services/download.service';
 import { throwDbError } from '~/server/utils/errorHandling';
 
-export const getUserDownloadsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserDownloadsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   const { id: userId } = ctx.user;
 
   try {
@@ -21,7 +21,7 @@ export const hideDownloadHandler = async ({
   ctx,
 }: {
   input: HideDownloadInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     await hideDownload({

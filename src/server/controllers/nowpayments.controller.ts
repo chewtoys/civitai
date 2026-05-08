@@ -1,4 +1,4 @@
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type {
   DepositHistoryInput,
   GetBuzzConversionRateInput,
@@ -18,7 +18,7 @@ export const getDepositAddressHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetDepositAddressInput;
 }) => {
   return getDepositAddress(ctx.user.id, input.chain);
@@ -28,7 +28,7 @@ export const getDepositHistoryHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: DepositHistoryInput;
 }) => {
   return getDepositHistory(ctx.user.id, input.page, input.perPage);
@@ -53,7 +53,7 @@ export const getBuzzConversionRateHandler = async ({
 export const reconcileUserDepositsHandler = async ({
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   return reconcileUserDeposits(ctx.user.id);
 };

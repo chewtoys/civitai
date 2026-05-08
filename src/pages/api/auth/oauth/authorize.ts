@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { Prisma } from '@prisma/client';
 import { Request, Response } from '@node-oauth/oauth2-server';
 import requestIp from 'request-ip';
 import { oauthServer } from '~/server/oauth/server';
@@ -136,7 +137,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             scope: requestedScope,
             buzzLimit: parsedBuzzLimit ?? undefined,
           },
-          update: { scope: requestedScope, buzzLimit: parsedBuzzLimit ?? null },
+          update: { scope: requestedScope, buzzLimit: parsedBuzzLimit ?? Prisma.DbNull },
         });
       }
     } else if (!existingConsent || existingConsent.scope !== requestedScope) {

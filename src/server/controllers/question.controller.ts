@@ -10,7 +10,7 @@ import {
 } from './../services/question.service';
 import { throwDbError, throwNotFoundError } from '~/server/utils/errorHandling';
 import type { GetQuestionsInput, UpsertQuestionInput } from '~/server/schema/question.schema';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { commentV2Select } from '~/server/selectors/commentv2.selector';
 
 export type GetQuestionsProps = AsyncReturnType<typeof getQuestionsHandler>;
@@ -133,7 +133,7 @@ export const upsertQuestionHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: UpsertQuestionInput;
 }) => {
   try {
@@ -154,7 +154,7 @@ export const deleteQuestionHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetByIdInput;
 }) => {
   try {

@@ -1,10 +1,10 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import type { GetByIdInput } from '~/server/schema/base.schema';
 import { deleteAccount, getUserAccounts } from '~/server/services/account.service';
 import { throwDbError, throwNotFoundError } from '~/server/utils/errorHandling';
 
-export const getUserAccountsHandler = async ({ ctx }: { ctx: DeepNonNullable<Context> }) => {
+export const getUserAccountsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   const { user } = ctx;
 
   try {
@@ -24,7 +24,7 @@ export const deleteAccountHandler = async ({
   input,
   ctx,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetByIdInput;
 }) => {
   try {

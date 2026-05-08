@@ -12,7 +12,7 @@ import {
   ModelSort,
   SearchIndexUpdateQueueAction,
 } from '~/server/common/enums';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { dbRead } from '~/server/db/client';
 import { eventEngine } from '~/server/events';
 import { dataForModelsCache, modelTagCache } from '~/server/redis/caches';
@@ -528,7 +528,7 @@ export const upsertModelHandler = async ({
   ctx,
 }: {
   input: ModelUpsertInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -594,7 +594,7 @@ export const publishModelHandler = async ({
   ctx,
 }: {
   input: PublishModelSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const model = await dbRead.model.findUnique({
@@ -653,7 +653,7 @@ export const unpublishModelHandler = async ({
   ctx,
 }: {
   input: UnpublishModelSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id } = input;
@@ -691,7 +691,7 @@ export const deleteModelHandler = async ({
   ctx,
 }: {
   input: DeleteModelSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id, permanently } = input;
@@ -855,7 +855,7 @@ export const getDownloadCommandHandler = async ({
   ctx,
 }: {
   input: GetDownloadSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const fileWhere: Prisma.ModelFileWhereInput = {};
@@ -1045,7 +1045,7 @@ export const restoreModelHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   if (!ctx.user.isModerator) throw throwAuthorizationError();
 
@@ -1071,7 +1071,7 @@ export const getMyDraftModelsHandler = async ({
   ctx,
 }: {
   input: GetAllSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -1107,7 +1107,7 @@ export const getMyTrainingModelsHandler = async ({
   ctx,
 }: {
   input: GetMyTrainingModelsSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -1159,7 +1159,7 @@ export const getAvailableTrainingModelsHandler = async ({
   ctx,
 }: {
   input: LimitOnly;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return await dbRead.model.findMany({
@@ -1268,7 +1268,7 @@ export const declineReviewHandler = async ({
   ctx,
 }: {
   input: DeclineReviewSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     if (!ctx.user.isModerator) throw throwAuthorizationError();
@@ -1320,7 +1320,7 @@ export const changeModelModifierHandler = async ({
   ctx,
 }: {
   input: ChangeModelModifierSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id, mode } = input;
@@ -1580,7 +1580,7 @@ export async function getSimpleModelsInfiniteHandler({
   ctx,
 }: {
   input: GetSimpleModelsInfiniteSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { limit = 100, query, userId } = input;
@@ -1609,7 +1609,7 @@ export async function getModelTemplateFieldsHandler({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id: userId } = ctx.user;
@@ -1683,7 +1683,7 @@ export async function getModelTemplateFromBountyHandler({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id: userId } = ctx.user;
@@ -1740,7 +1740,7 @@ export const updateGallerySettingsHandler = async ({
   ctx,
 }: {
   input: UpdateGallerySettingsInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id, gallerySettings } = input;
@@ -1803,7 +1803,7 @@ export async function copyGalleryBrowsingLevelHandler({
   ctx,
 }: {
   input: CopyGallerySettingsInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id: userId } = ctx.user;
@@ -1851,7 +1851,7 @@ export function setModelCollectionShowcaseHandler({
   ctx,
 }: {
   input: SetModelCollectionShowcaseInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { id: userId, isModerator } = ctx.user;
@@ -1867,7 +1867,7 @@ export const privateModelFromTrainingHandler = async ({
   ctx,
 }: {
   input: PrivateModelFromTrainingInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -1942,7 +1942,7 @@ export const publishPrivateModelHandler = async ({
   ctx,
 }: {
   input: PublishPrivateModelInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;

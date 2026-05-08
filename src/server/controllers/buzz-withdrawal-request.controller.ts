@@ -2,7 +2,7 @@ import { getTRPCErrorFromUnknown } from '@trpc/server';
 import { REDIS_SYS_KEYS, sysRedis } from '~/server/redis/client';
 import type { GetByIdStringInput } from '~/server/schema/base.schema';
 import { BuzzWithdrawalRequestStatus } from '~/shared/utils/prisma/enums';
-import type { Context } from '../createContext';
+import type { ProtectedContext } from '../createContext';
 import type {
   CreateBuzzWithdrawalRequestSchema,
   GetPaginatedBuzzWithdrawalRequestSchema,
@@ -25,7 +25,7 @@ export async function createBuzzWithdrawalRequestHandler({
   ctx,
 }: {
   input: CreateBuzzWithdrawalRequestSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const status = buzzWithdrawalRequestServiceStatusSchema.parse(
@@ -52,7 +52,7 @@ export const getPaginatedOwnedBuzzWithdrawalRequestsHandler = async ({
   ctx,
 }: {
   input: GetPaginatedOwnedBuzzWithdrawalRequestSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   try {
@@ -67,7 +67,7 @@ export const getPaginatedBuzzWithdrawalRequestsHandler = async ({
   ctx,
 }: {
   input: GetPaginatedBuzzWithdrawalRequestSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return getPaginatedBuzzWithdrawalRequests({ ...input });
@@ -81,7 +81,7 @@ export function cancelBuzzWithdrawalRequestHandler({
   ctx,
 }: {
   input: GetByIdStringInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     return cancelBuzzWithdrawalRequest({ userId: ctx.user.id, ...input });
@@ -95,7 +95,7 @@ export function updateBuzzWithdrawalRequestHandler({
   ctx,
 }: {
   input: UpdateBuzzWithdrawalRequestSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     const { buzzWithdrawalTransfer } = ctx.features;

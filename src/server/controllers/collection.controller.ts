@@ -1,6 +1,6 @@
 import { TRPCError } from '@trpc/server';
 import { constants } from '~/server/common/constants';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { logToAxiom } from '~/server/logging/client';
 import { collectedContentReward } from '~/server/rewards';
 import type { GetByIdInput, UserPreferencesInput } from '~/server/schema/base.schema';
@@ -159,7 +159,7 @@ export const getAllUserCollectionsHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: GetAllUserCollectionsInputSchema;
 }) => {
   const { user } = ctx;
@@ -215,7 +215,7 @@ export const saveItemHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: AddCollectionItemInput;
 }) => {
   const { user, ip, fingerprint } = ctx;
@@ -289,7 +289,7 @@ export const bulkSaveItemsHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: BulkSaveCollectionItemsInput;
 }) => {
   const { id: userId, isModerator } = ctx.user;
@@ -327,7 +327,7 @@ export const upsertCollectionHandler = async ({
   ctx,
 }: {
   input: UpsertCollectionInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
 
@@ -357,7 +357,7 @@ export const updateCollectionCoverImageHandler = async ({
   ctx,
 }: {
   input: UpdateCollectionCoverImageInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
 
@@ -378,7 +378,7 @@ export const getUserCollectionItemsByItemHandler = async ({
   ctx,
 }: {
   input: GetUserCollectionItemsByItemSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
 
@@ -397,7 +397,7 @@ export const deleteUserCollectionHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { user } = ctx;
@@ -412,7 +412,7 @@ export const followHandler = ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: FollowCollectionInputSchema;
 }) => {
   const { user } = ctx;
@@ -433,7 +433,7 @@ export const unfollowHandler = ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
   input: FollowCollectionInputSchema;
 }) => {
   const { user } = ctx;
@@ -474,7 +474,7 @@ export const updateCollectionItemsStatusHandler = async ({
   ctx,
 }: {
   input: UpdateCollectionItemsStatusInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     return updateCollectionItemsStatus({
@@ -493,7 +493,7 @@ export const addSimpleImagePostHandler = async ({
   ctx,
 }: {
   input: AddSimpleImagePostInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId, isModerator } = ctx.user;
@@ -548,7 +548,7 @@ export const getPermissionDetailsHandler = async ({
   ctx,
 }: {
   input: GetCollectionPermissionDetails;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   if (ids.length === 0) return [];
 
@@ -600,7 +600,7 @@ export const removeCollectionItemHandler = async ({
   ctx,
 }: {
   input: RemoveCollectionItemInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   try {
@@ -619,7 +619,7 @@ export const setItemScoreHandler = async ({
   ctx,
 }: {
   input: SetItemScoreInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   try {
@@ -646,7 +646,7 @@ export const setCollectionItemNsfwLevelHandler = async ({
   ctx,
 }: {
   input: SetCollectionItemNsfwLevelInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   try {
@@ -673,7 +673,7 @@ export const enableCollectionYoutubeSupportHandler = async ({
   ctx,
 }: {
   input: EnableCollectionYoutubeSupportInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { user } = ctx;
   try {
@@ -688,7 +688,7 @@ export const joinCollectionAsManagerHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const collection = await getCollectionById({ input });
   if (!collection) {

@@ -1,4 +1,5 @@
 import { TRPCError } from '@trpc/server';
+import { Prisma } from '@prisma/client';
 import { protectedProcedure, router } from '~/server/trpc';
 import { dbRead, dbWrite } from '~/server/db/client';
 import { TokenScope } from '~/shared/constants/token-scope.constants';
@@ -77,7 +78,7 @@ export const oauthConsentRouter = router({
 
       await dbWrite.oauthConsent.update({
         where: { userId_clientId: { userId: ctx.user.id, clientId: input.clientId } },
-        data: { buzzLimit: input.buzzLimit ?? null },
+        data: { buzzLimit: input.buzzLimit ?? Prisma.DbNull },
       });
 
       // Best-effort bust-cache. The orchestrator caches limits by (type, id);

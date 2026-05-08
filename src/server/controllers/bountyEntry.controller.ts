@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '../createContext';
+import type { Context, ProtectedContext } from '../createContext';
 import type { GetByIdInput } from '../schema/base.schema';
 import {
   handleLogError,
@@ -107,7 +107,7 @@ export const upsertBountyEntryHandler = async ({
   ctx,
 }: {
   input: UpsertBountyEntryInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   const { id: userId } = ctx.user;
   try {
@@ -150,7 +150,7 @@ export const awardBountyEntryHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const benefactor = await awardBountyEntry({
@@ -204,7 +204,7 @@ export const deleteBountyEntryHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const deleted = await deleteBountyEntry({

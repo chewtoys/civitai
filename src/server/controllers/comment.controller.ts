@@ -3,7 +3,7 @@ import { ModelStatus, ReportReason, ReportStatus } from '~/shared/utils/prisma/e
 import { TRPCError } from '@trpc/server';
 import { v4 as uuid } from 'uuid';
 import { NotificationCategory } from '~/server/common/enums';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { reportAcceptedReward } from '~/server/rewards';
 import type { GetByIdInput } from '~/server/schema/base.schema';
 import type {
@@ -96,7 +96,7 @@ export const upsertCommentHandler = async ({
   ctx,
   input,
 }: {
-  ctx: DeepNonNullable<Context> & { ownerId: number; locked: boolean };
+  ctx: ProtectedContext & { ownerId: number; locked: boolean };
   input: CommentUpsertInput;
 }) => {
   try {
@@ -168,7 +168,7 @@ export const toggleHideCommentHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     await toggleHideComment({
@@ -186,7 +186,7 @@ export const deleteUserCommentHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const deleted = await deleteCommentById({ ...input });
@@ -309,7 +309,7 @@ export const setTosViolationHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { user, ip, fingerprint } = ctx;

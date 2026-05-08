@@ -29,7 +29,6 @@ export async function createOAuthTokenPair(
     data: {
       key: accessHash,
       name: `oauth:${clientId}`,
-      scope: [],
       tokenScope: scope,
       userId,
       type: 'Access',
@@ -47,7 +46,6 @@ export async function createOAuthTokenPair(
     data: {
       key: refreshHash,
       name: `oauth-refresh:${clientId}`,
-      scope: [],
       tokenScope: scope,
       userId,
       type: 'Refresh',

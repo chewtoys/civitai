@@ -1,5 +1,5 @@
 import { handleDenyTrainingData } from '~/server/controllers/training.controller';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { dbWrite } from '~/server/db/client';
 import { reviewConsumerStrikes } from '~/server/http/orchestrator/flagged-consumers';
 import type { CreateCsamReportSchema } from '~/server/schema/csam.schema';
@@ -14,7 +14,7 @@ export async function createCsamReportHandler({
   ctx,
 }: {
   input: CreateCsamReportSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   const { userId, imageIds = [], details, type } = input;
   const reportedById = ctx.user.id;

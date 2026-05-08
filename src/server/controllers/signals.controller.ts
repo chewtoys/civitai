@@ -1,8 +1,8 @@
 import { getTRPCErrorFromUnknown } from '@trpc/server';
-import type { Context } from '~/server/createContext';
+import type { ProtectedContext } from '~/server/createContext';
 import { getAccessToken } from '~/server/services/signals.service';
 
-export function getUserAccountHandler({ ctx }: { ctx: DeepNonNullable<Context> }) {
+export function getUserAccountHandler({ ctx }: { ctx: ProtectedContext }) {
   try {
     return getAccessToken({ id: ctx.user.id });
   } catch (error) {

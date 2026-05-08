@@ -6,7 +6,7 @@ import type {
   SupportedClubPostEntities,
   UpsertClubPostInput,
 } from '~/server/schema/club.schema';
-import type { Context } from '~/server/createContext';
+import type { Context, ProtectedContext } from '~/server/createContext';
 import { userWithCosmeticsSelect } from '~/server/selectors/user.selector';
 import { imageSelect } from '~/server/selectors/image.selector';
 import type { ImageMetaProps } from '~/server/schema/image.schema';
@@ -193,7 +193,7 @@ export async function upsertClubPostHandler({
   ctx,
 }: {
   input: UpsertClubPostInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     await upsertClubPost({
@@ -212,7 +212,7 @@ export async function deleteClubPostHandler({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) {
   try {
     await deleteClubPost({

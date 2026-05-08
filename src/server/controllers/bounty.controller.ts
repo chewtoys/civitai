@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import type { Context } from '../createContext';
+import type { Context, ProtectedContext } from '../createContext';
 import type { GetByIdInput } from '../schema/base.schema';
 import {
   addBenefactorUnitAmount,
@@ -331,7 +331,7 @@ export const createBountyHandler = async ({
   ctx,
 }: {
   input: CreateBountyInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -357,7 +357,7 @@ export const updateBountyHandler = async ({
   ctx,
 }: {
   input: UpdateBountyInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const updated = await updateBountyById({
@@ -381,7 +381,7 @@ export const upsertBountyHandler = async ({
   ctx,
 }: {
   input: UpsertBountyInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const bounty = await upsertBounty({
@@ -406,7 +406,7 @@ export const deleteBountyHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const deleted = await deleteBountyById({
@@ -431,7 +431,7 @@ export const addBenefactorUnitAmountHandler = async ({
   ctx,
 }: {
   input: AddBenefactorUnitAmountInputSchema;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId } = ctx.user;
@@ -461,7 +461,7 @@ export const refundBountyHandler = async ({
   ctx,
 }: {
   input: GetByIdInput;
-  ctx: DeepNonNullable<Context>;
+  ctx: ProtectedContext;
 }) => {
   try {
     const { id: userId, isModerator } = ctx.user;
