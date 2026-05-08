@@ -52,15 +52,15 @@ const LTXV2_DISTILLED_ID = 2600562;
 const LTXV23_DEV_ID = 2749908;
 const LTXV23_DISTILLED_ID = 2749948;
 
-/** Sulpher 2 model version IDs (LTXV23 ecosystem) */
-const SULPHER2_DEV_ID = 2921800;
-const SULPHER2_DISTILLED_ID = 2923808;
+/** Sulphur 2 model version IDs (LTXV23 ecosystem) */
+const SULPHUR2_DEV_ID = 2921800;
+const SULPHUR2_DISTILLED_ID = 2923808;
 
 /** Set of all distilled version IDs (across both ecosystems) */
 const DISTILLED_IDS = new Set<number>([
   LTXV2_DISTILLED_ID,
   LTXV23_DISTILLED_ID,
-  SULPHER2_DISTILLED_ID,
+  SULPHUR2_DISTILLED_ID,
 ]);
 
 /**
@@ -97,14 +97,14 @@ const ltxVersionOptions: VersionGroup = {
       },
     },
     {
-      label: 'Sulpher 2',
-      value: SULPHER2_DEV_ID,
+      label: 'Sulphur 2',
+      value: SULPHUR2_DEV_ID,
       baseModel: 'LTXV23',
       children: {
         label: 'Variant',
         options: [
-          { label: 'Dev', value: SULPHER2_DEV_ID, baseModel: 'LTXV23' },
-          { label: 'Distilled', value: SULPHER2_DISTILLED_ID, baseModel: 'LTXV23' },
+          { label: 'Dev', value: SULPHUR2_DEV_ID, baseModel: 'LTXV23' },
+          { label: 'Distilled', value: SULPHUR2_DISTILLED_ID, baseModel: 'LTXV23' },
         ],
       },
     },
