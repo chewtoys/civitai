@@ -309,7 +309,10 @@ export const ecosystemGraph = new DataGraph<
     },
     ['workflow', 'ecosystem', 'model']
   )
-  // Quantity node - image output only.
+  // Quantity node - shown for image output, plus the small set of video
+  // ecosystems that batch multiple outputs in a single job (currently LTXV23,
+  // which generates extra videos via Seed + slotIndex).
+  //
   // Step: draft=4, BOGO-enabled w/ enhancedCompatibility off=2, else=1.
   // The step=2 path is gated by the `enhancedCompatibilitySdcpp` feature flag and
   // limited to txt2img (matches the `enhancedCompatibility` toggle's visibility).
@@ -324,9 +327,10 @@ export const ecosystemGraph = new DataGraph<
         supportsSdcpp(ctx.ecosystem, modelId) &&
         ctx.enhancedCompatibility !== true;
       const step = isDraft ? 4 : bogoActive ? 2 : 1;
+      const supportsVideoQuantity = ctx.output === 'video' && ctx.ecosystem === 'LTXV23';
       return {
-        ...quantityNode({ step })(ctx, ext),
-        when: ctx.output === 'image',
+        ...quantityNode({ step, max: ext.limits.maxQuantity }),
+        when: ctx.output === 'image' || supportsVideoQuantity,
       };
     },
     ['workflow', 'output', 'ecosystem', 'model', 'enhancedCompatibility']

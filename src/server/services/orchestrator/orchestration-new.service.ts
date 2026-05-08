@@ -1375,6 +1375,9 @@ type StepWithOutput = WorkflowStep & {
   output?: {
     images?: ImageBlob[];
     video?: VideoBlob;
+    // Extra videos produced by engines that batch multiple outputs in a single
+    // job (e.g. LTX 2.3). Each slot uses Seed + slotIndex.
+    additionalVideos?: VideoBlob[] | null;
     blobs?: ImageBlob[];
     // For aceStepAudio: blob.type is 'audio' (audio-only) or 'video' (audio + cover image).
     blob?: ImageBlob | VideoBlob | AudioBlob;
@@ -1401,7 +1404,14 @@ function normalizeStepOutput(step: StepWithOutput): NormalizedBlobItem[] {
       return output.images?.map((img) => ({ ...img, type: 'image' as const })) ?? [];
     case 'imageUpscaler':
       return output.blob ? [{ ...(output.blob as ImageBlob), type: 'image' as const }] : [];
-    case 'videoGen':
+    case 'videoGen': {
+      // LTX 2.3 batches multiple videos in a single job — primary in `video`,
+      // remainder in `additionalVideos` (each slot uses Seed + slotIndex).
+      const primary = output.video ? [{ ...output.video, type: 'video' as const }] : [];
+      const additional =
+        output.additionalVideos?.map((v) => ({ ...v, type: 'video' as const })) ?? [];
+      return [...primary, ...additional];
+    }
     case 'videoUpscaler':
     case 'videoEnhancement':
     case 'videoInterpolation':

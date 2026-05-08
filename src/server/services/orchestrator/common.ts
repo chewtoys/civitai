@@ -783,7 +783,17 @@ function normalizeOutput(
     case 'imageGen':
     case 'textToImage':
       return step.output?.images?.map((image) => ({ ...image, type: 'image' }));
-    case 'videoGen':
+    case 'videoGen': {
+      // LTX 2.3 batches multiple videos in a single job — primary in `video`,
+      // remainder in `additionalVideos` (each slot uses Seed + slotIndex).
+      const primary = step.output?.video
+        ? [{ ...step.output.video, type: 'video' as const }]
+        : [];
+      const additional =
+        step.output?.additionalVideos?.map((v) => ({ ...v, type: 'video' as const })) ?? [];
+      const all = [...primary, ...additional];
+      return all.length > 0 ? all : undefined;
+    }
     case 'videoUpscaler':
     case 'videoEnhancement':
     case 'videoInterpolation':

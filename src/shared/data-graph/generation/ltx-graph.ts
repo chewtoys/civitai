@@ -327,6 +327,11 @@ const ltxv23SubGraph = new DataGraph<LTXVersionCtx, GenerationCtx>()
     defaultValue: true,
   });
 
+// `quantity` lives in ecosystem-graph (single source of truth so the two
+// definitions don't fight over the same key during evaluation). LTXV23 is
+// allow-listed there for video output — it batches multiple videos in a
+// single job using Seed + slotIndex.
+
 // =============================================================================
 // LTX Graph (parent)
 // =============================================================================
