@@ -128,7 +128,7 @@ import {
   showWarningNotification,
 } from '~/utils/notifications';
 import { abbreviateNumber } from '~/utils/number-helpers';
-import { getDisplayName, removeTags, slugit, splitUppercase } from '~/utils/string-helpers';
+import { getDisplayName, getModelUrl, removeTags, slugit, splitUppercase } from '~/utils/string-helpers';
 import { trpc } from '~/utils/trpc';
 import { isNumber } from '~/utils/type-guards';
 
@@ -585,9 +585,15 @@ export default function ModelDetailsV2({
     const hasSelected = publishedVersions.some((v) => v.id === selectedVersion?.id);
     if (!hasSelected) setSelectedVersion(queryVersion ?? publishedVersions[0] ?? null);
     if (selectedVersion && queryVersion !== selectedVersion) {
-      router.replace(`/models/${id}?modelVersionId=${selectedVersion.id}`, undefined, {
-        shallow: true,
-      });
+      router.replace(
+        getModelUrl({
+          modelId: id,
+          modelName: model?.name,
+          modelVersionId: selectedVersion.id,
+        }),
+        undefined,
+        { shallow: true }
+      );
     }
   }, [id, publishedVersions, selectedVersion, modelVersionId, loadingModel, router]);
 
