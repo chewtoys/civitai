@@ -23,6 +23,7 @@ import { updateUserById } from '~/server/services/user.service';
 import { moderatorProcedure, protectedProcedure, router } from '~/server/trpc';
 import { UserRestrictionStatus } from '~/shared/utils/prisma/enums';
 import { refreshSession } from '~/server/auth/session-invalidation';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const userRestrictionRouter = router({
   /**

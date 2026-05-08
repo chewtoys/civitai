@@ -14,15 +14,32 @@ import {
 } from '~/server/schema/model-file.schema';
 import { getRecentTrainingData } from '~/server/services/model-file.service';
 import { protectedProcedure, publicProcedure, router } from '~/server/trpc';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const modelFileRouter = router({
-  getByVersionId: publicProcedure.input(getByIdSchema).query(getFilesByVersionIdHandler),
-  create: protectedProcedure.input(modelFileCreateSchema).mutation(createFileHandler),
-  update: protectedProcedure.input(modelFileUpdateSchema).mutation(updateFileHandler),
-  upsert: protectedProcedure.input(modelFileUpsertSchema).mutation(upsertFileHandler),
-  delete: protectedProcedure.input(getByIdSchema).mutation(deleteFileHandler),
+  getByVersionId: publicProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
+    .input(getByIdSchema)
+    .query(getFilesByVersionIdHandler),
+  create: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
+    .input(modelFileCreateSchema)
+    .mutation(createFileHandler),
+  update: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
+    .input(modelFileUpdateSchema)
+    .mutation(updateFileHandler),
+  upsert: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsWrite })
+    .input(modelFileUpsertSchema)
+    .mutation(upsertFileHandler),
+  delete: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsDelete })
+    .input(getByIdSchema)
+    .mutation(deleteFileHandler),
   // deleteMany: protectedProcedure.input(deleteApiKeyInputSchema).mutation(deleteApiKeyHandler),
   getRecentTrainingData: protectedProcedure
+    .meta({ requiredScope: TokenScope.ModelsRead })
     .input(recentTrainingDataSchema)
     .query(({ input, ctx }) => getRecentTrainingData({ ...input, userId: ctx.user.id })),
 });

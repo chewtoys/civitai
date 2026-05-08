@@ -46,6 +46,7 @@ import {
   verifiedProcedure,
 } from '~/server/trpc';
 import { throwAuthorizationError } from '~/server/utils/errorHandling';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 import {
   getEntitiesCoverImageHandler,
   getImageContestCollectionDetailsHandler,
@@ -107,26 +108,38 @@ const isOwnerOrModerator = middleware(async ({ ctx, next, input = {} }) => {
 // TODO.cleanup - remove unused router methods
 export const imageRouter = router({
   ingestArticleImages: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(z.array(z.object({ imageId: z.number(), articleId: z.number() })))
     .mutation(({ input }) => ingestArticleCoverImages(input)),
   moderate: moderatorProcedure.input(imageModerationSchema).mutation(moderateImageHandler),
   delete: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaDelete })
     .input(getByIdSchema)
     .use(isOwnerOrModerator)
     .mutation(deleteImageHandler),
   setTosViolation: moderatorProcedure.input(setTosViolationSchema).mutation(setTosViolationHandler),
   getDetail: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getByIdSchema)
     .query(({ input }) => getImageDetail({ ...input })),
-  getInfinite: publicProcedure.input(getInfiniteImagesSchema).query(getInfiniteImagesHandler),
+  getInfinite: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getInfiniteImagesSchema)
+    .query(getInfiniteImagesHandler),
   getImagesForModelVersion: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getByIdSchema)
     .query(({ input }) => getImagesForModelVersionCache([input.id])),
   getImagesAsPostsInfinite: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getInfiniteImagesSchema)
     .query(getImagesAsPostsInfiniteHandler),
-  get: publicProcedure.input(getImageSchema).query(getImageHandler),
+  get: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(getImageSchema)
+    .query(getImageHandler),
   getResources: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getByIdSchema)
     .use(
       edgeCacheIt({
@@ -139,6 +152,7 @@ export const imageRouter = router({
     .mutation(({ input }) => removeImageResource(input)),
   rescan: moderatorProcedure.input(getByIdSchema).mutation(({ input }) => ingestImageById(input)),
   getEntitiesCoverImage: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getEntitiesCoverImage)
     .query(getEntitiesCoverImageHandler),
   getModeratorReviewQueue: moderatorProcedure
@@ -147,6 +161,7 @@ export const imageRouter = router({
   getModeratorReviewQueueCounts: moderatorProcedure.query(getImageModerationCounts),
   getModeratorPOITags: moderatorProcedure.query(() => getModeratorPOITags()),
   get404Images: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .use(edgeCacheIt({ ttl: CacheTTL.month }))
     .use(cacheIt({ ttl: CacheTTL.week }))
     .query(() => get404Images()),
@@ -154,6 +169,7 @@ export const imageRouter = router({
     .input(reportCsamImagesSchema)
     .mutation(({ input, ctx }) => reportCsamImages({ ...input, user: ctx.user, ip: ctx.ip })),
   updateImageNsfwLevel: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(updateImageNsfwLevelSchema)
     .mutation(handleUpdateImageNsfwLevel),
   getImageRatingRequests: moderatorProcedure
@@ -169,6 +185,7 @@ export const imageRouter = router({
     .input(downleveledReviewInput)
     .query(({ input, ctx }) => getDownleveledImages({ ...input, user: ctx.user })),
   getGenerationData: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getByIdSchema)
     // TODO: Add edgeCacheIt back after fixing the cache invalidation.
     // .use(
@@ -181,30 +198,37 @@ export const imageRouter = router({
 
   // #region [tools]
   addTools: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(addOrRemoveImageToolsSchema)
     .mutation(({ input, ctx }) => addImageTools({ ...input, user: ctx.user })),
   removeTools: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(addOrRemoveImageToolsSchema)
     .mutation(({ input, ctx }) => removeImageTools({ ...input, user: ctx.user })),
   updateTools: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(updateImageToolsSchema)
     .mutation(({ input, ctx }) => updateImageTools({ ...input, user: ctx.user })),
   // #endregion
 
   // #region [techniques]
   addTechniques: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(addOrRemoveImageTechniquesSchema)
     .mutation(({ input, ctx }) => addImageTechniques({ ...input, user: ctx.user })),
   removeTechniques: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(addOrRemoveImageTechniquesSchema)
     .mutation(({ input, ctx }) => removeImageTechniques({ ...input, user: ctx.user })),
   updateTechniques: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(updateImageTechniqueSchema)
     .mutation(({ input, ctx }) => updateImageTechniques({ ...input, user: ctx.user })),
   // #endregion
 
   // #region [collections]
   getContestCollectionDetails: publicProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getByIdSchema)
     .query(getImageContestCollectionDetailsHandler),
   // #endregion
@@ -219,20 +243,24 @@ export const imageRouter = router({
 
   // #region [thumbnail]
   setThumbnail: verifiedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(setVideoThumbnailSchema)
     .mutation(setVideoThumbnailController),
   // #endregion
 
   updateAccetableMinor: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(updateImageAcceptableMinorSchema)
     .mutation(updateImageAcceptableMinorHandler),
   getMyImages: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
     .input(getMyImagesInput)
     .query(({ input, ctx }) => getMyImages({ ...input, userId: ctx.user.id })),
   toggleImageFlag: moderatorProcedure
     .input(toggleImageFlagSchema)
     .mutation(({ input, ctx }) => toggleImageFlag({ ...input })),
   refreshImageResources: protectedProcedure
+    .meta({ requiredScope: TokenScope.MediaWrite })
     .input(getByIdSchema)
     .mutation(({ input }) => refreshImageResources(input.id)),
 });

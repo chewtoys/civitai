@@ -100,9 +100,7 @@ export type TagSource = "User" | "Rekognition" | "WD14" | "Computed" | "ImageHas
 
 export type PartnerPricingModel = "Duration" | "PerImage";
 
-export type ApiKeyType = "System" | "User";
-
-export type KeyScope = "Read" | "Write" | "Generate";
+export type ApiKeyType = "System" | "User" | "Access" | "Refresh";
 
 export type TagEngagementType = "Hide" | "Follow" | "Allow";
 
@@ -483,6 +481,8 @@ export interface User {
   saves?: SavedModel[];
   imports?: Import[];
   keys?: ApiKey[];
+  oauthClients?: OauthClient[];
+  oauthConsents?: OauthConsent[];
   links?: UserLink[];
   comments?: Comment[];
   commentReactions?: CommentReaction[];
@@ -1649,12 +1649,47 @@ export interface ApiKey {
   id: number;
   key: string;
   name: string;
-  scope: KeyScope[];
+  tokenScope: number;
   userId: number;
   user?: User;
   createdAt: Date;
   type: ApiKeyType;
   expiresAt: Date | null;
+  lastUsedAt: Date | null;
+  clientId: string | null;
+  client?: OauthClient | null;
+  buzzLimit: JsonValue | null;
+}
+
+export interface OauthClient {
+  id: string;
+  secret: string | null;
+  name: string;
+  description: string;
+  logoUrl: string | null;
+  redirectUris: string[];
+  grants: string[];
+  allowedScopes: number;
+  isConfidential: boolean;
+  userId: number;
+  user?: User;
+  isVerified: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  tokens?: ApiKey[];
+  consents?: OauthConsent[];
+}
+
+export interface OauthConsent {
+  id: number;
+  userId: number;
+  user?: User;
+  clientId: string;
+  client?: OauthClient;
+  scope: number;
+  buzzLimit: JsonValue | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface AdToken {

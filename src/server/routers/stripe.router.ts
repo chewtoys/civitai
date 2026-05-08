@@ -12,34 +12,43 @@ import {
 } from './../controllers/stripe.controller';
 import { publicProcedure, router, protectedProcedure } from '~/server/trpc';
 import * as Schema from '../schema/stripe.schema';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const stripeRouter = router({
   createCustomer: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(Schema.createCustomerSchema)
     .mutation(createCustomerHandler),
   createSubscriptionSession: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(Schema.createSubscribeSessionSchema)
     .mutation(createSubscriptionSessionHandler),
-  createManageSubscriptionSession: protectedProcedure.mutation(
-    createManageSubscriptionSessionHandler
-  ),
-  createCancelSubscriptionSession: protectedProcedure.mutation(
-    createCancelSubscriptionSessionHandler
-  ),
-  cancelSubscriptionWithFallback: protectedProcedure.mutation(
-    cancelSubscriptionWithFallbackHandler
-  ),
+  createManageSubscriptionSession: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .mutation(createManageSubscriptionSessionHandler),
+  createCancelSubscriptionSession: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .mutation(createCancelSubscriptionSessionHandler),
+  cancelSubscriptionWithFallback: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .mutation(cancelSubscriptionWithFallbackHandler),
   createDonateSession: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(Schema.createDonateSessionSchema)
     .mutation(createDonateSessionHandler),
-  getBuzzPackages: publicProcedure.query(getBuzzPackagesHandler),
+  getBuzzPackages: publicProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .query(getBuzzPackagesHandler),
   createBuzzSession: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(Schema.createBuzzSessionSchema)
     .mutation(createBuzzSessionHandler),
   getPaymentIntent: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(Schema.paymentIntentCreationSchema)
     .mutation(getPaymentIntentHandler),
   getSetupIntent: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(Schema.setupIntentCreateSchema)
     .query(getSetupIntentHandler),
 });

@@ -20,26 +20,41 @@ import {
 } from '~/server/schema/paddle.schema';
 import { getByIdStringSchema } from '~/server/schema/base.schema';
 import { refreshSubscription } from '../services/paddle.service';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export const paddleRouter = router({
   createBuzzPurchaseTransaction: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(transactionCreateSchema)
     .mutation(createBuzzPurchaseTransactionHandler),
   processCompleteBuzzTransaction: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(getByIdStringSchema)
     .mutation(processCompleteBuzzTransactionHandler),
   updateSubscription: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(updateSubscriptionInputSchema)
     .mutation(updateSubscriptionPlanHandler),
   // cancelSubscription: protectedProcedure.mutation(cancelSubscriptionHandler),
-  cancelSubscription: protectedProcedure.mutation(cancelEmailHandler),
+  cancelSubscription: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .mutation(cancelEmailHandler),
   purchaseBuzzWithSubscription: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
     .input(transactionWithSubscriptionCreateSchema)
     .mutation(purchaseBuzzWithSubscriptionHandler),
-  getManagementUrls: protectedProcedure.query(getManagementUrlsHandler),
-  getOrCreateCustomer: protectedProcedure.mutation(getOrCreateCustomerHandler),
-  refreshSubscription: protectedProcedure.mutation(refreshSubscriptionHandler),
-  hasSubscription: protectedProcedure.query(hasPaddleSubscriptionHandler),
+  getManagementUrls: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .query(getManagementUrlsHandler),
+  getOrCreateCustomer: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .mutation(getOrCreateCustomerHandler),
+  refreshSubscription: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .mutation(refreshSubscriptionHandler),
+  hasSubscription: protectedProcedure
+    .meta({ requiredScope: TokenScope.Full })
+    .query(hasPaddleSubscriptionHandler),
   getAdjustmentsInfinite: moderatorProcedure
     .input(getPaddleAdjustmentsSchema)
     .query(getAdjustmentsInfiniteHandler),

@@ -32,6 +32,7 @@ import {
 } from '~/server/services/orchestrator/comfy/comfy.utils';
 import * as z from 'zod';
 import { getGenerationEngines } from '~/server/services/generation/engines';
+import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 const ecosystemConfigInputSchema = z.object({
   modOnlyEcosystems: z.array(z.string()),
@@ -44,34 +45,42 @@ const ecosystemConfigInputSchema = z.object({
 });
 
 export const generationRouter = router({
-  getGenerationEngines: publicProcedure.query(() => getGenerationEngines()),
-  getWorkflowDefinitions: publicProcedure.query(({ ctx }) =>
-    getWorkflowDefinitions().then((res) =>
-      res
-        .filter((x) => {
-          if (x.status === 'disabled') return false;
-          if (x.status === 'mod-only' && !ctx.user?.isModerator) return false;
-          return true;
-        })
-        .map(({ template, ...rest }) => rest)
-    )
-  ),
+  getGenerationEngines: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .query(() => getGenerationEngines()),
+  getWorkflowDefinitions: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .query(({ ctx }) =>
+      getWorkflowDefinitions().then((res) =>
+        res
+          .filter((x) => {
+            if (x.status === 'disabled') return false;
+            if (x.status === 'mod-only' && !ctx.user?.isModerator) return false;
+            return true;
+          })
+          .map(({ template, ...rest }) => rest)
+      )
+    ),
   setWorkflowDefinition: moderatorProcedure
     .input(z.any())
     .mutation(({ input }) => setWorkflowDefinition(input.key, input)),
   getResources: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(getGenerationResourcesSchema)
     .query(({ ctx, input }) => getGenerationResources({ ...input, user: ctx.user })),
   getGenerationData: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(getGenerationDataSchema)
     .query(({ input, ctx }) =>
       getGenerationData({ query: input, user: ctx.user, sfwOnly: ctx.features.isGreen })
     ),
   checkResourcesCoverage: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(checkResourcesCoverageSchema)
     .use(edgeCacheIt({ ttl: CacheTTL.sm }))
     .query(({ input }) => checkResourcesCoverage(input)),
   getStatus: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .use(edgeCacheIt({ ttl: CacheTTL.xs, tags: () => ['generation-status'] }))
     .query(() => getGenerationStatus()),
   getStatusModerator: moderatorProcedure.query(() => getGenerationStatus()),
@@ -84,7 +93,9 @@ export const generationRouter = router({
     )
     .use(purgeOnSuccess(['generation-status']))
     .mutation(({ input }) => setGenerationStatus(input)),
-  getGenerationConfig: publicProcedure.query(({ ctx }) => getGenerationConfig(ctx.user ?? {})),
+  getGenerationConfig: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .query(({ ctx }) => getGenerationConfig(ctx.user ?? {})),
   getEcosystemConfig: moderatorProcedure.query(async () => {
     // Strip the per-user `hasTestingAccess` field — the moderator UI edits the
     // raw operator-set config that gets persisted to Redis.
@@ -94,20 +105,26 @@ export const generationRouter = router({
   setEcosystemConfig: moderatorProcedure
     .input(ecosystemConfigInputSchema)
     .mutation(({ input }) => setGenerationEcosystemConfig(input)),
-  getUnavailableResources: publicProcedure.query(() => getUnavailableResources()),
+  getUnavailableResources: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .query(() => getUnavailableResources()),
   toggleUnavailableResource: moderatorProcedure
     .input(getByIdSchema)
     .mutation(({ input, ctx }) =>
       toggleUnavailableResource({ ...input, isModerator: ctx.user.isModerator })
     ),
-  getResourceDataByIds: publicProcedure.input(getResourceDataByIdsSchema).query(({ input, ctx }) =>
-    getResourceData(input.ids, {
-      user: ctx.user,
-      withPreview: true,
-      sfwOnly: ctx.features.isGreen,
-    })
-  ),
+  getResourceDataByIds: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
+    .input(getResourceDataByIdsSchema)
+    .query(({ input, ctx }) =>
+      getResourceData(input.ids, {
+        user: ctx.user,
+        withPreview: true,
+        sfwOnly: ctx.features.isGreen,
+      })
+    ),
   resolveImageMeta: publicProcedure
+    .meta({ requiredScope: TokenScope.AIServicesRead })
     .input(resolveImageMetaSchema)
     .query(({ input, ctx }) =>
       resolveImageMeta({ input, user: ctx.user, sfwOnly: ctx.features.isGreen })
