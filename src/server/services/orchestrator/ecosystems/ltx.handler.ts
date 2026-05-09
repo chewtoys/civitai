@@ -29,6 +29,7 @@ import {
   ltxv23AspectRatiosByResolution,
   LTXV2_DISTILLED_ID,
   DISTILLED_IDS,
+  SULPHUR2_IDS,
 } from '~/shared/data-graph/generation/ltx-graph';
 import { defineHandler } from './handler-factory';
 import type { StepInput } from '.';
@@ -123,6 +124,12 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
       ltxv23AspectRatiosByResolution[resolution] ?? ltxv23AspectRatiosByResolution['720p'];
     const guidanceScale = distilled ? 1 : data.cfgScale;
     const stepCount = distilled ? 8 : data.steps;
+    // Sulphur 2 is a community LTXV23 fine-tune — pass its AIR through `diffusionModel`
+    // to override the transformer file while leaving CLIPs/VAEs/upscale-LoRA intact.
+    const diffusionModel =
+      data.model && SULPHUR2_IDS.has(data.model.id)
+        ? ctx.airs.getOrThrow(data.model.id)
+        : undefined;
 
     let videoStep: VideoGenStepTemplate;
     switch (data.workflow) {
@@ -142,6 +149,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             width,
             height,
             model,
+            diffusionModel,
             guidanceScale,
             steps: stepCount,
             duration: data.duration,
@@ -167,6 +175,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             width: 'video' in data ? data.video?.metadata?.width : undefined,
             height: 'video' in data ? data.video?.metadata?.height : undefined,
             model,
+            diffusionModel,
             guidanceScale,
             steps: stepCount,
             duration: data.duration,
@@ -193,6 +202,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             width: data.video?.metadata?.width,
             height: data.video?.metadata?.height,
             model,
+            diffusionModel,
             guidanceScale,
             steps: stepCount,
             sourceVideo: data.video?.url,
@@ -217,6 +227,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             width: data.aspectRatio?.width,
             height: data.aspectRatio?.height,
             model,
+            diffusionModel,
             guidanceScale,
             steps: stepCount,
             duration: data.duration,

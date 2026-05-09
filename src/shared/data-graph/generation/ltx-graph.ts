@@ -63,6 +63,9 @@ const DISTILLED_IDS = new Set<number>([
   SULPHUR2_DISTILLED_ID,
 ]);
 
+/** Set of Sulphur 2 version IDs — these route through LTXV23 with a diffusionModel AIR override */
+const SULPHUR2_IDS = new Set<number>([SULPHUR2_DEV_ID, SULPHUR2_DISTILLED_ID]);
+
 /**
  * Hierarchical version options for the model selector.
  * Top level: LTX version (2.0 / 2.3). Selecting a top-level option also
@@ -492,6 +495,8 @@ export {
   ltxVersionOptions,
   LTXV2_DISTILLED_ID,
   LTXV23_DISTILLED_ID,
+  SULPHUR2_DEV_ID,
   SULPHUR2_DISTILLED_ID,
   DISTILLED_IDS,
+  SULPHUR2_IDS,
 };
