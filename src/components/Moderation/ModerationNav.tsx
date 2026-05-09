@@ -15,6 +15,11 @@ export function ModerationNav() {
         { label: 'Strikes', href: '/moderator/strikes', hidden: !features.strikes },
         { label: 'Images', href: '/moderator/images' },
         { label: 'Image Tags', href: '/moderator/image-tags' },
+        {
+          label: 'Comics Review',
+          href: '/moderator/comics-review',
+          hidden: !features.comicCreator,
+        },
         { label: 'Models', href: '/moderator/models' },
         {
           label: 'Training Models',

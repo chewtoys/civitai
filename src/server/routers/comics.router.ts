@@ -4997,6 +4997,114 @@ export const comicsRouter = router({
       return { success: true };
     }),
 
+  // ──── Moderation tools ────
+  //
+  // Surface comic panels whose Image is flagged for review or already
+  // marked as a TOS violation. Lets the mod team find and action comic-
+  // specific content without having to wade through the global image
+  // review queue. Approve / block actions flow through the existing
+  // `image.moderate` mutation, so any decision made here also clears
+  // the parent comic project from the moderation gates that hide it
+  // from public surfaces.
+  getModReviewQueue: comicModeratorProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(
+      z.object({
+        limit: z.number().int().min(1).max(50).default(20),
+        cursor: z.number().int().optional(),
+        // Filter by a specific `needsReview` reason (`minor`, `poi`,
+        // `newUser`, `bestiality`, `appeal`, …). Omit to see every
+        // panel awaiting any kind of review.
+        needsReview: z.string().optional(),
+        // When true, also include panels whose Image was already marked
+        // `tosViolation` even though `needsReview` may be null. Useful
+        // for double-checking moderator actions or finding leftovers
+        // after a TOS sweep.
+        includeTosViolations: z.boolean().default(true),
+      })
+    )
+    .query(async ({ input }) => {
+      const { limit, cursor, needsReview, includeTosViolations } = input;
+
+      // Build the Image-level filter. Either `needsReview` is set, or
+      // the panel's Image is TOS-violated. Both keep the panel out of
+      // the public listing, so both belong in the mod queue.
+      const imageFilters: any[] = [];
+      if (needsReview) {
+        imageFilters.push({ needsReview });
+      } else {
+        imageFilters.push({ needsReview: { not: null } });
+      }
+      if (includeTosViolations) {
+        imageFilters.push({ tosViolation: true });
+      }
+
+      const panels = await dbRead.comicPanel.findMany({
+        where: {
+          imageId: { not: null },
+          image: { OR: imageFilters },
+        },
+        take: limit + 1,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        orderBy: { id: 'desc' },
+        select: {
+          id: true,
+          position: true,
+          chapterPosition: true,
+          projectId: true,
+          prompt: true,
+          imageUrl: true,
+          createdAt: true,
+          image: {
+            select: {
+              id: true,
+              url: true,
+              nsfwLevel: true,
+              needsReview: true,
+              tosViolation: true,
+              ingestion: true,
+              blockedFor: true,
+              width: true,
+              height: true,
+              hash: true,
+              type: true,
+            },
+          },
+          chapter: {
+            select: {
+              name: true,
+              status: true,
+              position: true,
+              project: {
+                select: {
+                  id: true,
+                  name: true,
+                  status: true,
+                  tosViolation: true,
+                  user: {
+                    select: {
+                      id: true,
+                      username: true,
+                      image: true,
+                      deletedAt: true,
+                      bannedAt: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      let nextCursor: number | undefined;
+      if (panels.length > limit) {
+        nextCursor = panels.pop()!.id;
+      }
+
+      return { items: panels, nextCursor };
+    }),
+
   moderatorUnpublishChapter: comicModeratorProcedure
     .meta({ requiredScope: TokenScope.Full })
     .input(
