@@ -5,6 +5,12 @@ export type GenerationCtx = {
   limits: {
     maxQuantity: number;
     maxResources: number;
+    /**
+     * Tier-based per-request video quantity for ecosystems that batch multiple
+     * outputs in a single job (currently LTXV23). free=1, bronze=2, silver=3,
+     * founder/gold=4. See VID_QUANTITY_BY_TIER.
+     */
+    vidQuantity: number;
   };
   /** User information */
   user: {

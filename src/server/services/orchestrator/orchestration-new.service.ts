@@ -49,7 +49,7 @@ import { getOrchestratorCallbacks } from '~/server/orchestrator/orchestrator.uti
 import { BuzzTypes, type BuzzSpendType } from '~/shared/constants/buzz.constants';
 import { Availability } from '~/shared/utils/prisma/enums';
 import { isDefined } from '~/utils/type-guards';
-import { WORKFLOW_TAGS } from '~/shared/constants/generation.constants';
+import { WORKFLOW_TAGS, VID_QUANTITY_BY_TIER } from '~/shared/constants/generation.constants';
 import { includesPoi } from '~/utils/metadata/audit';
 import { ecosystemByKey } from '~/shared/constants/basemodel.constants';
 import { toStepMetadata } from '~/shared/utils/resource.utils';
@@ -224,6 +224,7 @@ export async function buildGenerationContext(
       limits: {
         maxQuantity: limits.quantity,
         maxResources: limits.resources,
+        vidQuantity: VID_QUANTITY_BY_TIER[userTier] ?? 1,
       },
       user: {
         isMember: userTier !== 'free',

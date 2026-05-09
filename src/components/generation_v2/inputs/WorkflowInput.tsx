@@ -538,29 +538,26 @@ export function WorkflowInput({
     );
   }
 
-  // Desktop: use Popover with hover
-  const handleImageMouseEnter = () => {
-    if (!disabled) {
-      closeVideo();
-      closeAudio();
-      openImage();
-    }
+  // Desktop: use Popover with click-to-open
+  const handleImageClick = () => {
+    if (disabled) return;
+    closeVideo();
+    closeAudio();
+    imageOpened ? closeImage() : openImage();
   };
 
-  const handleVideoMouseEnter = () => {
-    if (!disabled) {
-      closeImage();
-      closeAudio();
-      openVideo();
-    }
+  const handleVideoClick = () => {
+    if (disabled) return;
+    closeImage();
+    closeAudio();
+    videoOpened ? closeVideo() : openVideo();
   };
 
-  const handleAudioMouseEnter = () => {
-    if (!disabled) {
-      closeImage();
-      closeVideo();
-      openAudio();
-    }
+  const handleAudioClick = () => {
+    if (disabled) return;
+    closeImage();
+    closeVideo();
+    audioOpened ? closeAudio() : openAudio();
   };
 
   const hasSecondSegment = hasVideoWorkflows;
@@ -583,17 +580,10 @@ export function WorkflowInput({
             isActive={isImageWorkflow ?? false}
             hasDivider={false}
             disabled={disabled}
-            onClick={() => undefined}
-            onMouseEnter={handleImageMouseEnter}
-            onMouseLeave={closeImage}
+            onClick={handleImageClick}
           />
         </Popover.Target>
-        <Popover.Dropdown
-          p="xs"
-          onMouseEnter={openImage}
-          onMouseLeave={closeImage}
-          className="before:absolute before:-top-2 before:left-0 before:h-2 before:w-full"
-        >
+        <Popover.Dropdown p="xs">
           <WorkflowListContent
             categories={imageCategories}
             selectedValue={selected?.workflow.id}
@@ -620,17 +610,10 @@ export function WorkflowInput({
               isActive={isVideoWorkflow ?? false}
               hasDivider
               disabled={disabled}
-              onClick={() => undefined}
-              onMouseEnter={handleVideoMouseEnter}
-              onMouseLeave={closeVideo}
+              onClick={handleVideoClick}
             />
           </Popover.Target>
-          <Popover.Dropdown
-            p="xs"
-            onMouseEnter={openVideo}
-            onMouseLeave={closeVideo}
-            className="before:absolute before:-top-2 before:left-0 before:h-2 before:w-full"
-          >
+          <Popover.Dropdown p="xs">
             <WorkflowListContent
               categories={videoCategories}
               selectedValue={selected?.workflow.id}
@@ -658,17 +641,10 @@ export function WorkflowInput({
               isActive={isAudioWorkflow ?? false}
               hasDivider
               disabled={disabled}
-              onClick={() => undefined}
-              onMouseEnter={handleAudioMouseEnter}
-              onMouseLeave={closeAudio}
+              onClick={handleAudioClick}
             />
           </Popover.Target>
-          <Popover.Dropdown
-            p="xs"
-            onMouseEnter={openAudio}
-            onMouseLeave={closeAudio}
-            className="before:absolute before:-top-2 before:left-0 before:h-2 before:w-full"
-          >
+          <Popover.Dropdown p="xs">
             <WorkflowListContent
               categories={audioCategories}
               selectedValue={selected?.workflow.id}

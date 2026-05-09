@@ -328,8 +328,12 @@ export const ecosystemGraph = new DataGraph<
         ctx.enhancedCompatibility !== true;
       const step = isDraft ? 4 : bogoActive ? 2 : 1;
       const supportsVideoQuantity = ctx.output === 'video' && ctx.ecosystem === 'LTXV23';
+      // LTXV23 uses tier-gated vidQuantity (free=1, bronze=2, silver=3, gold=4)
+      // so the upsell popover can fire when non-gold users try to bump past
+      // their cap. Other ecosystems keep the standard maxQuantity.
+      const max = ctx.ecosystem === 'LTXV23' ? ext.limits.vidQuantity : ext.limits.maxQuantity;
       return {
-        ...quantityNode({ step, max: ext.limits.maxQuantity }),
+        ...quantityNode({ step, max }),
         when: ctx.output === 'image' || supportsVideoQuantity,
       };
     },

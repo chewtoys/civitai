@@ -7,10 +7,7 @@ import {
   IconClockHour9,
   IconWifiOff,
   IconSettings,
-  IconToggleLeft,
-  IconToggleRight,
 } from '@tabler/icons-react';
-import { useLocalStorage } from '@mantine/hooks';
 import { Feed } from './Feed';
 import { Queue } from './Queue';
 import { generationGraphPanel } from '~/store/generation-graph.store';
@@ -22,8 +19,6 @@ import { GeneratedImageActions } from '~/components/ImageGeneration/GeneratedIma
 import { SignalStatusNotification } from '~/components/Signals/SignalsProvider';
 import { ScrollArea } from '~/components/ScrollArea/ScrollArea';
 import { GenerationFormV2 } from '~/components/generation_v2';
-import { GenerationFormLegacy } from '~/components/ImageGeneration/GenerationForm/GenerationFormLegacy';
-import { GeneratorToggleBanner } from '~/components/ImageGeneration/GeneratorToggle';
 import { ChallengeIndicator } from '~/components/Challenges/ChallengeIndicator';
 import { PresetHeaderButton } from '~/components/generation_v2/preset/PresetHeaderButton';
 import { useIsClient } from '~/providers/IsClientProvider';
@@ -32,7 +27,6 @@ import { LegacyActionIcon } from '~/components/LegacyActionIcon/LegacyActionIcon
 import { useGenerationPanelStore } from '~/store/generation-panel.store';
 import { getAllEcosystemVersionIdsForPrefetch } from '~/components/generation_v2/GenerationFormProvider';
 import { ResourceDataProvider } from '~/components/generation_v2/inputs/ResourceDataProvider';
-import { useLegacyGeneratorStore } from '~/store/legacy-generator.store';
 import { HelpButton } from '~/components/HelpButton/HelpButton';
 import { useTourContext } from '~/components/Tours/ToursProvider';
 import { useRemixStore } from '~/store/remix.store';
@@ -56,26 +50,18 @@ function GenerationTabsContent({ fullScreen }: { fullScreen?: boolean }) {
   const router = useRouter();
   const currentUser = useCurrentUser();
   const features = useFeatureFlags();
-  const useLegacy = useLegacyGeneratorStore((state) => state.useLegacy);
-  const hasExplicitPreference = useLegacyGeneratorStore((state) => state.hasExplicitPreference);
-  const toggleGenerator = useLegacyGeneratorStore((state) => state.toggle);
   const { runTour } = useTourContext();
   const remixOfId = useRemixStore((state) => state.data?.remixOfId);
-  const [bannerDismissed] = useLocalStorage({
-    key: 'dismiss-generator-toggle-banner',
-  });
 
   const isGeneratePage = router.pathname.startsWith('/generate');
   const isImageFeedSeparate = isGeneratePage && !fullScreen;
 
   const view = useGenerationPanelStore((state) => state.view);
-  const showToggle = hasExplicitPreference || bannerDismissed || bannerDismissed === undefined; // Show if dismissed or no value set (new user)
   useEffect(() => {
     if (isImageFeedSeparate && view === 'generate') generationGraphPanel.setView('queue');
   }, [isImageFeedSeparate, view]);
 
-  // Select the appropriate form based on user preference
-  const GenerationFormComponent = useLegacy ? GenerationFormLegacy : GenerationFormV2;
+  const GenerationFormComponent = GenerationFormV2;
 
   const tabs = useMemo<Tabs>(
     () => ({
@@ -168,15 +154,6 @@ function GenerationTabsContent({ fullScreen }: { fullScreen?: boolean }) {
             />
           )}
           <div className="flex flex-1 justify-end">
-            {showToggle && (
-              <Tooltip
-                label={useLegacy ? 'Switch to new generator' : 'Switch to classic generator'}
-              >
-                <LegacyActionIcon size="lg" onClick={toggleGenerator} variant="transparent">
-                  {useLegacy ? <IconToggleLeft size={20} /> : <IconToggleRight size={20} />}
-                </LegacyActionIcon>
-              </Tooltip>
-            )}
             {currentUser?.isModerator && (
               <Tooltip label="Generation config (mods)">
                 <LegacyActionIcon
@@ -208,7 +185,6 @@ function GenerationTabsContent({ fullScreen }: { fullScreen?: boolean }) {
         </div>
         {view !== 'generate' && !isGeneratePage && <GeneratedImageActions />}
       </div>
-      <GeneratorToggleBanner />
       <View />
     </>
   );

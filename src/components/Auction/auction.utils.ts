@@ -27,7 +27,7 @@ export const getModelTypesForAuction = (ab: GetAuctionBySlugReturn['auctionBase'
   if (!ab) return [] as ResourceOptions;
 
   if (ab.ecosystem === null) {
-    // For featured-checkpoints, allow all active base models except Qwen
+    // For featured-checkpoints, allow active base models whose ecosystem supports auction
     const allowedBaseModels = activeBaseModels.filter((baseModel) =>
       getCanAuctionForGeneration(baseModel)
     ) as BaseModel[];

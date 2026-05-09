@@ -856,10 +856,12 @@ export const ecosystemSupport: EcosystemSupport[] = [
   // ZImageTurbo - checkpoint and LORA
   { ecosystemId: ECO.ZImageTurbo, supportType: 'generation', modelTypes: checkpointAndLora },
   { ecosystemId: ECO.ZImageTurbo, supportType: 'training', modelTypes: [ModelType.LORA] },
+  { ecosystemId: ECO.ZImageTurbo, supportType: 'auction', modelTypes: checkpointAndLora },
 
   // ZImageBase - checkpoint and LORA
   { ecosystemId: ECO.ZImageBase, supportType: 'generation', modelTypes: checkpointAndLora },
   { ecosystemId: ECO.ZImageBase, supportType: 'training', modelTypes: [ModelType.LORA] },
+  { ecosystemId: ECO.ZImageBase, supportType: 'auction', modelTypes: checkpointAndLora },
 
   // LTXV - checkpoint only (parent ecosystem)
   { ecosystemId: ECO.LTXV, supportType: 'generation', modelTypes: checkpointOnly },
@@ -4264,6 +4266,6 @@ export function getCanAuctionForGeneration(baseModel?: string): boolean {
   if (!ecosystem) return false;
 
   // Ecosystems that don't support auction
-  const noAuctionEcosystems = ['Qwen', 'ZImageTurbo', 'ZImageBase', 'Other'];
+  const noAuctionEcosystems = ['Qwen', 'Other'];
   return !noAuctionEcosystems.includes(ecosystem.key);
 }

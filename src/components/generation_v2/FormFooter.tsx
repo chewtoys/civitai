@@ -18,6 +18,7 @@ import {
   Menu,
   Notification,
   NumberInput,
+  Popover,
   Text,
   Tooltip,
 } from '@mantine/core';
@@ -27,6 +28,7 @@ import {
   IconArrowsShuffle,
   IconCheck,
   IconChevronDown,
+  IconChevronUp,
   IconDots,
   IconRestore,
   IconX,
@@ -47,7 +49,7 @@ import { useTourContext } from '~/components/Tours/ToursProvider';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { useBrowsingSettingsAddons } from '~/providers/BrowsingSettingsAddonsProvider';
-import { Controller, useGraph, MultiController } from '~/libs/data-graph/react';
+import { Controller, useGraph, useGraphValues, MultiController } from '~/libs/data-graph/react';
 import type { GenerationGraphTypes } from '~/shared/data-graph/generation';
 import type { BuzzSpendType } from '~/shared/constants/buzz.constants';
 import { buzzSpendTypes } from '~/shared/constants/buzz.constants';
@@ -73,6 +75,7 @@ import {
 } from '~/shared/data-graph/generation/config/workflows';
 import { ecosystemByKey } from '~/shared/constants/basemodel.constants';
 import {
+  LTXV23_MAX_QUANTITY,
   SDCPP_EXCLUDED_MODEL_IDS,
   SDCPP_SUPPORTED_ECOSYSTEMS,
 } from '~/shared/constants/generation.constants';
@@ -557,6 +560,221 @@ function CostBreakdown() {
 }
 
 // =============================================================================
+// QuantityField Component
+// =============================================================================
+
+/**
+ * Quantity input. The graph's quantity node sets `meta.max` to the user's
+ * tier-gated cap (`ext.limits.vidQuantity` for LTXV23, `maxQuantity` elsewhere).
+ *
+ * For LTXV23 non-gold users (tier cap below 4), the default Mantine controls
+ * are replaced with custom chevrons so the up-arrow stays interactive at the
+ * cap and opens a membership upsell popover instead of being silently
+ * disabled. Typing is unrestricted during input; on blur the value snaps to
+ * the closest valid number, and an attempt to exceed the cap also fires the
+ * popover.
+ */
+function QuantityField() {
+  const graph = useGraph<GenerationGraphTypes>();
+  const values = useGraphValues<GenerationGraphTypes>();
+  const ecosystem = (values as { ecosystem?: string }).ecosystem;
+  const isLtxv23 = ecosystem === 'LTXV23';
+
+  const [upsellOpened, setUpsellOpened] = useState(false);
+
+  return (
+    <Controller
+      graph={graph}
+      name="quantity"
+      render={({ value, meta, onChange }) => (
+        <QuantityFieldInner
+          value={value}
+          meta={meta}
+          onChange={onChange}
+          isLtxv23={isLtxv23}
+          upsellOpened={upsellOpened}
+          setUpsellOpened={setUpsellOpened}
+        />
+      )}
+    />
+  );
+}
+
+interface QuantityFieldInnerProps {
+  value: number | undefined;
+  meta: { min: number; max: number; step: number };
+  onChange: (next: number) => void;
+  isLtxv23: boolean;
+  upsellOpened: boolean;
+  setUpsellOpened: (open: boolean) => void;
+}
+
+function QuantityFieldInner({
+  value,
+  meta,
+  onChange,
+  isLtxv23,
+  upsellOpened,
+  setUpsellOpened,
+}: QuantityFieldInnerProps) {
+  const tierMax = meta.max;
+  const min = meta.min;
+  const step = meta.step ?? 1;
+  const showUpsell = isLtxv23 && tierMax < LTXV23_MAX_QUANTITY;
+
+  // Local input state — lets the user freely type any value (including
+  // out-of-range) without Mantine pre-clamping or the graph schema snapping
+  // mid-keystroke. We commit + snap on blur.
+  const [displayValue, setDisplayValue] = useState<number | string>(value ?? min);
+  useEffect(() => {
+    setDisplayValue(value ?? min);
+  }, [value, min]);
+
+  const snap = (n: number) => {
+    if (!Number.isFinite(n)) return min;
+    const stepped = Math.round((n - min) / step) * step + min;
+    return Math.max(min, Math.min(stepped, tierMax));
+  };
+
+  const commit = (next: number) => {
+    const snapped = snap(next);
+    if (snapped !== value) onChange(snapped);
+    setDisplayValue(snapped);
+    return snapped;
+  };
+
+  const handleChange = (val: number | string) => {
+    // Visual-only during typing/keyboard-arrow. Commit happens on blur.
+    setDisplayValue(val);
+  };
+
+  const handleBlur: React.FocusEventHandler<HTMLInputElement> = (e) => {
+    const raw = e.currentTarget.value;
+    if (raw === '' || !Number.isFinite(Number(raw))) {
+      commit(min);
+      return;
+    }
+    const parsed = Number(raw);
+    commit(parsed);
+    if (showUpsell && parsed > tierMax) setUpsellOpened(true);
+  };
+
+  const handleIncrement = () => {
+    const current = value ?? min;
+    if (showUpsell && current >= tierMax) {
+      setUpsellOpened(true);
+      return;
+    }
+    commit(current + step);
+  };
+
+  const handleDecrement = () => {
+    const current = value ?? min;
+    commit(current - step);
+  };
+
+  const card = (
+    <Card withBorder className="flex max-w-[68px] flex-col p-0">
+      <NumberInput
+        value={displayValue}
+        onChange={handleChange}
+        onBlur={handleBlur}
+        min={min}
+        max={tierMax}
+        step={step}
+        clampBehavior="none"
+        allowDecimal={false}
+        allowNegative={false}
+        hideControls={showUpsell}
+        rightSection={
+          showUpsell ? (
+            <div className="flex flex-col items-center justify-center pr-1">
+              <ActionIcon
+                variant="transparent"
+                size="xs"
+                color="gray"
+                onClick={handleIncrement}
+                aria-label="Increase quantity"
+                h={12}
+              >
+                <IconChevronUp size={12} />
+              </ActionIcon>
+              <ActionIcon
+                variant="transparent"
+                size="xs"
+                color="gray"
+                onClick={handleDecrement}
+                disabled={(value ?? min) <= min}
+                aria-label="Decrease quantity"
+                h={12}
+              >
+                <IconChevronDown size={12} />
+              </ActionIcon>
+            </div>
+          ) : undefined
+        }
+        size="md"
+        variant="unstyled"
+        styles={{
+          root: { flex: 1 },
+          wrapper: { height: '100%' },
+          input: {
+            textAlign: 'center',
+            fontWeight: 600,
+            paddingRight: 27,
+            lineHeight: 1,
+            paddingTop: 6,
+            paddingBottom: 16,
+            height: '100%',
+          },
+        }}
+      />
+      <Text
+        className="pr-6 text-center text-[10px] font-semibold"
+        c="dimmed"
+        style={{ marginTop: -16 }}
+      >
+        QTY
+      </Text>
+    </Card>
+  );
+
+  if (!showUpsell) return card;
+
+  return (
+    <Popover
+      opened={upsellOpened}
+      onChange={setUpsellOpened}
+      position="top-start"
+      withinPortal
+      shadow="md"
+      width={260}
+    >
+      <Popover.Target>{card}</Popover.Target>
+      <Popover.Dropdown p="sm">
+        <Text size="sm" fw={600} mb={4}>
+          Generate more per request
+        </Text>
+        <Text size="xs" c="dimmed" mb="sm">
+          Your current tier allows {tierMax} {tierMax === 1 ? 'video' : 'videos'} per request.
+          Upgrade your membership to generate up to {LTXV23_MAX_QUANTITY} at a time.
+        </Text>
+        <Button
+          component="a"
+          href="/pricing"
+          target="_blank"
+          rel="noreferrer nofollow"
+          size="compact-sm"
+          fullWidth
+        >
+          Upgrade membership
+        </Button>
+      </Popover.Dropdown>
+    </Popover>
+  );
+}
+
+// =============================================================================
 // FormFooter Component
 // =============================================================================
 
@@ -794,43 +1012,7 @@ export function FormFooter({ onSubmitSuccess }: { onSubmitSuccess?: () => void }
 
       {!membershipUpsell.needsAcknowledgment && (
         <div className="flex h-[52px] items-stretch gap-2">
-          <Controller
-            graph={graph}
-            name="quantity"
-            render={({ value, meta, onChange }) => (
-              <Card withBorder className="flex max-w-[68px] flex-col p-0">
-                <NumberInput
-                  value={value ?? 1}
-                  onChange={(val) => onChange(Number(val) || 1)}
-                  min={meta.min}
-                  max={meta.max}
-                  step={meta.step}
-                  size="md"
-                  variant="unstyled"
-                  styles={{
-                    root: { flex: 1 },
-                    wrapper: { height: '100%' },
-                    input: {
-                      textAlign: 'center',
-                      fontWeight: 600,
-                      paddingRight: 27,
-                      lineHeight: 1,
-                      paddingTop: 6,
-                      paddingBottom: 16,
-                      height: '100%',
-                    },
-                  }}
-                />
-                <Text
-                  className="pr-6 text-center text-[10px] font-semibold"
-                  c="dimmed"
-                  style={{ marginTop: -16 }}
-                >
-                  QTY
-                </Text>
-              </Card>
-            )}
-          />
+          <QuantityField />
           <Button.Group className="flex-1">
             <SubmitButton
               isLoading={generateMutation.isLoading || isMinLoading}

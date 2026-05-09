@@ -29,6 +29,7 @@ import {
   ecosystemGroups,
   getEcosystemGroup,
 } from '~/shared/constants/basemodel.constants';
+import { VID_QUANTITY_BY_TIER } from '~/shared/constants/generation.constants';
 import {
   workflowConfigByKey,
   isWorkflowAvailable,
@@ -234,6 +235,7 @@ function InnerProvider({
       limits: {
         maxQuantity: status.limits.quantity,
         maxResources: status.limits.resources,
+        vidQuantity: VID_QUANTITY_BY_TIER[status.tier] ?? 1,
       },
       user: {
         isMember: status.tier !== 'free' || isModerator,
