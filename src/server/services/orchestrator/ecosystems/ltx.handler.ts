@@ -28,7 +28,7 @@ import {
   ltxv2AspectRatios,
   ltxv23AspectRatiosByResolution,
   LTXV2_DISTILLED_ID,
-  LTXV23_DISTILLED_ID,
+  DISTILLED_IDS,
 } from '~/shared/data-graph/generation/ltx-graph';
 import { defineHandler } from './handler-factory';
 import type { StepInput } from '.';
@@ -116,7 +116,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
   }
 
   if (data.ltxVersion === 'v23') {
-    const distilled = data.model?.id === LTXV23_DISTILLED_ID;
+    const distilled = DISTILLED_IDS.has(data.model?.id ?? -1);
     const model = distilled ? '22b-distilled' : '22b-dev';
     const resolution = data.resolution ?? '720p';
     const aspectRatios =
