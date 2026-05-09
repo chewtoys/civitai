@@ -2,7 +2,6 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import type { SessionUser } from 'next-auth';
 
 import { AuthedEndpoint } from '~/server/utils/endpoint-helpers';
-import { TokenScope } from '~/shared/constants/token-scope.constants';
 
 export default AuthedEndpoint(async function handler(
   req: NextApiRequest,
@@ -25,8 +24,6 @@ export default AuthedEndpoint(async function handler(
     // `subject` carries the (type, id) pair the orchestrator buckets spend by.
     // For OAuth-issued tokens the id is the clientId (stable across refresh
     // rotations); for User-type keys it's the ApiKey row id.
-    ...(tokenScope !== undefined && tokenScope !== TokenScope.Full
-      ? { tokenScope, buzzLimit, subject }
-      : {}),
+    ...(subject !== null ? { tokenScope, buzzLimit, subject } : {}),
   });
 });
