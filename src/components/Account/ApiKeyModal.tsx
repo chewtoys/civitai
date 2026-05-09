@@ -17,6 +17,7 @@ import {
 } from '@mantine/core';
 import { IconCheck, IconClipboard } from '@tabler/icons-react';
 import type * as z from 'zod';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { Form, InputText, useForm } from '~/libs/form';
 import { addApiKeyInputSchema, simpleBuzzLimitToBudgets } from '~/server/schema/api-key.schema';
 import {
@@ -50,6 +51,7 @@ const periodOptions = [
 ];
 
 export function ApiKeyModal({ ...props }: Props) {
+  const { apiKeyBuzzLimit } = useFeatureFlags();
   const [tokenScope, setTokenScope] = useState<number>(TokenScope.Full);
   const [preset, setPreset] = useState<string | null>('Full');
   const [limitEnabled, setLimitEnabled] = useState(false);
@@ -241,41 +243,43 @@ export function ApiKeyModal({ ...props }: Props) {
                 </Table.Tbody>
               </Table>
             </Box>
-            <Box>
-              <Group justify="space-between" align="center" mb={4}>
-                <Text size="sm" fw={500}>
-                  Buzz spend limit
-                </Text>
-                <Switch
-                  size="sm"
-                  checked={limitEnabled}
-                  onChange={(e) => setLimitEnabled(e.currentTarget.checked)}
-                />
-              </Group>
-              <Text size="xs" c="dimmed" mb={limitEnabled ? 8 : 0}>
-                Caps how much buzz this key can spend on AI services in a rolling window. Leave off
-                for no limit.
-              </Text>
-              {limitEnabled && (
-                <Group grow>
-                  <NumberInput
-                    label="Limit"
-                    placeholder="Amount in buzz"
-                    min={1}
-                    value={limitAmount}
-                    onChange={(v) => setLimitAmount(typeof v === 'number' ? v : '')}
-                    thousandSeparator=","
-                  />
-                  <Select
-                    label="Window"
-                    data={periodOptions}
-                    value={limitPeriod}
-                    onChange={(v) => v && setLimitPeriod(v as 'day' | 'week' | 'month')}
-                    allowDeselect={false}
+            {apiKeyBuzzLimit && (
+              <Box>
+                <Group justify="space-between" align="center" mb={4}>
+                  <Text size="sm" fw={500}>
+                    Buzz spend limit
+                  </Text>
+                  <Switch
+                    size="sm"
+                    checked={limitEnabled}
+                    onChange={(e) => setLimitEnabled(e.currentTarget.checked)}
                   />
                 </Group>
-              )}
-            </Box>
+                <Text size="xs" c="dimmed" mb={limitEnabled ? 8 : 0}>
+                  Caps how much buzz this key can spend on AI services in a rolling window. Leave
+                  off for no limit.
+                </Text>
+                {limitEnabled && (
+                  <Group grow>
+                    <NumberInput
+                      label="Limit"
+                      placeholder="Amount in buzz"
+                      min={1}
+                      value={limitAmount}
+                      onChange={(v) => setLimitAmount(typeof v === 'number' ? v : '')}
+                      thousandSeparator=","
+                    />
+                    <Select
+                      label="Window"
+                      data={periodOptions}
+                      value={limitPeriod}
+                      onChange={(v) => v && setLimitPeriod(v as 'day' | 'week' | 'month')}
+                      allowDeselect={false}
+                    />
+                  </Group>
+                )}
+              </Box>
+            )}
             <Group justify="space-between">
               <Button variant="default" disabled={mutating} onClick={handleClose}>
                 Cancel

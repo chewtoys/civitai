@@ -50,6 +50,7 @@ const featureFlags = createFeatureFlags({
   canWrite: ['public'],
   earlyAccessModel: ['public'],
   apiKeys: ['public'],
+  apiKeyBuzzLimit: { availability: ['mod'], fliptKey: 'api-key-buzz-limit' },
   oauthApps: { availability: ['mod'], fliptKey: 'oauth-apps' },
   articles: ['public'],
   articleCreate: ['public'],

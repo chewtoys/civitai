@@ -28,6 +28,7 @@ import {
 import { formatDate } from '~/utils/date-helpers';
 import { ApiKeyModal } from '~/components/Account/ApiKeyModal';
 import { EditBuzzLimitModal } from '~/components/Account/EditBuzzLimitModal';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { LegacyActionIcon } from '~/components/LegacyActionIcon/LegacyActionIcon';
 import { getScopeLabel } from '~/shared/constants/token-scope.constants';
 import { abbreviateNumber } from '~/utils/number-helpers';
@@ -59,6 +60,7 @@ function getScopeBadgeColor(label: string): string {
 
 export function ApiKeysCard() {
   const utils = trpc.useUtils();
+  const { apiKeyBuzzLimit } = useFeatureFlags();
 
   const [opened, { toggle }] = useDisclosure(false);
   const [editLimitFor, setEditLimitFor] = useState<{
@@ -69,7 +71,7 @@ export function ApiKeysCard() {
 
   const { data: apiKeys = [], isLoading } = trpc.apiKey.getAllUserKeys.useQuery({});
   const { data: spendEntries = [] } = trpc.apiKey.getSpend.useQuery(undefined, {
-    enabled: apiKeys.some((k) => !!k.buzzLimit),
+    enabled: apiKeyBuzzLimit && apiKeys.some((k) => !!k.buzzLimit),
     staleTime: 30_000,
   });
 
@@ -172,55 +174,56 @@ export function ApiKeysCard() {
                             {apiKey.lastUsedAt ? formatDate(apiKey.lastUsedAt) : 'Never used'}
                           </Text>
                         </Group>
-                        {hasLimit && simpleLimit ? (
-                          (() => {
-                            const pct = Math.min(100, (spend / simpleLimit.limit) * 100);
-                            return (
-                              <UnstyledButton
-                                onClick={openLimitEditor}
-                                title="Edit spend limit"
-                                style={{ flex: 1, minWidth: 0 }}
-                              >
-                                <Group gap={4} wrap="nowrap">
-                                  <IconCoin size={12} color="var(--mantine-color-dimmed)" />
-                                  <Progress
-                                    value={pct}
-                                    size="sm"
-                                    color={pct > 90 ? 'red' : pct > 60 ? 'yellow' : 'blue'}
-                                    style={{ flex: 1, minWidth: 40 }}
-                                  />
-                                  <Text
-                                    size="xs"
-                                    c={pct > 90 ? 'red' : 'dimmed'}
-                                    style={{ whiteSpace: 'nowrap', textDecoration: 'underline' }}
-                                  >
-                                    {abbreviateNumber(spend)} /{' '}
-                                    {abbreviateNumber(simpleLimit.limit)} per{' '}
-                                    {periodLabels[simpleLimit.period]}
-                                  </Text>
-                                </Group>
-                              </UnstyledButton>
-                            );
-                          })()
-                        ) : hasLimit ? (
-                          <UnstyledButton onClick={openLimitEditor} title="Edit spend limit">
-                            <Group gap={4} wrap="nowrap">
-                              <IconCoin size={12} color="var(--mantine-color-dimmed)" />
-                              <Text size="xs" c="dimmed" style={{ textDecoration: 'underline' }}>
-                                Custom limit
-                              </Text>
-                            </Group>
-                          </UnstyledButton>
-                        ) : (
-                          <UnstyledButton onClick={openLimitEditor} title="Set a spend limit">
-                            <Group gap={4} wrap="nowrap">
-                              <IconCoinOff size={12} color="var(--mantine-color-dimmed)" />
-                              <Text size="xs" c="dimmed" style={{ textDecoration: 'underline' }}>
-                                No limit
-                              </Text>
-                            </Group>
-                          </UnstyledButton>
-                        )}
+                        {apiKeyBuzzLimit &&
+                          (hasLimit && simpleLimit ? (
+                            (() => {
+                              const pct = Math.min(100, (spend / simpleLimit.limit) * 100);
+                              return (
+                                <UnstyledButton
+                                  onClick={openLimitEditor}
+                                  title="Edit spend limit"
+                                  style={{ flex: 1, minWidth: 0 }}
+                                >
+                                  <Group gap={4} wrap="nowrap">
+                                    <IconCoin size={12} color="var(--mantine-color-dimmed)" />
+                                    <Progress
+                                      value={pct}
+                                      size="sm"
+                                      color={pct > 90 ? 'red' : pct > 60 ? 'yellow' : 'blue'}
+                                      style={{ flex: 1, minWidth: 40 }}
+                                    />
+                                    <Text
+                                      size="xs"
+                                      c={pct > 90 ? 'red' : 'dimmed'}
+                                      style={{ whiteSpace: 'nowrap', textDecoration: 'underline' }}
+                                    >
+                                      {abbreviateNumber(spend)} /{' '}
+                                      {abbreviateNumber(simpleLimit.limit)} per{' '}
+                                      {periodLabels[simpleLimit.period]}
+                                    </Text>
+                                  </Group>
+                                </UnstyledButton>
+                              );
+                            })()
+                          ) : hasLimit ? (
+                            <UnstyledButton onClick={openLimitEditor} title="Edit spend limit">
+                              <Group gap={4} wrap="nowrap">
+                                <IconCoin size={12} color="var(--mantine-color-dimmed)" />
+                                <Text size="xs" c="dimmed" style={{ textDecoration: 'underline' }}>
+                                  Custom limit
+                                </Text>
+                              </Group>
+                            </UnstyledButton>
+                          ) : (
+                            <UnstyledButton onClick={openLimitEditor} title="Set a spend limit">
+                              <Group gap={4} wrap="nowrap">
+                                <IconCoinOff size={12} color="var(--mantine-color-dimmed)" />
+                                <Text size="xs" c="dimmed" style={{ textDecoration: 'underline' }}>
+                                  No limit
+                                </Text>
+                              </Group>
+                            </UnstyledButton>
+                          ))}
                       </Group>
                     </Stack>
                   </Paper>
@@ -242,7 +245,7 @@ export function ApiKeysCard() {
         </Box>
       </Card>
       <ApiKeyModal title="Create API Key" opened={opened} onClose={toggle} />
-      {editLimitFor && (
+      {apiKeyBuzzLimit && editLimitFor && (
         <EditBuzzLimitModal
           opened={!!editLimitFor}
           onClose={() => setEditLimitFor(null)}
