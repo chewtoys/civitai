@@ -2210,7 +2210,9 @@ export const mergeVersions = async ({
         where: { modelVersionId: { in: sourceVersionIds } },
       });
 
-      // 5. Re-point ModelVersionEngagement — delete conflicts first, then move
+      // 5. Re-point ModelVersionEngagement — PK (userId, modelVersionId).
+      // Drop sources where target already has the user, then dedupe across
+      // sources (keep highest modelVersionId per user), then move.
       await tx.$executeRaw`
         DELETE FROM "ModelVersionEngagement"
         WHERE "modelVersionId" IN (${Prisma.join(sourceVersionIds)})
@@ -2218,6 +2220,14 @@ export const mergeVersions = async ({
             SELECT "userId" FROM "ModelVersionEngagement"
             WHERE "modelVersionId" = ${targetVersionId}
           )
+      `;
+      await tx.$executeRaw`
+        DELETE FROM "ModelVersionEngagement" a
+        USING "ModelVersionEngagement" b
+        WHERE a."modelVersionId" IN (${Prisma.join(sourceVersionIds)})
+          AND b."modelVersionId" IN (${Prisma.join(sourceVersionIds)})
+          AND a."userId" = b."userId"
+          AND a."modelVersionId" < b."modelVersionId"
       `;
       await tx.modelVersionEngagement.updateMany({
         where: { modelVersionId: { in: sourceVersionIds } },
@@ -2236,7 +2246,9 @@ export const mergeVersions = async ({
         data: { modelVersionId: targetVersionId },
       });
 
-      // 8. Re-point ImageResourceNew — delete conflicts first
+      // 8. Re-point ImageResourceNew — PK (imageId, modelVersionId).
+      // Drop sources where target already has the image, then dedupe across
+      // sources (keep highest modelVersionId per image), then move.
       await tx.$executeRaw`
         DELETE FROM "ImageResourceNew"
         WHERE "modelVersionId" IN (${Prisma.join(sourceVersionIds)})
@@ -2245,12 +2257,39 @@ export const mergeVersions = async ({
             WHERE "modelVersionId" = ${targetVersionId}
           )
       `;
+      await tx.$executeRaw`
+        DELETE FROM "ImageResourceNew" a
+        USING "ImageResourceNew" b
+        WHERE a."modelVersionId" IN (${Prisma.join(sourceVersionIds)})
+          AND b."modelVersionId" IN (${Prisma.join(sourceVersionIds)})
+          AND a."imageId" = b."imageId"
+          AND a."modelVersionId" < b."modelVersionId"
+      `;
       await tx.imageResourceNew.updateMany({
         where: { modelVersionId: { in: sourceVersionIds } },
         data: { modelVersionId: targetVersionId },
       });
 
-      // 9. Re-point ResourceReview
+      // 9. Re-point ResourceReview — unique on (modelVersionId, userId).
+      // Drop sources where target already has the user, then dedupe across
+      // sources (keep highest id per user), then move. Cascade drops
+      // reactions/reports/helper for deleted reviews.
+      await tx.$executeRaw`
+        DELETE FROM "ResourceReview"
+        WHERE "modelVersionId" IN (${Prisma.join(sourceVersionIds)})
+          AND "userId" IN (
+            SELECT "userId" FROM "ResourceReview"
+            WHERE "modelVersionId" = ${targetVersionId}
+          )
+      `;
+      await tx.$executeRaw`
+        DELETE FROM "ResourceReview" a
+        USING "ResourceReview" b
+        WHERE a."modelVersionId" IN (${Prisma.join(sourceVersionIds)})
+          AND b."modelVersionId" IN (${Prisma.join(sourceVersionIds)})
+          AND a."userId" = b."userId"
+          AND a.id < b.id
+      `;
       await tx.resourceReview.updateMany({
         where: { modelVersionId: { in: sourceVersionIds } },
         data: { modelVersionId: targetVersionId },
