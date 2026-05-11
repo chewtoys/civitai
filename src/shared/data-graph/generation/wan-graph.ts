@@ -28,6 +28,7 @@ import {
   negativePromptGraph,
   negativePromptNode,
   promptGraph,
+  snippetsGraph,
   triggerWordsGraph,
   aspectRatioNode,
   sliderNode,
@@ -240,6 +241,7 @@ const wan21Graph = new DataGraph<WanVersionCtx, GenerationCtx>()
   .merge(createResourcesGraph())
   // Prompt + triggerWords — wan2.1 has no negativePrompt
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   // Effect: Sync I2V ecosystem based on resolution when in img2vid mode.
   // T2V switching is handled by the parent wanGraph effect.
@@ -270,6 +272,7 @@ const wan21Graph = new DataGraph<WanVersionCtx, GenerationCtx>()
  */
 const wan22Graph = new DataGraph<WanVersionCtx, GenerationCtx>()
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .merge(negativePromptGraph)
   .node('resolution', {
@@ -346,6 +349,7 @@ const wan225bGraph = new DataGraph<WanVersionCtx, GenerationCtx>()
     ['images']
   )
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .merge(negativePromptGraph)
   .node('resolution', {
@@ -377,6 +381,7 @@ const wan225bGraph = new DataGraph<WanVersionCtx, GenerationCtx>()
  */
 const wan25Graph = new DataGraph<WanVersionCtx, GenerationCtx>()
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .merge(negativePromptGraph)
   .node('resolution', {
@@ -442,6 +447,7 @@ const wan27Graph = new DataGraph<WanVersionCtx, GenerationCtx>()
   // Prompt + triggerWords + negativePrompt (negativePrompt supported on txt2vid,
   // img2vid, ref2vid — not on edit-video, hence the conditional `when`)
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .node(
     'negativePrompt',

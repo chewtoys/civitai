@@ -22,6 +22,7 @@ import {
   imagesNode,
   createCheckpointGraph,
   promptGraph,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 import {
@@ -114,6 +115,7 @@ export const soraGraph = new DataGraph<SoraCtx, GenerationCtx>()
 
   // Prompt + triggerWords (no negativePrompt for Sora)
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export constants for use in components

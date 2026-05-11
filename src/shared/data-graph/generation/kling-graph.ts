@@ -47,6 +47,7 @@ import {
   createTextEditorGraph,
   negativePromptGraph,
   promptGraph,
+  snippetsGraph,
   triggerWordsGraph,
   aspectRatioNode,
   sliderNode,
@@ -178,6 +179,7 @@ const klingLegacyGraph = new DataGraph<KlingVersionCtx, GenerationCtx>()
 
   // Prompt + triggerWords + negativePrompt — standard rule (required when no images)
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .merge(negativePromptGraph)
 
@@ -368,6 +370,7 @@ const klingV3Graph = new DataGraph<KlingVersionCtx, GenerationCtx>()
   // Prompt + triggerWords — V3 prompt is always required (V3 is text-driven even
   // in img2vid; the start image guides motion, not subject).
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(createTextEditorGraph({ name: 'prompt', required: true }));
 
 // TODO: Add keepAudio node when vid2vid workflows are available

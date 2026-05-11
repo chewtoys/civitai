@@ -15,6 +15,7 @@ import {
   imagesNode,
   negativePromptGraph,
   promptGraph,
+  snippetsGraph,
   samplerNode,
   seedNode,
   sliderNode,
@@ -78,6 +79,7 @@ export const stableDiffusionGraph = new DataGraph<
     ['ecosystem', 'images']
   )
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .merge(negativePromptGraph)
   .node('sampler', samplerNode())

@@ -26,6 +26,7 @@ import {
   schedulerNode,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
@@ -173,6 +174,7 @@ export const flux2KleinGraph = new DataGraph<
   ])
   // Prompt + triggerWords are common to all flux2Klein variants.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export mode options for use in components

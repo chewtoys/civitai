@@ -22,6 +22,7 @@ import {
   promptGraph,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 
@@ -99,6 +100,7 @@ export const fluxKontextGraph = new DataGraph<
     []
   )
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .node('aspectRatio', aspectRatioNode({ options: fluxKontextAspectRatios, defaultValue: '1:1' }))
   .node('cfgScale', sliderNode({ min: 2, max: 20, defaultValue: 3.5, step: 0.5 }))

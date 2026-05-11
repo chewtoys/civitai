@@ -114,38 +114,96 @@ export function aspectRatioNode({
 }
 
 // =============================================================================
-// Prompt Node Builder
+// Text Node Builder
 // =============================================================================
 
 /**
- * Creates a prompt node.
- * No meta - all props (label, placeholder, etc.) are static.
+ * Single-source-of-truth shape for every text-editor node in the generation
+ * graph. Both the static helpers (`promptNode`, `negativePromptNode`) and the
+ * reactive factory (`createTextEditorGraph`) compose this — so every node
+ * keyed `prompt` / `negativePrompt` / `lyrics` / `musicDescription` exposes
+ * an identical `meta` shape regardless of which surface produced it.
+ *
+ * Keeping the shape uniform matters at the type level: `Controller`'s
+ * `CtxMeta['<key>']` is the union of metas across all discriminator
+ * branches. If two branches emit different meta shapes for the same key,
+ * TypeScript collapses safe access down to the common subset — which is
+ * how `meta.snippets` previously came back as `{}` on wan's negativePrompt
+ * but worked on every other ecosystem.
+ *
+ * The `snippets` / `triggerWords` fields are overlays — callers pass them
+ * in when they have reactive data from ctx; the static helpers leave them
+ * as `undefined` / `[]`.
  */
-export function promptNode({ required }: { required?: boolean } = {}) {
-  let output = z.string().trim().max(MAX_PROMPT_LENGTH, 'Prompt is too long');
-  if (required) output = output.nonempty('Prompt is required');
+type TextNodeOptions<K extends string> = {
+  name: K;
+  maxLength?: number;
+  emptyMessage?: string;
+  required?: boolean;
+  placeholder?: string;
+  info?: string;
+  /** Reactive overlay — `undefined` means snippets feature not active. */
+  snippets?: SnippetReference[];
+  /** Reactive overlay — `[]` means no trigger words active. */
+  triggerWords?: string[];
+};
+
+export function textNode<const K extends string>(opts: TextNodeOptions<K>) {
+  const {
+    name,
+    maxLength = MAX_PROMPT_LENGTH,
+    emptyMessage,
+    required = false,
+    placeholder,
+    info,
+    snippets,
+    triggerWords = [],
+  } = opts;
+
+  let output = z.string().trim().max(maxLength, `${name} is too long`);
+  if (required) output = output.nonempty(emptyMessage ?? `${name} is required`);
+
   return {
     input: z.string().optional(),
     output,
     defaultValue: '',
     meta: {
       required,
+      targetKey: name,
+      snippets,
+      triggerWords,
+      placeholder,
+      info,
     },
   };
 }
 
+// =============================================================================
+// Prompt Node Builders
+// =============================================================================
+
 /**
- * Creates a negative prompt node.
- * No meta - all props are static.
+ * Static prompt node. Same shape as `createTextEditorGraph` produces — see
+ * `textNode` for the rationale. Use when an ecosystem needs a custom `when`
+ * predicate or wraps the node with extra logic and can't compose the
+ * reactive `promptGraph` directly.
+ */
+export function promptNode({ required }: { required?: boolean } = {}) {
+  return textNode({ name: 'prompt', required, emptyMessage: 'Prompt is required' });
+}
+
+/**
+ * Static negative-prompt node. Same shape as `createTextEditorGraph`
+ * produces — see `textNode` for the rationale. Used by ecosystems like
+ * `wan-graph` that gate negativePrompt visibility on workflow and so wrap
+ * the node manually with a `when` predicate. Snippets/triggerWords aren't
+ * reactive here; callers needing those features should compose
+ * `negativePromptGraph` instead.
  */
 export function negativePromptNode({
   maxLength = MAX_NEGATIVE_PROMPT_LENGTH,
 }: { maxLength?: number } = {}) {
-  return {
-    input: z.string().optional(),
-    output: z.string().trim().max(maxLength, 'Negative prompt is too long'),
-    defaultValue: '',
-  };
+  return textNode({ name: 'negativePrompt', maxLength });
 }
 
 // =============================================================================
@@ -154,12 +212,10 @@ export function negativePromptNode({
 
 /**
  * Per-form payload that carries which wildcard sets the user has loaded plus
- * the submission-mode toggles. Lives on the generation graph as a single
- * `snippets` node so `Controller name="snippets"` reads/writes the whole
- * shape atomically. v1 only uses `wildcardSetIds` from the UI side — `mode`
- * and `batchCount` ride at their defaults until a UI control lands; storing
- * them in the graph now means we don't need a localStorage migration when
- * those controls ship.
+ * the submission-mode toggles. v1 only uses `wildcardSetIds` from the UI side —
+ * `mode` and `batchCount` ride at their defaults until a UI control lands;
+ * storing them in the graph now means we don't need a localStorage migration
+ * when those controls ship.
  *
  * `targets` (per-target SnippetReferenceSelection arrays from the
  * resolver/v1 doc) is intentionally NOT held on the graph: v1 has no
@@ -193,6 +249,27 @@ export function snippetsNode() {
     } satisfies SnippetsNodeValue,
   };
 }
+
+/**
+ * Snippets subgraph. Merge this into an ecosystem subgraph alongside any text
+ * editor (promptGraph, negativePromptGraph, future lyrics/musicDescription
+ * editors) that should support `#category` references. Workflows without any
+ * snippet-eligible text editor (vid2vid:upscale, img2img:remove-background,
+ * etc.) deliberately omit this merge so the validated workflow data doesn't
+ * carry an unused snippets node.
+ *
+ * Must be merged BEFORE the text editors it feeds — they declare `snippets`
+ * in their deps and read its slice for chip rendering / target meta.
+ *
+ * Usage: `.merge(snippetsGraph)` once per subgraph that has text editors.
+ */
+// Ctx requirement is the empty object: snippetsGraph reads nothing off ctx;
+// it only contributes the `snippets` output node. Using `{}` (rather than
+// `Record<string, never>`, which mapped every key to `never` and caused the
+// merge-side intersection to collapse to `never`) lets it merge cleanly into
+// any parent graph regardless of that parent's own keys.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export const snippetsGraph = new DataGraph<{}, GenerationCtx>().node('snippets', snippetsNode());
 
 // =============================================================================
 // Select Node Builders
@@ -1422,7 +1499,7 @@ export function scaleFactorNode({
  * payload. Defined here so this file stays self-contained until the snippets
  * feature lands.
  */
-type SnippetReference = {
+export type SnippetReference = {
   category: string;
   selections: { categoryId: number; in: string[]; ex: string[] }[];
 };
@@ -1505,7 +1582,11 @@ type TextEditorOptions<K extends string> = {
  * Each editor's meta exposes:
  * - `required: boolean`
  * - `targetKey: string` — pairs with future `snippets.targets[targetKey]`
- * - `snippetTarget: SnippetReference[]` — empty until the snippets node ships
+ * - `snippets: SnippetReference[] | undefined` — `undefined` when the parent subgraph
+ *   didn't merge `snippetsGraph`; an array (possibly empty) when it did, carrying the
+ *   per-target `SnippetReference[]` slice. Acts as both the feature flag (presence) and
+ *   the data payload — the React-side editor opts into `#category` autocomplete + chip
+ *   rendering whenever this is defined. No graph subscription required on the consumer side.
  * - `triggerWords: string[]` — empty when parent didn't merge `triggerWordsGraph`
  * - `placeholder?: string` — set by per-ecosystem override; consumer falls back to its own default
  * - `info?: string` — set by per-ecosystem override; consumer falls back to its own default
@@ -1514,7 +1595,8 @@ type TextEditorOptions<K extends string> = {
  *   1. createCheckpointGraph()   (model)
  *   2. createResourcesGraph()    (resources, when applicable)
  *   3. triggerWordsGraph         (when applicable)
- *   4. promptGraph / negativePromptGraph / createTextEditorGraph(...)
+ *   4. snippetsGraph             (when prompt/negativePrompt are merged)
+ *   5. promptGraph / negativePromptGraph / createTextEditorGraph(...)
  *
  * Usage:
  * ```ts
@@ -1553,31 +1635,31 @@ export function createTextEditorGraph<const K extends string>(opts: TextEditorOp
           ? required(ctx as unknown as Record<string, unknown>)
           : required;
 
-      let output = z.string().trim().max(maxLength, `${name} is too long`);
-      if (isRequired) output = output.nonempty(emptyMessage ?? `${name} is required`);
-
-      // Snippet target slice — empty until the snippets node ships.
-      const snippets = ('snippets' in ctx ? ctx.snippets : undefined) as SnippetsValue | undefined;
-      const snippetTarget = snippets?.targets?.[name] ?? [];
+      // Unified snippets meta: undefined when the parent subgraph didn't
+      // merge `snippetsGraph`, otherwise an array (possibly empty) carrying
+      // the per-target `SnippetReference[]` slice from `snippets.targets`.
+      // Presence doubles as the feature flag for the React-side editor.
+      const snippetsValue = ('snippets' in ctx ? ctx.snippets : undefined) as
+        | SnippetsValue
+        | undefined;
+      const snippets: SnippetReference[] | undefined =
+        'snippets' in ctx ? snippetsValue?.targets?.[name] ?? [] : undefined;
 
       // Trigger words — populated when the parent subgraph merged
       // triggerWordsGraph, otherwise falls back to [].
       const triggerWords = (('triggerWords' in ctx ? ctx.triggerWords : undefined) ??
         []) as string[];
 
-      return {
-        input: z.string().optional(),
-        output,
-        defaultValue: '',
-        meta: {
-          required: isRequired,
-          targetKey: name,
-          snippetTarget,
-          triggerWords,
-          placeholder,
-          info,
-        },
-      };
+      return textNode({
+        name,
+        maxLength,
+        emptyMessage,
+        required: isRequired,
+        placeholder,
+        info,
+        snippets,
+        triggerWords,
+      });
     },
     editorDeps
   );

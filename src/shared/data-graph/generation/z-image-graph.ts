@@ -24,6 +24,7 @@ import {
   schedulerNode,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
@@ -135,6 +136,7 @@ export const zImageGraph = new DataGraph<{ ecosystem: string; workflow: string }
   ])
   // Prompt + triggerWords are common to both turbo and base.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export mode options for use in components

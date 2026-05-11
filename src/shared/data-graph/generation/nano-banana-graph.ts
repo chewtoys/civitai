@@ -22,6 +22,7 @@ import {
   negativePromptGraph,
   promptGraph,
   seedNode,
+  snippetsGraph,
   triggerWordsGraph,
   type AspectRatioOption,
   type ResourceData,
@@ -212,6 +213,7 @@ export const nanoBananaGraph = new DataGraph<
   // Prompt + triggerWords are common to all variants. Placed at the parent
   // (after the discriminator) so model from the active branch is in ctx.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export mode options for use in components

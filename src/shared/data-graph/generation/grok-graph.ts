@@ -25,6 +25,7 @@ import {
   aspectRatioNode,
   createTextEditorGraph,
   imagesNode,
+  snippetsGraph,
   triggerWordsGraph,
   videoNode,
   createCheckpointGraph,
@@ -192,6 +193,7 @@ export const grokGraph = new DataGraph<GrokCtx, GenerationCtx>()
   // Prompt + triggerWords — Grok is text-driven across both image and video
   // workflows, so prompt is always required (no negativePrompt for Grok).
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(createTextEditorGraph({ name: 'prompt', required: true }));
 
 // Export constants for use in components

@@ -25,6 +25,7 @@ import {
   resourcesNode,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 
@@ -156,6 +157,7 @@ export const qwenGraph = new DataGraph<QwenCtx, GenerationCtx>()
   })
   // Prompt + triggerWords are common to both Qwen and Qwen 2.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export constants for use in components and handlers

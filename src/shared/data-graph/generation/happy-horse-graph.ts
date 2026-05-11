@@ -33,6 +33,7 @@ import {
   promptGraph,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
   videoNode,
 } from './common';
@@ -149,6 +150,7 @@ export const happyHorseGraph = new DataGraph<HappyHorseCtx, GenerationCtx>()
 
   // Prompt + triggerWords (no negativePrompt for happyHorse)
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export constants for use in components

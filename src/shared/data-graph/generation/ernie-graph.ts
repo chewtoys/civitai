@@ -22,6 +22,7 @@ import {
   resourcesNode,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 
@@ -129,6 +130,7 @@ export const ernieGraph = new DataGraph<
   )
   .node('aspectRatio', aspectRatioNode({ options: ernieAspectRatios, defaultValue: '1:1' }))
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .merge(negativePromptGraph)
   .node('seed', seedNode());

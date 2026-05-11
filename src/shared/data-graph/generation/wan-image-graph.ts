@@ -20,6 +20,7 @@ import {
   seedNode,
   createTextEditorGraph,
   promptGraph,
+  snippetsGraph,
   triggerWordsGraph,
   aspectRatioNode,
   sliderNode,
@@ -173,6 +174,7 @@ export const wanImageGraph = new DataGraph<WanImageCtx, GenerationCtx>()
   })
   // Prompt + triggerWords are common to all wan-image versions.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export constants for use in components

@@ -16,6 +16,7 @@ import {
   negativePromptGraph,
   promptGraph,
   seedNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 
@@ -60,6 +61,7 @@ export const imagen4Graph = new DataGraph<{ ecosystem: string; workflow: string 
     []
   )
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .merge(negativePromptGraph)
   .node('aspectRatio', aspectRatioNode({ options: imagen4AspectRatios, defaultValue: '1:1' }))

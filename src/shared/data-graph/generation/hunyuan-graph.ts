@@ -20,6 +20,7 @@ import {
   aspectRatioNode,
   promptGraph,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
   enumNode,
   imagesNode,
@@ -118,6 +119,7 @@ export const hunyuanGraph = new DataGraph<HunyuanCtx, GenerationCtx>()
 
   // Prompt + triggerWords (no negativePrompt for Hunyuan)
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export constants for use in components

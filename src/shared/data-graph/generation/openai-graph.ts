@@ -26,6 +26,7 @@ import {
   imagesNode,
   promptGraph,
   seedNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 
@@ -164,6 +165,7 @@ export const openaiGraph = new DataGraph<
 
   // Prompt + triggerWords are common to all OpenAI variants (no negativePrompt for OpenAI).
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export for use in components / handler
