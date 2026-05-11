@@ -56,10 +56,7 @@ import { toStepMetadata } from '~/shared/utils/resource.utils';
 import { maxRandomSeed } from '~/server/common/constants';
 import { auditPromptServer } from '~/server/services/orchestrator/promptAuditing';
 import type { FeatureAccess } from '~/server/services/feature-flags.service';
-import {
-  expandSnippetsToTargets,
-  SNIPPET_TARGET_KEYS,
-} from '~/server/services/wildcard-set-resolver.service';
+import { expandSnippetsToTargets } from '~/server/services/wildcard-set-resolver.service';
 import { parsePromptSnippetReferences } from '~/utils/prompt-helpers';
 
 // Ecosystem handlers - unified router
@@ -794,6 +791,7 @@ export async function createWorkflowStepsFromGraph({
   sourceMetadata,
   sourceMetadataMap,
   remixOfId,
+  isGreen,
 }: {
   data: GenerationGraphOutput;
   /**
@@ -807,6 +805,12 @@ export async function createWorkflowStepsFromGraph({
   sourceMetadata?: SourceMetadataInput;
   sourceMetadataMap?: Record<string, SourceMetadataInput>;
   remixOfId?: number;
+  /**
+   * Site context — `.com` (SFW) vs `.red` (NSFW). Passed into the snippet
+   * resolver so it can filter category rows by `nsfwLevel` and never surface
+   * NSFW content to SFW users.
+   */
+  isGreen?: boolean;
 }): Promise<{
   steps: WorkflowStepTemplate[];
   workflowMetadata?: Record<string, unknown>;
@@ -890,10 +894,10 @@ export async function createWorkflowStepsFromGraph({
   // returns `[{}]` — a single empty overlay — so the loop runs exactly once
   // and behaves identically to a pre-snippets build. What-if requests always
   // get the trivial overlay (cost estimation runs against the template).
-  const overlays = isWhatIf
-    ? [{} as Record<string, string>]
-    : await getSnippetOverlays({ resolvedData, userId: user?.id });
-  const snippetsExpanded = overlays.length > 1 || overlays.some((o) => !isEmptyObject(o));
+  const snippetResult = isWhatIf
+    ? { overlays: [{} as Record<string, string>], parsedTargets: {}, expanded: false }
+    : await getSnippetOverlays({ resolvedData, userId: user?.id, isGreen });
+  const { overlays, parsedTargets, expanded: snippetsExpanded } = snippetResult;
 
   const steps: StepInput[] = [];
   for (const overlay of overlays) {
@@ -946,19 +950,25 @@ export async function createWorkflowStepsFromGraph({
 
   // Build workflow-level metadata — the form input snapshot for workflow-level
   // replay. `params.snippets` rides along automatically because it's a
-  // graph-level node captured by `toStepMetadata`. The `seed` field is not
-  // part of the snippets node schema (only used for preview, never persisted),
-  // so no explicit drop is needed here.
+  // graph-level node captured by `toStepMetadata`.
   //
-  // When the resolver didn't actually fan out (snippets node at defaults, no
-  // refs, no batch request), strip the snippets entry so we don't pollute
-  // every non-snippet generation's metadata with an empty
-  // `{ wildcardSetIds: [], mode: 'random', batchCount: 1 }` blob. The
-  // `wildcards` workflow tag remains the canonical "did this use snippets"
-  // signal.
+  // Snippet-specific persistence cleanup:
+  // - When the resolver didn't fire (snippets node at defaults, no refs, no
+  //   batch request), strip the entire `snippets` entry so non-snippet
+  //   generations don't carry an unused blob. The `wildcards` workflow tag
+  //   remains the canonical "did this use snippets" signal.
+  // - When the resolver did fire, overwrite `snippets.targets` with the
+  //   parsed-refs snapshot (each `#ref` as `{ category, selections: [] }`)
+  //   so workflow.metadata records exactly which refs the submission used.
+  //   And drop `snippets.seed` — that field is preview-only and remixes
+  //   should re-roll the random picks.
   const persistedParams = removeEmpty(stepMetadata.params as Record<string, unknown>);
   if (!snippetsExpanded) {
     delete persistedParams.snippets;
+  } else if (persistedParams.snippets && typeof persistedParams.snippets === 'object') {
+    const persistedSnippets = persistedParams.snippets as Record<string, unknown>;
+    persistedSnippets.targets = parsedTargets;
+    delete persistedSnippets.seed;
   }
   const workflowMetadata = isWhatIf
     ? undefined
@@ -979,75 +989,114 @@ export async function createWorkflowStepsFromGraph({
   };
 }
 
+type SnippetsPayloadShape = {
+  wildcardSetIds?: number[];
+  mode?: 'random' | 'batch';
+  batchCount?: number;
+  seed?: number;
+  targets?: Record<string, unknown>;
+};
+
+type ParsedTargetsSnapshot = Record<string, Array<{ category: string; selections: [] }>>;
+
 /**
- * Build per-step overlays for snippet fan-out. Returns an array of records
- * where each record is `{ targetKey -> substitutedText }` for a single
- * workflow step. The caller spreads the overlay onto `resolvedData` to get
- * variant data, then runs `createStepInputs` once per overlay.
+ * Build per-step overlays for snippet fan-out and the parsed-refs snapshot
+ * that ends up persisted as `workflow.metadata.params.snippets.targets`.
+ * Returns:
+ * - `overlays`: array of `{ targetKey -> substitutedText }` records, one per
+ *   workflow step. Always non-empty — `[{}]` (a single empty overlay) when
+ *   there's nothing to expand, so the orchestrator loop runs uniformly.
+ * - `parsedTargets`: `{ targetKey -> [{ category, selections: [] }, ...] }`
+ *   built server-side from the templates. v1 keeps `selections` empty (no
+ *   per-value picker); the orchestrator overwrites `snippets.targets` with
+ *   this snapshot at persistence time.
+ * - `expanded`: true when the resolver actually ran (drives the `wildcards`
+ *   tag, persisted-snippets shape, etc.).
  *
- * Always returns at least one element:
- * - `[{}]` (a single empty overlay) when there's nothing to expand — no
- *   snippets node on the validated data, or the snippets node is at defaults
- *   with no `#refs` in the prompts. This unifies the orchestrator loop so
- *   the non-snippet path doesn't need a separate code branch.
- * - One overlay per expansion when the resolver actually runs.
+ * Target keys come from `snippets.targets` (declared by the ecosystem
+ * subgraph via `snippetsGraph([...keys])`). Targets that aren't present on
+ * `resolvedData` (e.g. `negativePrompt` declared but the active branch
+ * doesn't have one) are silently skipped.
  *
- * Conventions:
- * - v1 always passes `targets: {}` to the resolver because the form has no
- *   per-value picker; the resolver falls back to the full clean pool per
- *   reference.
- * - `userId` is required (resolver enforces User-kind ownership inline).
- *   Anonymous submissions can't reach this code path on a live route, but
- *   we return the trivial overlay defensively if `userId` is missing.
- * - Both `prompt` and `negativePrompt` are passed as targets when present
- *   on `resolvedData`. Future text editors can be added here.
+ * Seed precedence: `snippets.seed` (preview-locked) wins over `resolvedData.seed`
+ * (image-gen seed). When neither is present, sample fresh.
  */
 async function getSnippetOverlays({
   resolvedData,
   userId,
+  isGreen,
 }: {
   resolvedData: Record<string, unknown> & { seed?: number };
   userId: number | undefined;
-}): Promise<Array<Record<string, string>>> {
-  const trivial: Array<Record<string, string>> = [{}];
+  isGreen: boolean | undefined;
+}): Promise<{
+  overlays: Array<Record<string, string>>;
+  parsedTargets: ParsedTargetsSnapshot;
+  expanded: boolean;
+}> {
+  const trivial = {
+    overlays: [{} as Record<string, string>],
+    parsedTargets: {} as ParsedTargetsSnapshot,
+    expanded: false,
+  };
   if (userId == null) return trivial;
-  const snippets = (resolvedData as { snippets?: unknown }).snippets as
-    | { wildcardSetIds?: number[]; mode?: 'random' | 'batch'; batchCount?: number }
-    | undefined;
+  const snippets = (resolvedData as { snippets?: SnippetsPayloadShape }).snippets;
   if (!snippets) return trivial;
 
-  // Build templates from whichever target keys are actually present on this
-  // workflow's resolved data. Graphs that don't have a node for a given key
-  // (e.g. happyHorse has no negativePrompt) naturally fall out of the loop.
+  // Targets declared by the active subgraph (via `snippetsGraph([...])`).
+  // We iterate these — NOT a hardcoded list — so each ecosystem controls its
+  // own snippet-eligible editors.
+  const declaredTargetKeys = Object.keys(snippets.targets ?? {});
+
+  // Build templates from declared targets that have an actual string value on
+  // resolvedData. Missing targets fall out silently — e.g. an editor might
+  // be declared in the snippets node by a registration effect but its branch
+  // doesn't bring its node value into the active context.
+  //
+  // `parsedTargets` only records keys whose template contained at least one
+  // `#ref` — targets that registered themselves but had no refs in this
+  // submission don't pollute the persisted record. The graph state's
+  // `snippets.targets` is the "accepts snippets" declaration; the persisted
+  // `targets` is the "had refs to substitute" history.
   const targetTemplates: Record<string, string> = {};
-  for (const key of SNIPPET_TARGET_KEYS) {
+  const parsedTargets: ParsedTargetsSnapshot = {};
+  let totalRefs = 0;
+  for (const key of declaredTargetKeys) {
     const value = (resolvedData as Record<string, unknown>)[key];
-    if (typeof value === 'string') targetTemplates[key] = value;
+    if (typeof value !== 'string') continue;
+    targetTemplates[key] = value;
+    const refs = parsePromptSnippetReferences(value);
+    if (refs.length > 0) {
+      parsedTargets[key] = refs.map((r) => ({ category: r.category, selections: [] }));
+      totalRefs += refs.length;
+    }
   }
 
   const wildcardSetIds = snippets.wildcardSetIds ?? [];
   const mode = snippets.mode ?? 'random';
   const batchCount = snippets.batchCount ?? 1;
 
-  let totalRefs = 0;
-  for (const template of Object.values(targetTemplates)) {
-    totalRefs += parsePromptSnippetReferences(template).length;
-  }
-
   // Fast path: no references and no batch fan-out requested — behave exactly
   // like a pre-snippets submission. Avoids a useless DB round-trip on the
   // hot path of every non-snippet generation.
   if (totalRefs === 0 && batchCount <= 1) return trivial;
 
-  const seed = resolvedData.seed ?? Math.floor(Math.random() * maxRandomSeed);
+  // Seed precedence: form's preview-locked `snippets.seed` first, then the
+  // image-gen seed on resolvedData, then a fresh sample. Spec:
+  // resolver random = PRNG keyed by `(seed ?? generationSeed, ...)`.
+  const seed = snippets.seed ?? resolvedData.seed ?? Math.floor(Math.random() * maxRandomSeed);
 
   const result = await expandSnippetsToTargets({
     snippets: { wildcardSetIds, mode, batchCount, targets: {} },
     targetTemplates,
     seed,
     userId,
+    // Default to SFW context if the caller didn't supply one — strictest
+    // sensible fallback so the resolver never accidentally surfaces NSFW
+    // content on an unidentified call path.
+    isGreen: isGreen ?? true,
   });
-  return result.expansions;
+  return { overlays: result.expansions, parsedTargets, expanded: true };
 }
 
 function isEmptyObject(o: Record<string, unknown>): boolean {
@@ -1157,6 +1206,7 @@ export async function generateFromGraph({
     sourceMetadata,
     sourceMetadataMap,
     remixOfId,
+    isGreen,
   });
 
   // Determine workflow tags

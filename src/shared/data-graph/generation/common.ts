@@ -212,32 +212,79 @@ export function negativePromptNode({
 
 /**
  * Per-form payload that carries which wildcard sets the user has loaded plus
- * the submission-mode toggles. v1 only uses `wildcardSetIds` from the UI side —
- * `mode` and `batchCount` ride at their defaults until a UI control lands;
- * storing them in the graph now means we don't need a localStorage migration
- * when those controls ship.
+ * the submission-mode toggles and the per-target snippet references. Mirrors
+ * the `SnippetsNode` shape spec'd in docs/features/prompt-snippets-v1.md:
  *
- * `targets` (per-target SnippetReferenceSelection arrays from the
- * resolver/v1 doc) is intentionally NOT held on the graph: v1 has no
- * per-value picker, so targets are always `selections: []` and are
- * computed at submit time by the orchestrator from the parsed prompts.
+ * - `wildcardSetIds`: set IDs active at submit time.
+ * - `mode`: `'random'` (default) or `'batch'` — how the resolver fans out.
+ * - `batchCount`: how many workflow steps the submission expands into.
+ * - `seed`: preview-only override; only present when the user hit "Preview"
+ *   before submit. Used by the resolver so the form's preview and the
+ *   server-side resolution produce identical expansions. NOT persisted to
+ *   workflow metadata — remixes intentionally get fresh randomness. Distinct
+ *   from the image-gen seed on `seedNode`.
+ * - `targets`: `Record<targetKey, SnippetReference[]>`. The set of target
+ *   keys (e.g. `prompt`, `negativePrompt`) tells the orchestrator which
+ *   editor nodes accept snippet references in this subgraph. v1 always
+ *   submits with empty `SnippetReference[]` per target — the orchestrator
+ *   parses actual `#refs` server-side from the template — and the parsed
+ *   snapshot is what's persisted to workflow.metadata after submit.
+ *   `in`/`ex` selections stay empty until the per-value picker UI ships.
  */
+export type SnippetReferenceSelectionValue = {
+  categoryId: number;
+  in: string[];
+  ex: string[];
+};
+
+export type SnippetReferenceValue = {
+  category: string;
+  selections: SnippetReferenceSelectionValue[];
+};
+
 export type SnippetsNodeValue = {
   wildcardSetIds: number[];
   mode: 'random' | 'batch';
   batchCount: number;
+  seed?: number;
+  targets: Record<string, SnippetReferenceValue[]>;
 };
+
+const snippetReferenceSelectionSchema = z.object({
+  categoryId: z.number().int().positive(),
+  in: z.array(z.string()).default([]),
+  ex: z.array(z.string()).default([]),
+});
+
+const snippetReferenceSchema = z.object({
+  category: z.string(),
+  selections: z.array(snippetReferenceSelectionSchema).default([]),
+});
 
 // Each field carries its v1 default at the schema level so a partial value
 // arriving via input (preset load, remix, dev-page `defaultValues`) parses
 // to the full shape without a separate transform — and the strict output
-// type stays `{ wildcardSetIds, mode, batchCount }` for consumers.
+// type stays `{ wildcardSetIds, mode, batchCount, targets, seed? }`.
 const snippetsSchema = z.object({
   wildcardSetIds: z.array(z.number().int().positive()).default([]),
   mode: z.enum(['random', 'batch']).default('random'),
   batchCount: z.number().int().positive().default(1),
+  seed: z.number().int().positive().optional(),
+  targets: z.record(z.string(), z.array(snippetReferenceSchema)).default({}),
 });
 
+/**
+ * Build a snippets node. The `targets` map starts empty — text editors
+ * register themselves into it via the effect added by `createTextEditorGraph`
+ * (see §"Text Editor Subgraphs" below). The orchestrator iterates
+ * `Object.keys(snippets.targets)` at submit time to know which fields to
+ * substitute.
+ *
+ * This inverts the responsibility from "the ecosystem subgraph declares
+ * which targets exist" to "each text editor announces itself as a target,"
+ * so adding a new editor is a one-place change in `createTextEditorGraph`'s
+ * caller — the snippets node doesn't need to be told.
+ */
 export function snippetsNode() {
   return {
     input: snippetsSchema.optional(),
@@ -246,22 +293,24 @@ export function snippetsNode() {
       wildcardSetIds: [] as number[],
       mode: 'random' as const,
       batchCount: 1,
+      targets: {} as Record<string, SnippetReferenceValue[]>,
     } satisfies SnippetsNodeValue,
   };
 }
 
 /**
- * Snippets subgraph. Merge this into an ecosystem subgraph alongside any text
- * editor (promptGraph, negativePromptGraph, future lyrics/musicDescription
- * editors) that should support `#category` references. Workflows without any
- * snippet-eligible text editor (vid2vid:upscale, img2img:remove-background,
- * etc.) deliberately omit this merge so the validated workflow data doesn't
- * carry an unused snippets node.
+ * Snippets subgraph. Merge `.merge(snippetsGraph)` into an ecosystem subgraph
+ * alongside the text editors that should support `#category` references.
+ * No target list is needed — each text editor registers itself as a target
+ * via an effect from `createTextEditorGraph` when this graph is also merged.
+ *
+ * Workflows without any snippet-eligible text editor (vid2vid:upscale,
+ * img2img:remove-background, etc.) deliberately omit this merge so the
+ * validated workflow data doesn't carry an unused snippets node.
  *
  * Must be merged BEFORE the text editors it feeds — they declare `snippets`
- * in their deps and read its slice for chip rendering / target meta.
- *
- * Usage: `.merge(snippetsGraph)` once per subgraph that has text editors.
+ * in their deps and read its slice for chip rendering / target meta, and
+ * their registration effects assume the snippets node is reachable.
  */
 // Ctx requirement is the empty object: snippetsGraph reads nothing off ctx;
 // it only contributes the `snippets` output node. Using `{}` (rather than
@@ -1495,21 +1544,13 @@ export function scaleFactorNode({
 // =============================================================================
 
 /**
- * Snippet payload types — mirror docs/features/prompt-snippets.md submission
- * payload. Defined here so this file stays self-contained until the snippets
- * feature lands.
+ * Re-export the canonical snippet value types under the names this file's
+ * factory used historically. `createTextEditorGraph` reads `snippets.targets[name]`
+ * for the per-target `SnippetReference[]` slice; both forms point at the same
+ * underlying values defined above in §"Snippets / Wildcard Sets".
  */
-export type SnippetReference = {
-  category: string;
-  selections: { categoryId: number; in: string[]; ex: string[] }[];
-};
-
-type SnippetsValue = {
-  wildcardSetIds: number[];
-  mode?: 'batch' | 'random';
-  batchCount?: number;
-  targets: Record<string, SnippetReference[]>;
-};
+export type SnippetReference = SnippetReferenceValue;
+type SnippetsValue = SnippetsNodeValue;
 
 /**
  * Single-source-of-truth `triggerWords` computed. Flattens trainedWords from
@@ -1627,41 +1668,71 @@ export function createTextEditorGraph<const K extends string>(opts: TextEditorOp
   // by the dep system, so subgraphs without them just see `[]` fallbacks.
   const editorDeps = ['snippets', 'triggerWords', ...requiredDeps] as const;
 
-  return new DataGraph<TextEditorParentCtx, GenerationCtx>().node(
-    name,
-    (ctx) => {
-      const isRequired =
-        typeof required === 'function'
-          ? required(ctx as unknown as Record<string, unknown>)
-          : required;
-
-      // Unified snippets meta: undefined when the parent subgraph didn't
-      // merge `snippetsGraph`, otherwise an array (possibly empty) carrying
-      // the per-target `SnippetReference[]` slice from `snippets.targets`.
-      // Presence doubles as the feature flag for the React-side editor.
-      const snippetsValue = ('snippets' in ctx ? ctx.snippets : undefined) as
-        | SnippetsValue
-        | undefined;
-      const snippets: SnippetReference[] | undefined =
-        'snippets' in ctx ? snippetsValue?.targets?.[name] ?? [] : undefined;
-
-      // Trigger words — populated when the parent subgraph merged
-      // triggerWordsGraph, otherwise falls back to [].
-      const triggerWords = (('triggerWords' in ctx ? ctx.triggerWords : undefined) ??
-        []) as string[];
-
-      return textNode({
+  return (
+    new DataGraph<TextEditorParentCtx, GenerationCtx>()
+      .node(
         name,
-        maxLength,
-        emptyMessage,
-        required: isRequired,
-        placeholder,
-        info,
-        snippets,
-        triggerWords,
-      });
-    },
-    editorDeps
+        (ctx) => {
+          const isRequired =
+            typeof required === 'function'
+              ? required(ctx as unknown as Record<string, unknown>)
+              : required;
+
+          // Unified snippets meta: undefined when the parent subgraph didn't
+          // merge `snippetsGraph`, otherwise an array (possibly empty) carrying
+          // the per-target `SnippetReference[]` slice from `snippets.targets`.
+          // Presence doubles as the feature flag for the React-side editor.
+          const snippetsValue = ('snippets' in ctx ? ctx.snippets : undefined) as
+            | SnippetsValue
+            | undefined;
+          const snippets: SnippetReference[] | undefined =
+            'snippets' in ctx ? snippetsValue?.targets?.[name] ?? [] : undefined;
+
+          // Trigger words — populated when the parent subgraph merged
+          // triggerWordsGraph, otherwise falls back to [].
+          const triggerWords = (('triggerWords' in ctx ? ctx.triggerWords : undefined) ??
+            []) as string[];
+
+          return textNode({
+            name,
+            maxLength,
+            emptyMessage,
+            required: isRequired,
+            placeholder,
+            info,
+            snippets,
+            triggerWords,
+          });
+        },
+        editorDeps
+      )
+      // Registration effect: when the parent subgraph merged `snippetsGraph`,
+      // announce this editor as a snippet target by writing its name into
+      // `snippets.targets`. Subgraphs that didn't merge snippetsGraph have no
+      // `snippets` in ctx — the effect short-circuits and is a no-op.
+      //
+      // Idempotency: the effect re-fires whenever `snippets` changes (e.g.
+      // another sibling editor registered itself); the early-return on
+      // "already present" prevents an infinite loop. Editors converge to a
+      // stable `targets` map in a deterministic number of evaluation passes
+      // (one per editor in the subgraph).
+      .effect(
+        (ctx, _ext, set) => {
+          if (!('snippets' in ctx) || !ctx.snippets) return;
+          const current = ctx.snippets as SnippetsValue;
+          const existingTargets = current.targets ?? {};
+          if (name in existingTargets) return;
+          // `set`'s key type excludes the editor's own K (generic, so TS treats
+          // K as potentially `"snippets"` and conservatively rejects writing to
+          // it). The cast is safe because the editor name K is constrained to a
+          // text-editor name by the caller — never `"snippets"`.
+          (set as (key: 'snippets', value: SnippetsValue) => void)('snippets', {
+            ...current,
+            targets: { ...existingTargets, [name]: [] },
+          });
+        },
+        ['snippets'] as const
+      )
   );
 }
 

@@ -106,14 +106,16 @@ In v1, **selections are typically `[]`** — the picker UI for picking individua
 
 ### Workflow metadata
 
-Persisted at `workflow.metadata.params.snippets` — same place as other graph form data (prompt, negativePrompt, image-gen seed, etc.). The `seed` field from the submission is **dropped at persistence time** so remixes get fresh randomness.
+Persisted at `workflow.metadata.params.snippets` — same place as other graph form data (prompt, negativePrompt, image-gen seed, etc.) — **but only when the resolver actually fired**. Submissions whose snippets node sat at defaults (no `#refs`, `batchCount = 1`) skip the persistence entirely so non-snippet generations aren't polluted with an empty `{ wildcardSetIds: [], mode: 'random', batchCount: 1 }` blob. The `wildcards` workflow tag is the canonical "did this use snippets" signal.
+
+When the resolver did fire, the orchestrator overwrites `snippets.targets` with the parsed-refs snapshot (server-side parse of each template's `#refs`) and drops `snippets.seed` — that field is preview-only and remixes should re-roll the random picks. Targets whose template had zero `#refs` are omitted entirely: the persisted `targets` map is the historical record of "editors that had refs to substitute," not "editors that could have accepted snippets." (The graph state's `snippets.targets` is the latter; see §"Snippets node target registration" below.)
 
 ```jsonc
 {
   // workflow.metadata
   "params": {
-    "prompt": "A #character ...",
-    "negativePrompt": "...",
+    "prompt": "A #character in #setting",
+    "negativePrompt": "blurry, ugly",     // had no #refs, omitted from snippets.targets below
     "seed": 847291,                       // image-gen seed (existing)
     /* ... other graph form fields ... */
     "snippets": {
@@ -124,17 +126,18 @@ Persisted at `workflow.metadata.params.snippets` — same place as other graph f
         "prompt": [
           { "category": "character", "selections": [] },
           { "category": "setting",   "selections": [] }
-        ],
-        "negativePrompt": []
+        ]
+        // No "negativePrompt" key — the editor accepted snippets but its
+        // template had no #refs in this submission.
       }
-      // Note: no "seed" field here even if the submission had one
+      // No "seed" field here either, even if the submission had one.
     }
   },
   "tags": [..., "wildcards"]
 }
 ```
 
-`wildcards` tag is added to `workflow.tags` whenever the submission carried a `snippets` node. Cheap analytics filter ("did this generation use snippets?").
+`wildcards` tag is added to `workflow.tags` whenever the resolver actually fan-out — i.e. when the submission had at least one `#ref` to expand or requested `batchCount > 1`. A submission that carried a snippets node at defaults (no refs, no batch) does NOT get the tag. Cheap analytical filter for "did this generation use snippets in earnest?"
 
 ### Server resolution
 
@@ -150,7 +153,23 @@ Persisted at `workflow.metadata.params.snippets` — same place as other graph f
 
 ### Step metadata
 
-Vanilla. Each step's `params.prompt` / `params.negativePrompt` already contain the fully substituted text. The orchestrator doesn't see the snippets node.
+When the resolver fires, each step's `metadata.params` records ONLY the substituted snippet-target fields (e.g. `{ prompt: "<substituted>", negativePrompt: "<substituted>" }`) — NOT a full copy of workflow params. The workflow-level `params` already carries the template + every other field, so duplicating them on every step is wasted bytes. The per-step delta IS the substituted text; everything else is the same as the workflow.
+
+For non-snippet runs (or snippet runs that resolved to no refs), step metadata stays vanilla — handler-set fields only (e.g. `suppressOutput` for multi-step workflows), no `params` field added by the orchestrator.
+
+The fully-substituted text also lives in `step.input.imageMetadata` (the EXIF-embedded blob) regardless of source, so single-image remix continues to work without any snippet awareness in the orchestrator's downstream consumers.
+
+### Snippets node target registration
+
+The graph-state `snippets.targets` map is populated by the text editors themselves, not declared up front by the ecosystem subgraph. `snippetsGraph` ships with `targets: {}`; each `createTextEditorGraph(...)` call (the factory behind `promptGraph`, `negativePromptGraph`, and any future text editor) adds a small effect that, whenever the `snippets` node is reachable in the active subgraph, writes its own `name` into `snippets.targets[name] = []`.
+
+Consequences:
+
+- An ecosystem subgraph that wants snippet support merges `snippetsGraph` once (no target list). Adding or removing a text editor changes which targets appear in `snippets.targets` automatically.
+- Workflows whose discriminator branches contain different text editors (e.g. flux2-klein's `negativePrompt` only in the base mode, or wan-image's `negativePrompt` only on v2.7) get an accurate per-branch target list — the registration effect fires for editors that are active in the current branch and stays silent for ones that aren't.
+- Subgraphs that don't merge `snippetsGraph` (image upscale, background-removal, video interpolation) have no `snippets` in ctx; the registration effect short-circuits and is a no-op.
+
+The persisted `workflow.metadata.params.snippets.targets` (above) is a different map: it's the orchestrator's parsed-refs snapshot for THIS submission, with empty entries stripped. Graph state's `targets` = "editors that accept snippets right now"; persisted `targets` = "editors that had refs to substitute in this submission."
 
 ### Provisioning + audit
 

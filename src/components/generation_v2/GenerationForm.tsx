@@ -196,7 +196,16 @@ export function GenerationForm() {
         try {
           const result = await loadFromModelVersion.mutateAsync({ modelVersionId: resource.id });
           const snap = graph.getSnapshot() as { snippets?: SnippetsNodeValue };
-          const current = snap.snippets ?? { wildcardSetIds: [], mode: 'random', batchCount: 1 };
+          // Fallback shape mirrors `snippetsNode([])`'s default. `targets` is
+          // empty here because we can't infer the active subgraph's target list
+          // from the form layer — if no snippets node was hydrated yet, the
+          // graph's defaultValue will replace this on the next evaluation.
+          const current = snap.snippets ?? {
+            wildcardSetIds: [],
+            mode: 'random' as const,
+            batchCount: 1,
+            targets: {},
+          };
           if (current.wildcardSetIds.includes(result.wildcardSetId)) return;
           graph.set({
             snippets: {

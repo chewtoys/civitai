@@ -120,14 +120,22 @@ export async function getWildcardSets({
 }
 
 /**
- * Return the caller's User-kind WildcardSet, or `null` if they haven't saved
- * any snippets yet. Lazy creation happens on first save (see `saveUserSnippet`),
- * not on read — this keeps the table free of empty placeholder rows for users
- * who never use the feature.
+ * Return the caller's User-kind WildcardSet, lazy-creating one on first call
+ * if the user doesn't have one yet. Per the v1 spec ([prompt-snippets-v1.md]
+ * §"On form mount"): "Fetch the user's own User-kind set ID via
+ * `getMyUserWildcardSet()` (lazy-creates on first call)." A returning user
+ * always sees the same row; a first-time user gets an empty "My snippets"
+ * row created right here.
+ *
+ * Lazy-create is wrapped in a write transaction with a re-check so two
+ * concurrent first-time fetches from the same user converge on a single
+ * row (there's no `(kind, ownerUserId)` unique constraint at the schema
+ * level, so this needs to be enforced in app code). Subsequent calls
+ * short-circuit on the cheap `dbRead.findFirst` before touching dbWrite.
  */
 export async function getMyUserWildcardSet({ userId }: { userId: number }) {
-  return dbRead.wildcardSet.findFirst({
-    where: { kind: 'User', ownerUserId: userId },
+  const findOptions = {
+    where: { kind: 'User' as const, ownerUserId: userId },
     select: {
       ...wildcardSetSelect,
       categories: {
@@ -135,11 +143,33 @@ export async function getMyUserWildcardSet({ userId }: { userId: number }) {
         // while the audit pipeline is being built — see comment above.
         // TODO(prompt-snippets-v1): tighten back to `'Clean'` once verdicts
         // are flowing.
-        where: { auditStatus: { not: 'Dirty' } },
+        where: { auditStatus: { not: 'Dirty' as const } },
         select: wildcardSetCategorySelect,
-        orderBy: [{ displayOrder: 'asc' }, { id: 'asc' }],
+        orderBy: [{ displayOrder: 'asc' as const }, { id: 'asc' as const }],
       },
     },
+  };
+
+  // Hot path: existing row, no write needed.
+  const existing = await dbRead.wildcardSet.findFirst(findOptions);
+  if (existing) return existing;
+
+  // First-time call: create the default set, then re-read with the full
+  // select shape so the response matches the already-exists branch. The
+  // transaction re-checks for a row first to converge on a single set when
+  // two concurrent requests both fall through to the create path.
+  return dbWrite.$transaction(async (tx) => {
+    const racedExisting = await tx.wildcardSet.findFirst(findOptions);
+    if (racedExisting) return racedExisting;
+    await tx.wildcardSet.create({
+      data: {
+        kind: 'User',
+        ownerUserId: userId,
+        name: DEFAULT_USER_SET_NAME,
+        auditStatus: 'Pending',
+      },
+    });
+    return tx.wildcardSet.findFirst(findOptions);
   });
 }
 
@@ -461,20 +491,20 @@ export async function loadWildcardSetFromModelVersion({
  */
 export async function previewSnippetExpansion({
   userId,
+  isGreen,
   input,
 }: {
   userId: number;
+  /** Site context — `.com` (SFW) vs `.red` (NSFW). Filters category nsfwLevel. */
+  isGreen: boolean;
   input: PreviewSnippetExpansionInput;
 }) {
   const seed = input.seed ?? Math.floor(Math.random() * maxRandomSeed);
 
-  // Strip undefined target values so the resolver only enumerates targets the
-  // caller actually wants previewed. Zod's `.optional()` keeps the keys with
-  // value `undefined` when the caller omitted them.
-  const targetTemplates: Record<string, string> = {};
-  for (const [key, value] of Object.entries(input.targets)) {
-    if (typeof value === 'string') targetTemplates[key] = value;
-  }
+  // The schema already drops keys whose template is `undefined` via the
+  // `z.record(z.string(), z.string())` typing — `input.targets` is a clean
+  // map. Empty record is valid.
+  const targetTemplates: Record<string, string> = { ...input.targets };
 
   const result = await expandSnippetsToTargets({
     snippets: {
@@ -486,6 +516,7 @@ export async function previewSnippetExpansion({
     targetTemplates,
     seed,
     userId,
+    isGreen,
   });
 
   // batchCount=1 → exactly one expansion record. Falling back to an empty

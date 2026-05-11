@@ -172,7 +172,9 @@ export const wanImageGraph = new DataGraph<WanImageCtx, GenerationCtx>()
   .discriminator('wanImageVersion', {
     'v2.7': wan27Graph,
   })
-  // Prompt + triggerWords are common to all wan-image versions.
+  // Prompt + triggerWords are common to all wan-image versions. negativePrompt
+  // is added via `createTextEditorGraph` inside the v2.7 branch; its
+  // registration effect self-registers as a snippets target when active.
   .merge(triggerWordsGraph)
   .merge(snippetsGraph)
   .merge(promptGraph);

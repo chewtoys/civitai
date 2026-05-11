@@ -98,5 +98,9 @@ export function previewExpansionHandler({
   input: PreviewSnippetExpansionInput;
   ctx: AuthedCtx;
 }) {
-  return previewSnippetExpansion({ userId: ctx.user.id, input });
+  // `ctx.features` is a lazy proxy — accessing `.isGreen` resolves it on
+  // demand. Default to `true` (SFW) so the resolver is strict by default
+  // when the site context can't be determined.
+  const isGreen = ctx.features?.isGreen ?? true;
+  return previewSnippetExpansion({ userId: ctx.user.id, isGreen, input });
 }

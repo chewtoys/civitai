@@ -228,9 +228,9 @@ The cartesian space is unified across **all targets**. A single combination prod
 
 **Where the data lives:**
 
-- **Workflow metadata** gets a single `snippets` object (per submission) containing `wildcardSetIds`, `mode`, `batchCount`, and a keyed `targets` map (with conventional keys `prompt` and `negativePrompt` in v1). Used to reload picker state on re-edit and to show "this batch ran with character: Zelda, Link" in run summaries. See schema doc §4.4 for the full shape.
-- **Workflow.tags** gains a `wildcards` entry whenever snippets were used in the submission. Cheap analytics signal + queryable filter ("did this generation use snippets?") without parsing the metadata blob.
-- **Step metadata stays vanilla.** Each step's `params.prompt` and `params.negativePrompt` already contain the fully substituted text. The orchestrator processes snippet-driven steps identically to ordinary steps — no new step-level fields, no awareness of where the prompt came from.
+- **Workflow metadata** gets a single `snippets` object (per submission) containing `wildcardSetIds`, `mode`, `batchCount`, and a keyed `targets` map (with conventional keys `prompt` and `negativePrompt` in v1) — but only when the resolver actually fan-out. Submissions whose snippets node sat at defaults (no `#refs`, `batchCount = 1`) skip the persistence entirely so non-snippet generations aren't polluted with unused snippet blobs. When the resolver did fire, the orchestrator overwrites `targets` with the parsed-refs snapshot and drops `seed` (preview-only). Used to reload picker state on re-edit and to show "this batch ran with character: Zelda, Link" in run summaries. See schema doc §4.4 for the full shape.
+- **Workflow.tags** gains a `wildcards` entry whenever the resolver actually fan-out (≥1 `#ref` to expand, or `batchCount > 1`). A submission that carried a snippets node at defaults does NOT get the tag — that submission ran identically to a pre-snippets build. Cheap analytics signal + queryable filter ("did this generation use snippets in earnest?") without parsing the metadata blob.
+- **Step metadata records the snippet-target deltas.** When the resolver fires, each step's `metadata.params` carries ONLY the substituted snippet-target fields (e.g. `{ prompt, negativePrompt }`) — the workflow-level params already snapshots the template + every other field, and duplicating them per-step would just bloat storage. Non-snippet steps stay vanilla (handler-set fields only). The fully-substituted text always reaches `step.input.imageMetadata` so single-image remix works regardless.
 
 Reproduction of any specific step's expansion is recoverable on demand from `(seed, target templates, snippets)` — re-running the resolver gives byte-identical results. We don't duplicate the per-step expansion tree on every step.
 
@@ -338,7 +338,7 @@ Pickers show in UI; selections aren't sent yet.
 - Augment `generateFromGraph` payload (snippet selections, mode, batchCount, wildcardSetIds)
 - `snippetExpansion.ts` module in `server/services/orchestrator/` — handles both batch and random modes uniformly
 - Hook into `createStepInputs`
-- Workflow metadata records the snippet inputs; step metadata stays vanilla (substituted prompt only)
+- Workflow metadata records the snippet inputs (with parsed-refs snapshot, seed dropped); step metadata records the substituted target fields as a delta from the workflow params
 
 First end-to-end working slice.
 

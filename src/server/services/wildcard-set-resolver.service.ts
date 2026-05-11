@@ -1,17 +1,9 @@
 import { dbRead } from '~/server/db/client';
 import { parsePromptSnippetReferences } from '~/utils/prompt-helpers';
-
-/**
- * Canonical list of graph node names that can hold `#category` references.
- * The orchestrator iterates this list when building snippet target templates,
- * filtering to keys actually present on the validated workflow data — so a
- * workflow that lacks (e.g.) a `negativePrompt` node is naturally skipped.
- *
- * Add new target types here when a future text-editor node ships with
- * snippet support (e.g. ace-audio's `musicDescription` / `lyrics`).
- */
-export const SNIPPET_TARGET_KEYS = ['prompt', 'negativePrompt'] as const;
-export type SnippetTargetKey = (typeof SNIPPET_TARGET_KEYS)[number];
+import {
+  allBrowsingLevelsFlag,
+  sfwBrowsingLevelsFlag,
+} from '~/shared/constants/browsingLevel.constants';
 
 // Per-reference selections live on the workflow metadata under
 // `params.snippets.targets[<targetKey>][i]`. `selections: []` = default to
@@ -76,7 +68,12 @@ export type ExpandSnippetsResult = {
 
 const DEFAULT_MODE: NonNullable<SnippetsPayload['mode']> = 'random';
 const DEFAULT_BATCH_COUNT = 1;
-const HARD_BATCH_CAP = 100;
+// Spec ([prompt-snippets.md] §"Combination cap"): the resolver enforces a
+// hard ceiling of 10 expansions per submission. Over-cap fan-out is randomly
+// sampled with a seeded PRNG — the picker UI surfaces a reroll button so the
+// user can re-sample without changing the seed. Defends both UX (a single
+// submission can't produce 100s of steps unintentionally) and cost.
+const HARD_BATCH_CAP = 10;
 
 /**
  * Top-level entry. Given a snippets node + the templates that reference it
@@ -89,6 +86,11 @@ const HARD_BATCH_CAP = 100;
  * fail the predicate are silently dropped (matches the resolver query in
  * schema doc §6.2 — the form may carry a stale id from localStorage).
  *
+ * NSFW filtering: rows whose `nsfwLevel` doesn't fit the request's site
+ * context are filtered out at the DB query. `.com` (isGreen=true) only
+ * surfaces SFW levels (PG, PG13); `.red` (isGreen=false) surfaces every
+ * non-Blocked level. Blocked content is excluded everywhere.
+ *
  * v1 scope: top-level `#category` references only. Tokens that appear inside
  * a category's value text (whether `#name` or `__name__`) are passed through
  * literally — nested resolution lands later.
@@ -98,12 +100,19 @@ export async function expandSnippetsToTargets({
   targetTemplates,
   seed,
   userId,
+  isGreen,
 }: {
   snippets: SnippetsPayload;
   targetTemplates: Record<string, string>;
   /** Source of randomness. Pass the form's resolved generation seed. */
   seed: number;
   userId: number;
+  /**
+   * Site context — `.com` (SFW) vs `.red` (NSFW). Filters category rows by
+   * `nsfwLevel` so SFW users never see NSFW content even when an SFW set
+   * happens to be loaded into the form alongside an NSFW set.
+   */
+  isGreen: boolean;
 }): Promise<ExpandSnippetsResult> {
   const mode = snippets.mode ?? DEFAULT_MODE;
   const batchCount = clampBatchCount(snippets.batchCount ?? DEFAULT_BATCH_COUNT);
@@ -133,7 +142,9 @@ export async function expandSnippetsToTargets({
 
   // 2. Bulk-fetch all category rows that match (a) any of the loaded sets the
   //    user is authorized for and (b) any of the referenced category names.
-  //    Single round-trip across both targets.
+  //    Single round-trip across both targets. The NSFW-level filter happens
+  //    in application code below since Prisma's `where` has no clean bitwise
+  //    operator.
   const categoryRows = await dbRead.wildcardSetCategory.findMany({
     where: {
       // TEMPORARY: relaxed to `{ not: 'Dirty' }` while the audit pipeline is
@@ -155,13 +166,27 @@ export async function expandSnippetsToTargets({
       id: true,
       name: true,
       values: true,
+      nsfwLevel: true,
       wildcardSet: { select: { id: true, kind: true } },
     },
   });
 
+  // NSFW filtering is bitwise on `nsfwLevel` against an allowed-levels flag:
+  //   - SFW context (.com): allow PG + PG13 only
+  //   - NSFW context (.red): allow every non-Blocked level
+  // `nsfwLevel = 0` (un-rated) passes through during the audit-status
+  // relaxation window so Pending content stays usable in dev. Once
+  // `auditStatus = 'Clean'` is enforced strictly, Clean rows always carry a
+  // nonzero nsfwLevel and the `=== 0` branch becomes dead code that can be
+  // tightened in the same commit that flips the audit relaxation.
+  const allowedNsfwFlag = isGreen ? sfwBrowsingLevelsFlag : allBrowsingLevelsFlag;
+  const filteredCategoryRows = categoryRows.filter(
+    (row) => row.nsfwLevel === 0 || (row.nsfwLevel & allowedNsfwFlag) !== 0
+  );
+
   // Group sources per lookup key so per-reference resolution is O(1).
   const sourcesByLookupKey = new Map<string, { categoryId: number; values: string[] }[]>();
-  for (const row of categoryRows) {
+  for (const row of filteredCategoryRows) {
     const key = row.name.toLowerCase();
     let bucket = sourcesByLookupKey.get(key);
     if (!bucket) {
@@ -322,28 +347,60 @@ function sampleBatch({
   poolsByTargetAndKey: Map<string, string[]>;
   diagnostics: ResolverDiagnostics;
 }): ExpandSnippetsResult {
-  // Cartesian variables = unique (target, lookupKey) pairs. Repeated
-  // occurrences of the same category within one target use the same draw
-  // under v1 — the no-repeat-across-slots rule is documented but deferred
-  // until we have explicit slot-permutation semantics in the resolver.
-  type Var = { targetKey: string; lookupKey: string; pool: string[] };
+  // Cartesian variables = unique (target, lookupKey) groups. Each group
+  // tracks ALL slot positions where its category appears within its target,
+  // so the no-repeat rule can be enforced across those slots within a single
+  // combination.
+  //
+  // Per the spec ([prompt-snippets.md] §Same-category repeated slots): in
+  // batch mode, slots of the same category in one combination hold different
+  // values when the pool can accommodate it (n >= k). When the pool is too
+  // small (n < k), repeats are unavoidable — we fall back to independent
+  // draws (n^k) so the user still gets variety across combinations.
+  type Var = {
+    targetKey: string;
+    lookupKey: string;
+    pool: string[];
+    /** Indices into `refs` for the slots this var fills. */
+    slotPositions: number[];
+    /** Cardinality contributed to the cartesian total. */
+    cardinality: bigint;
+    /** Slot mode: 'permute' when no-repeat applies, 'product' for fallback. */
+    mode: 'permute' | 'product';
+  };
   const vars: Var[] = [];
   for (const [targetKey, refs] of referencesByTarget) {
-    const seenKey = new Set<string>();
-    for (const ref of refs) {
-      if (seenKey.has(ref.lookupKey)) continue;
-      seenKey.add(ref.lookupKey);
-      const pool = poolsByTargetAndKey.get(`${targetKey}:${ref.lookupKey}`) ?? [];
+    // Group slot positions by lookupKey within this target. Document order
+    // is preserved so slot 0 = the first occurrence, slot 1 = the second, etc.
+    const positionsByLookupKey = new Map<string, number[]>();
+    for (let i = 0; i < refs.length; i++) {
+      const key = refs[i].lookupKey;
+      let positions = positionsByLookupKey.get(key);
+      if (!positions) {
+        positions = [];
+        positionsByLookupKey.set(key, positions);
+      }
+      positions.push(i);
+    }
+    for (const [lookupKey, slotPositions] of positionsByLookupKey) {
+      const pool = poolsByTargetAndKey.get(`${targetKey}:${lookupKey}`) ?? [];
       if (pool.length === 0) continue; // unresolved — won't constrain cartesian
-      vars.push({ targetKey, lookupKey: ref.lookupKey, pool });
+      const n = pool.length;
+      const k = slotPositions.length;
+      // No-repeat permutation when pool can cover every slot; fall back to
+      // independent product (allows repeats) only when the pool is too small.
+      const slotMode: 'permute' | 'product' = k <= n ? 'permute' : 'product';
+      const cardinality =
+        slotMode === 'permute' ? permutationCount(n, k) : repeatedDrawCount(n, k);
+      vars.push({ targetKey, lookupKey, pool, slotPositions, cardinality, mode: slotMode });
     }
   }
 
-  // Total cartesian = product of pool sizes. Use BigInt to avoid overflow
-  // in pathological cases (10^15 combinations is feasible with a few
-  // mid-size pools); we never enumerate more than batchCount entries
+  // Total cartesian = product of cardinalities. Use BigInt to avoid overflow
+  // in pathological cases (a small number of mid-sized pools can produce
+  // 10^15 combinations); we never enumerate more than batchCount entries
   // anyway — the BigInt is just for the diagnostics field.
-  const cartesianTotal = vars.reduce((acc, v) => acc * BigInt(v.pool.length), BigInt(1));
+  const cartesianTotal = vars.reduce((acc, v) => acc * v.cardinality, BigInt(1));
   const safeTotal =
     cartesianTotal > BigInt(Number.MAX_SAFE_INTEGER)
       ? Number.MAX_SAFE_INTEGER
@@ -369,31 +426,104 @@ function sampleBatch({
   diagnostics.sampled = BigInt(batchCount) < total;
 
   const expansions: ExpansionStep[] = selectedIndices.map((idx) => {
-    const pickByCacheKey = new Map<string, string>();
+    // Walk vars in insertion order, peeling one sub-index at a time in mixed
+    // radix (each var's cardinality is its base). Decode each sub-index into
+    // a per-slot value array via permutation or product enumeration.
+    const picksByVar: Array<{ var: Var; slotValues: string[] }> = [];
     let remainder = idx;
-    // Walk vars in insertion order, peeling one digit at a time in mixed-radix.
     for (const v of vars) {
-      const base = BigInt(v.pool.length);
-      const digit = Number(remainder % base);
-      remainder = remainder / base;
-      pickByCacheKey.set(`${v.targetKey}:${v.lookupKey}`, v.pool[digit]);
+      const subIdx = remainder % v.cardinality;
+      remainder = remainder / v.cardinality;
+      const slotValues =
+        v.mode === 'permute'
+          ? decodePermutation(v.pool, v.slotPositions.length, subIdx)
+          : decodeProduct(v.pool, v.slotPositions.length, subIdx);
+      picksByVar.push({ var: v, slotValues });
+    }
+
+    // Assemble per-target substituted text. Each target has its own slot
+    // positions; iterate vars and write into a per-target pickByPosition map.
+    const picksByTarget = new Map<string, (string | undefined)[]>();
+    for (const [targetKey, refs] of referencesByTarget) {
+      picksByTarget.set(targetKey, new Array<string | undefined>(refs.length));
+    }
+    for (const { var: v, slotValues } of picksByVar) {
+      const targetPicks = picksByTarget.get(v.targetKey);
+      if (!targetPicks) continue;
+      for (let j = 0; j < v.slotPositions.length; j++) {
+        targetPicks[v.slotPositions[j]] = slotValues[j];
+      }
     }
 
     const step: ExpansionStep = {};
     for (const [targetKey, template] of Object.entries(targetTemplates)) {
       const refs = referencesByTarget.get(targetKey) ?? [];
-      const pickByLookupKey = new Map<string, string>();
-      for (const ref of refs) {
-        if (pickByLookupKey.has(ref.lookupKey)) continue;
-        const pick = pickByCacheKey.get(`${targetKey}:${ref.lookupKey}`);
-        if (pick !== undefined) pickByLookupKey.set(ref.lookupKey, pick);
-      }
-      step[targetKey] = substitute(template, refs, pickByLookupKey);
+      const targetPicks = picksByTarget.get(targetKey) ?? [];
+      step[targetKey] = substituteByPosition(template, refs, targetPicks);
     }
     return step;
   });
 
   return { expansions, diagnostics };
+}
+
+/**
+ * Compute the count of k-permutations of n items: nPk = n! / (n-k)!.
+ * Caller must guarantee k <= n; pass through `repeatedDrawCount` when not.
+ */
+function permutationCount(n: number, k: number): bigint {
+  let acc = BigInt(1);
+  for (let j = 0; j < k; j++) acc *= BigInt(n - j);
+  return acc;
+}
+
+/**
+ * Compute n^k for the small-pool fallback where the no-repeat rule can't
+ * apply (slot count > pool size).
+ */
+function repeatedDrawCount(n: number, k: number): bigint {
+  if (n <= 0) return BigInt(0);
+  let acc = BigInt(1);
+  const base = BigInt(n);
+  for (let j = 0; j < k; j++) acc *= base;
+  return acc;
+}
+
+/**
+ * Decode the `idx`-th k-permutation of `pool` into an ordered list of k
+ * distinct values. Uses a Lehmer-code-style decomposition: at each slot,
+ * peel one digit from `idx` against the remaining-pool size, pop that
+ * value, recurse on the next slot. Deterministic — same `(pool, k, idx)`
+ * always produces the same permutation.
+ */
+function decodePermutation(pool: string[], k: number, idx: bigint): string[] {
+  const available = pool.slice();
+  const out: string[] = [];
+  let remaining = idx;
+  for (let j = 0; j < k; j++) {
+    const choices = BigInt(available.length);
+    const digit = Number(remaining % choices);
+    remaining = remaining / choices;
+    out.push(available[digit]);
+    available.splice(digit, 1);
+  }
+  return out;
+}
+
+/**
+ * Decode the `idx`-th k-tuple-with-replacement from `pool` (n^k total).
+ * Used only when the pool is too small to enforce no-repeat (k > n).
+ */
+function decodeProduct(pool: string[], k: number, idx: bigint): string[] {
+  const n = BigInt(pool.length);
+  const out: string[] = [];
+  let remaining = idx;
+  for (let j = 0; j < k; j++) {
+    const digit = Number(remaining % n);
+    remaining = remaining / n;
+    out.push(pool[digit]);
+  }
+  return out;
 }
 
 /**
@@ -456,6 +586,9 @@ function randomBigInt(rng: () => number, max: bigint): bigint {
  * lookup key. Walks back-to-front so earlier replacements don't invalidate
  * the start/end indices of later ones. References whose lookup key has no
  * pick (unresolved or out-of-pool) are left as their original `#name` text.
+ *
+ * Used by random mode where all slots of the same category share the same
+ * draw — one value per lookup key per step.
  */
 function substitute(
   template: string,
@@ -468,6 +601,30 @@ function substitute(
     const ref = refs[i];
     const value = pickByLookupKey.get(ref.lookupKey);
     if (value === undefined) continue; // leave the `#name` literal in place
+    out = out.slice(0, ref.start) + value + out.slice(ref.end);
+  }
+  return out;
+}
+
+/**
+ * Replace each reference range in `template` with the picked value for its
+ * slot position. Used by batch mode where the no-repeat rule produces a
+ * potentially-distinct value per slot of the same category.
+ *
+ * `picks[i]` corresponds to `refs[i]`. `undefined` entries leave the
+ * `#name` text intact (matching `substitute`'s unresolved behavior).
+ */
+function substituteByPosition(
+  template: string,
+  refs: ResolvedReference[],
+  picks: (string | undefined)[]
+): string {
+  if (refs.length === 0) return template;
+  let out = template;
+  for (let i = refs.length - 1; i >= 0; i--) {
+    const ref = refs[i];
+    const value = picks[i];
+    if (value === undefined) continue;
     out = out.slice(0, ref.start) + value + out.slice(ref.end);
   }
   return out;

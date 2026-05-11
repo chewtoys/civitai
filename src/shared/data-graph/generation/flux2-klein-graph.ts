@@ -172,7 +172,10 @@ export const flux2KleinGraph = new DataGraph<
     { values: ['9b', '4b'] as const, graph: distilledModeGraph },
     { values: ['9b-base', '4b-base'] as const, graph: baseModeGraph },
   ])
-  // Prompt + triggerWords are common to all flux2Klein variants.
+  // Prompt + triggerWords are common to all flux2Klein variants. negativePrompt
+  // is merged inside each mode branch — its `createTextEditorGraph` factory
+  // self-registers as a snippets target via its own effect, so the snippets
+  // node here can stay generic.
   .merge(triggerWordsGraph)
   .merge(snippetsGraph)
   .merge(promptGraph);

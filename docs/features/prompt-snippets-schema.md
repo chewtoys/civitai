@@ -213,7 +213,7 @@ Existing JSON blobs gain new conventional keys. **No per-step snippet metadata**
 
 **`GenerationPreset.values`** — gains `wildcardSetIds: number[]`. When a preset is saved, we snapshot which `WildcardSet.id`s are loaded. On load, those get re-applied to the form state (with a warning if any have since been removed or invalidated). No DB change; just a new key convention.
 
-**`Workflow.tags`** — when a submission uses snippets, the `wildcards` tag is added to the workflow's existing tags array. Serves as an analytics filter (`workflow.tags @> '{wildcards}'`) and as a quick test for "did this generation use snippets?" without parsing the metadata blob.
+**`Workflow.tags`** — when the snippet resolver actually fan-out (at least one `#ref` to expand or `batchCount > 1`), the `wildcards` tag is added to the workflow's existing tags array. Submissions whose snippets node sat at defaults don't get the tag — their generation ran identically to a pre-snippets build, and `workflow.metadata.params.snippets` is stripped at persistence time too. Serves as an analytics filter (`workflow.tags @> '{wildcards}'`) and as a quick test for "did this generation use snippets in earnest?" without parsing the metadata blob.
 
 **Workflow metadata** — gains a single `snippets` object holding everything. One record per workflow, not per step. The shape uses a generic `targets` map keyed by target ID (e.g. `prompt`, `negativePrompt`) rather than hard-coded keys, so new target types (e.g. a future `musicDescription` editor node) can be added without schema changes.
 
