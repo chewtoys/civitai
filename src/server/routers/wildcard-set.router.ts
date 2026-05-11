@@ -3,6 +3,7 @@ import {
   getManyHandler,
   getMyUserSetHandler,
   loadFromModelVersionHandler,
+  previewExpansionHandler,
   removeSnippetHandler,
   reorderSnippetsHandler,
   saveSnippetHandler,
@@ -12,6 +13,7 @@ import {
   deleteUserSnippetCategoryInputSchema,
   getWildcardSetsInputSchema,
   loadWildcardSetFromModelVersionInputSchema,
+  previewSnippetExpansionInputSchema,
   removeUserSnippetInputSchema,
   reorderUserSnippetsInputSchema,
   saveUserSnippetInputSchema,
@@ -36,6 +38,15 @@ export const wildcardSetRouter = router({
   loadFromModelVersion: protectedProcedure
     .input(loadWildcardSetFromModelVersionInputSchema)
     .mutation(loadFromModelVersionHandler),
+
+  // Single-sample preview of how the resolver would substitute `#category`
+  // refs in the caller's templates against their currently loaded sets.
+  // Mutation (not query) because each call returns a fresh random sample
+  // unless `seed` is supplied — keeping it out of React Query's cache
+  // matches the "Regenerate / reroll preview" UX the form drives.
+  previewExpansion: protectedProcedure
+    .input(previewSnippetExpansionInputSchema)
+    .mutation(previewExpansionHandler),
 
   // User-kind value CRUD. All routes verify ownership of the target category
   // through its parent set's `ownerUserId`. Each mutation flips the category

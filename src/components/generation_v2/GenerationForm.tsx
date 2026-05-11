@@ -38,10 +38,10 @@ import { IconSparkles } from '@tabler/icons-react';
 import clsx from 'clsx';
 import React, { useCallback, useMemo, useState, useRef, useEffect } from 'react';
 
-import { CopyButton } from '~/components/CopyButton/CopyButton';
-import { TrainedWords } from '~/components/TrainedWords/TrainedWords';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useGatedEcosystems } from './hooks/useGatedEcosystems';
+import { CopyButton } from '~/components/CopyButton/CopyButton';
+import { TrainedWords } from '~/components/TrainedWords/TrainedWords';
 
 import {
   Controller,
@@ -90,10 +90,9 @@ import { useResourceDataContext } from './inputs/ResourceDataProvider';
 import { ResourceSelectMultipleInput } from './inputs/ResourceSelectMultipleInput';
 import { PromptInput } from './inputs/PromptInput';
 import { ActiveWildcards } from '~/components/Generate/Input/ActiveWildcards';
-import { RichTextarea } from '~/components/Generate/Input/RichTextarea';
-import { useSnippetCategories } from '~/components/Generate/Input/useSnippetCategories';
+import { GenerationTextEditor } from '~/components/Generate/Input/GenerationTextEditor';
 import { openResourceSelectModal } from '~/components/Dialog/triggers/resource-select';
-import type { SnippetsNodeValue } from '~/shared/data-graph/generation/common';
+import type { SnippetReference, SnippetsNodeValue } from '~/shared/data-graph/generation/common';
 import { showNotification } from '@mantine/notifications';
 import { trpc } from '~/utils/trpc';
 import { AspectRatioInput } from './inputs/AspectRatioInput';
@@ -155,37 +154,12 @@ export function GenerationForm() {
     type LooseGraph = { subscribe: (key: string, cb: () => void) => () => void };
     const unsubEcosystem = (graph as LooseGraph).subscribe('ecosystem', () => forceUpdate({}));
     const unsubModel = (graph as LooseGraph).subscribe('model', () => forceUpdate({}));
-    // `snippets` lives on the ecosystem subgraph; subscribe so the
-    // categories list + ActiveWildcards strip re-render when the user
-    // loads/removes a set.
-    const unsubSnippets = (graph as LooseGraph).subscribe('snippets', () => forceUpdate({}));
     return () => {
       unsubWorkflow();
       unsubEcosystem();
       unsubModel();
-      unsubSnippets();
     };
   }, [graph]);
-
-  // Snippets — read the loaded wildcard sets off the graph and resolve the
-  // popover-ready category list for `RichTextarea`. The user's User-kind
-  // set is auto-unioned inside `useSnippetCategories` so the form always
-  // surfaces personal snippets alongside any System-kind sets the user
-  // loaded via "create" on a wildcard model page.
-  //
-  // `snippets` lives on the ecosystem subgraph, so `useGraphValue` can't
-  // see it through the top-level `Ctx` type. Use the same loose-snapshot
-  // pattern the form already uses for `ecosystem`/`model`: cast the
-  // snapshot and force-update on subscription. The `forceUpdate` setter
-  // above already triggers on workflow/ecosystem/model — `snippets` joins
-  // that subscription list below.
-  const snippetsValue = (graph.getSnapshot() as { snippets?: SnippetsNodeValue }).snippets;
-  const wildcardSetIds = snippetsValue?.wildcardSetIds ?? [];
-  const {
-    categories: snippetCategories,
-    loadedSets: loadedWildcardSets,
-    ownSetId: ownWildcardSetId,
-  } = useSnippetCategories(wildcardSetIds);
 
   // Drop a System-kind set from the form's loaded list. User-kind sets are
   // implicitly always-loaded and don't get a remove control.
@@ -858,9 +832,30 @@ export function GenerationForm() {
               )}
             />
 
-            {/* Prompt with Trigger Words. Each ecosystem subgraph defines its
-                own prompt node (or omits it — e.g. ace custom mode), so the
-                Controller auto-hides when the node isn't in the active graph. */}
+            {/* Snippet sources strip. Lives in its own Controller so it
+                auto-hides whenever the active graph doesn't include the
+                snippets node — i.e. the ecosystem subgraph didn't opt the
+                feature in. Data plumbing (loadedSets, loadingSetIds, etc.)
+                lives inside ActiveWildcards via `useSnippetCategories`;
+                this form just supplies the mutating handlers. */}
+            <Controller
+              graph={graph}
+              name="snippets"
+              render={() => (
+                <ActiveWildcards
+                  onRemoveSet={removeWildcardSet}
+                  onAdd={handleAddWildcardSet}
+                  isAdding={loadFromModelVersion.isPending}
+                />
+              )}
+            />
+
+            {/* Prompt. Each ecosystem subgraph defines its own prompt node
+                (or omits it — e.g. ace custom mode), so the Controller
+                auto-hides when the node isn't in the active graph. The
+                snippets/triggerWords features are turned on by the editor's
+                meta (`createTextEditorGraph`), so the form just forwards
+                those flags — no data hooks here. */}
             <Controller
               graph={graph}
               name="prompt"
@@ -914,24 +909,17 @@ export function GenerationForm() {
                   }
                   error={error?.message}
                 >
-                  <ActiveWildcards
-                    loadedSets={loadedWildcardSets}
-                    ownSetId={ownWildcardSetId}
-                    onRemoveSet={removeWildcardSet}
-                    onAdd={handleAddWildcardSet}
-                    isAdding={loadFromModelVersion.isPending}
-                    className="mb-2"
-                  />
                   <Paper
                     radius="md"
                     withBorder
                     data-tour="gen:prompt"
                     className="bg-white focus-within:border-blue-6 dark:bg-dark-6 dark:focus-within:border-blue-8"
                   >
-                    <RichTextarea
+                    <GenerationTextEditor
                       value={value as string}
                       onChange={onChange}
-                      snippets={{ categories: snippetCategories }}
+                      snippets={meta?.snippets}
+                      triggerWords={meta?.triggerWords}
                       attentionEdit
                       placeholder={
                         (meta as { placeholder?: string }).placeholder ?? 'Your prompt goes here...'
@@ -939,7 +927,10 @@ export function GenerationForm() {
                       minRows={2}
                       className="!border-0 !bg-transparent"
                     />
-                    {/* Nested trigger words controller */}
+                    {/* Nested trigger words controller — surfaces the active
+                        model/resources' trained words as copy-able chips
+                        below the editor. Auto-hides when the active
+                        subgraph didn't merge `triggerWordsGraph`. */}
                     <Controller
                       graph={graph}
                       name="triggerWords"
@@ -991,11 +982,12 @@ export function GenerationForm() {
             <Controller
               graph={graph}
               name="negativePrompt"
-              render={({ value, onChange }) => (
-                <RichTextarea
+              render={({ value, onChange, meta }) => (
+                <GenerationTextEditor
                   value={value as string}
                   onChange={onChange}
-                  snippets={{ categories: snippetCategories }}
+                  snippets={meta?.snippets}
+                  triggerWords={meta?.triggerWords}
                   attentionEdit
                   label="Negative Prompt"
                   placeholder="What to avoid..."

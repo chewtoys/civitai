@@ -3,6 +3,7 @@ import type {
   DeleteUserSnippetCategoryInput,
   GetWildcardSetsInput,
   LoadWildcardSetFromModelVersionInput,
+  PreviewSnippetExpansionInput,
   RemoveUserSnippetInput,
   ReorderUserSnippetsInput,
   SaveUserSnippetInput,
@@ -13,6 +14,7 @@ import {
   getMyUserWildcardSet,
   getWildcardSets,
   loadWildcardSetFromModelVersion,
+  previewSnippetExpansion,
   removeUserSnippet,
   reorderUserSnippets,
   saveUserSnippet,
@@ -87,4 +89,14 @@ export function loadFromModelVersionHandler({
   ctx: AuthedCtx;
 }) {
   return loadWildcardSetFromModelVersion({ userId: ctx.user.id, input });
+}
+
+export function previewExpansionHandler({
+  input,
+  ctx,
+}: {
+  input: PreviewSnippetExpansionInput;
+  ctx: AuthedCtx;
+}) {
+  return previewSnippetExpansion({ userId: ctx.user.id, input });
 }

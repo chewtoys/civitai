@@ -26,3 +26,26 @@
     color: var(--mantine-color-red-7);
   }
 }
+
+// Inline "×" affordance that lets the user dismiss an orphaned chip directly
+// from the editor. Only emitted into renderHTML when the chip's `orphan`
+// attribute is true; the editor-level click handler (see RichTextarea) maps
+// a click on this element to a delete of the parent atom node. Kept as a
+// child span (not a real <button>) so it doesn't trip ProseMirror's
+// contenteditable-button quirks — the click is delegated entirely via
+// `handleClickOn` rather than a native button handler.
+.snippetChipRemove {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.75;
+  font-weight: 600;
+  line-height: 1;
+
+  &:hover {
+    opacity: 1;
+    background-color: var(--mantine-color-red-2);
+  }
+}

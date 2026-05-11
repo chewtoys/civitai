@@ -1,10 +1,13 @@
 import { useMemo } from 'react';
 import type { SnippetCategoryItem } from './SnippetCategoryList';
 import { trpc } from '~/utils/trpc';
+import { useGraph, useGraphSubscription } from '~/libs/data-graph/react/DataGraphProvider';
+import type { SnippetsNodeValue } from '~/shared/data-graph/generation/common';
 
 /**
- * Resolve the popover-ready category list for a given set of loaded
- * `wildcardSetIds`. Implements the form-mount sequence the v1 doc spec'd:
+ * Resolve the popover-ready category list for the snippets feature, reading
+ * `wildcardSetIds` directly from the active `snippets` node in graph context.
+ * Implements the form-mount sequence the v1 doc spec'd:
  *
  *   1. Fetch the caller's own User-kind set (always implicitly loaded).
  *   2. Fetch the union of (own-set-id ∪ ids-from-graph) via `getMany`.
@@ -20,8 +23,28 @@ import { trpc } from '~/utils/trpc';
  * categories list — `loadedSets` carries set-level metadata (name, kind,
  * audit/invalidated state, valueCount per category) so the strip can
  * render without re-querying.
+ *
+ * Must be called inside a `DataGraphProvider`. When the active subgraph
+ * has no `snippets` node, the hook treats `wildcardSetIds` as empty —
+ * still safe to call unconditionally (no errors, just empty results).
  */
-export function useSnippetCategories(wildcardSetIds: number[] = []) {
+export function useSnippetCategories() {
+  // Subscribe to the snippets node so additions/removals push fresh
+  // `wildcardSetIds` through without callers needing their own graph
+  // plumbing. `useGraphSubscription` returns `null` when the node isn't
+  // in the active discriminator branch — that's the v0 case where the
+  // ecosystem didn't merge `snippetsGraph`.
+  const graph = useGraph();
+  const snippetsSnapshot = useGraphSubscription(graph, 'snippets');
+  // Memo on the snapshot value (stable until the node updates) so the
+  // fallback empty-array branch doesn't churn a new `[]` reference per
+  // render — that would re-trigger every downstream `useMemo` keyed off
+  // this array.
+  const wildcardSetIds = useMemo(
+    () => (snippetsSnapshot?.value as SnippetsNodeValue | undefined)?.wildcardSetIds ?? [],
+    [snippetsSnapshot?.value]
+  );
+
   const userSetQuery = trpc.wildcardSet.getMyUserSet.useQuery(undefined, {
     refetchOnWindowFocus: false,
   });
@@ -37,12 +60,37 @@ export function useSnippetCategories(wildcardSetIds: number[] = []) {
     return [...set];
   }, [wildcardSetIds, ownSetId]);
 
+  // `keepPreviousData` keeps the prior response visible across query-key
+  // changes (e.g. when the user adds/removes a System-kind set). Without it,
+  // any add/remove flips `data` to `undefined` while the refetch runs —
+  // which would (a) bail the RichTextarea orphan check and (b) blank out
+  // the snippet sources strip mid-edit. With `keepPreviousData`, downstream
+  // consumers see filtered stale data immediately and the strip gets a
+  // per-set loading placeholder for the IDs not yet in the response.
   const setsQuery = trpc.wildcardSet.getMany.useQuery(
     { ids: allIds },
-    { enabled: allIds.length > 0, refetchOnWindowFocus: false }
+    { enabled: allIds.length > 0, refetchOnWindowFocus: false, keepPreviousData: true }
   );
 
-  const loadedSets = setsQuery.data ?? [];
+  // Filter the (possibly stale) response down to IDs the user is *currently*
+  // asking for. Removing a set drops its chip from the strip and its
+  // categories from the popover immediately, instead of waiting for the
+  // refetch to complete.
+  const loadedSets = useMemo(() => {
+    const data = setsQuery.data ?? [];
+    const allowed = new Set(allIds);
+    return data.filter((s) => allowed.has(s.id));
+  }, [setsQuery.data, allIds]);
+
+  // IDs the form is carrying that haven't appeared in a response yet —
+  // either the very first fetch is in flight, or the user just added a set
+  // and we're waiting on the refetch. Rendered as loading placeholders in
+  // the snippet sources strip.
+  const loadingSetIds = useMemo(() => {
+    const data = setsQuery.data ?? [];
+    const have = new Set(data.map((s) => s.id));
+    return allIds.filter((id) => !have.has(id));
+  }, [setsQuery.data, allIds]);
 
   const categories = useMemo<SnippetCategoryItem[]>(() => {
     if (loadedSets.length === 0) return [];
@@ -70,8 +118,19 @@ export function useSnippetCategories(wildcardSetIds: number[] = []) {
   return {
     categories,
     loadedSets,
+    loadingSetIds,
     ownSetId,
-    isLoading: userSetQuery.isLoading || setsQuery.isLoading,
+    // True only while no data has *ever* arrived for either query. After the
+    // first success, refetches keep this `false` (via `keepPreviousData`),
+    // so the popover never reverts to its "Loading…" empty state and the
+    // orphan-detector never bails mid-edit.
+    //
+    // `setsQuery.isLoading` reports `true` for disabled queries that haven't
+    // fetched (React Query v4 keeps status='loading' until any fetch runs).
+    // Gate it behind `allIds.length > 0` so a user with zero active sets
+    // doesn't get stuck in a forever-loading state — chips referencing
+    // nothing should be flagged orphan immediately.
+    isLoading: userSetQuery.isLoading || (allIds.length > 0 && setsQuery.isLoading),
   };
 }
 

@@ -1,6 +1,18 @@
 import { dbRead } from '~/server/db/client';
 import { parsePromptSnippetReferences } from '~/utils/prompt-helpers';
 
+/**
+ * Canonical list of graph node names that can hold `#category` references.
+ * The orchestrator iterates this list when building snippet target templates,
+ * filtering to keys actually present on the validated workflow data — so a
+ * workflow that lacks (e.g.) a `negativePrompt` node is naturally skipped.
+ *
+ * Add new target types here when a future text-editor node ships with
+ * snippet support (e.g. ace-audio's `musicDescription` / `lyrics`).
+ */
+export const SNIPPET_TARGET_KEYS = ['prompt', 'negativePrompt'] as const;
+export type SnippetTargetKey = (typeof SNIPPET_TARGET_KEYS)[number];
+
 // Per-reference selections live on the workflow metadata under
 // `params.snippets.targets[<targetKey>][i]`. `selections: []` = default to
 // the full clean pool computed from wildcardSetIds. Non-empty entries opt

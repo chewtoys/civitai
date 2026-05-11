@@ -4,12 +4,15 @@ import type {
   DeleteUserSnippetCategoryInput,
   GetWildcardSetsInput,
   LoadWildcardSetFromModelVersionInput,
+  PreviewSnippetExpansionInput,
   RemoveUserSnippetInput,
   ReorderUserSnippetsInput,
   SaveUserSnippetInput,
   UpdateUserSnippetInput,
 } from '~/server/schema/wildcard-set.schema';
 import { importWildcardModelVersion } from '~/server/services/wildcard-set-provisioning.service';
+import { expandSnippetsToTargets } from '~/server/services/wildcard-set-resolver.service';
+import { maxRandomSeed } from '~/server/common/constants';
 import {
   throwAuthorizationError,
   throwBadRequestError,
@@ -432,4 +435,65 @@ export async function loadWildcardSetFromModelVersion({
     case 'failed':
       throw throwBadRequestError(`Couldn't load wildcard set: ${result.error}`);
   }
+}
+
+/**
+ * Run a single snippet expansion against the caller's loaded sets and return
+ * the resolved sample. Used by the form's "Preview" button so the user can
+ * sanity-check a substitution before submitting a real generation.
+ *
+ * Always runs with `mode: 'random'`, `batchCount: 1`, and no per-value
+ * selections (full pool) — preview is meant to be a quick look at what the
+ * resolver will produce, not a full batch enumeration. When the caller passes
+ * a `seed`, the preview is deterministic; when omitted, the server samples a
+ * fresh seed and returns it so the form can re-render the same preview if
+ * it needs to (e.g. unpoll-then-repoll).
+ *
+ * Authorization is enforced inline by `expandSnippetsToTargets` against the
+ * provided `wildcardSetIds`: System-kind sets are public, User-kind sets must
+ * match `userId`. Unauthorized IDs are silently dropped from the pool.
+ *
+ * The returned `targets` map only includes the keys the caller asked about
+ * (e.g. `prompt` without `negativePrompt` when the form omitted it). Empty
+ * templates pass through verbatim. The `diagnostics` field surfaces the
+ * resolver's per-reference pool sizes and any unresolved references so the
+ * form can show "no values for #character" warnings inline with the preview.
+ */
+export async function previewSnippetExpansion({
+  userId,
+  input,
+}: {
+  userId: number;
+  input: PreviewSnippetExpansionInput;
+}) {
+  const seed = input.seed ?? Math.floor(Math.random() * maxRandomSeed);
+
+  // Strip undefined target values so the resolver only enumerates targets the
+  // caller actually wants previewed. Zod's `.optional()` keeps the keys with
+  // value `undefined` when the caller omitted them.
+  const targetTemplates: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input.targets)) {
+    if (typeof value === 'string') targetTemplates[key] = value;
+  }
+
+  const result = await expandSnippetsToTargets({
+    snippets: {
+      wildcardSetIds: input.wildcardSetIds,
+      mode: 'random',
+      batchCount: 1,
+      targets: {},
+    },
+    targetTemplates,
+    seed,
+    userId,
+  });
+
+  // batchCount=1 → exactly one expansion record. Falling back to an empty
+  // object covers the degenerate "no targets, no refs" case so the response
+  // shape stays stable regardless of input.
+  return {
+    seed,
+    targets: result.expansions[0] ?? {},
+    diagnostics: result.diagnostics,
+  };
 }

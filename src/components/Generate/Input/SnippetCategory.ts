@@ -58,6 +58,24 @@ export const SnippetCategory = Mention.extend({
     const id = typeof node.attrs.id === 'string' ? node.attrs.id : '';
     const orphan = !!node.attrs.orphan;
     const baseAttrs = (options?.HTMLAttributes ?? {}) as Record<string, unknown>;
+    // Orphaned chips render a trailing "×" affordance so the user can dismiss
+    // a chip whose source set/category no longer resolves. RichTextarea's
+    // editor click handler intercepts clicks landing on `.snippetChipRemove`
+    // and deletes the chip node — see `handleClickOn` there. Non-orphaned
+    // chips render plain text (no remove affordance).
+    const children: Array<string | unknown[]> = [`#${id}`];
+    if (orphan) {
+      children.push([
+        'span',
+        {
+          class: classes.snippetChipRemove,
+          'data-snippet-chip-remove': 'true',
+          'aria-label': `Remove ${id}`,
+          contenteditable: 'false',
+        },
+        '×',
+      ]);
+    }
     return [
       'span',
       {
@@ -67,7 +85,7 @@ export const SnippetCategory = Mention.extend({
         'data-orphan': orphan ? 'true' : null,
         class: orphan ? `${classes.snippetChip} ${classes.orphan}` : classes.snippetChip,
       },
-      `#${id}`,
+      ...children,
     ];
   },
 });

@@ -1,8 +1,9 @@
-import { Center, Paper, Stack, Text, UnstyledButton } from '@mantine/core';
+import { Center, Group, Loader, Paper, Text, UnstyledButton } from '@mantine/core';
 import type { ReactRendererOptions } from '@tiptap/react';
 import type { SuggestionProps } from '@tiptap/suggestion';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import clsx from 'clsx';
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 
 /**
  * One flat row in the props the suggestion plugin hands us — one per
@@ -24,6 +25,12 @@ export type SnippetCategoryItem = {
 
 type Props = SuggestionProps<SnippetCategoryItem> & {
   editor: ReactRendererOptions['editor'];
+  /**
+   * Categories source is still being fetched. When true and no items are
+   * available yet, the popover renders a loading state. If items are
+   * already present (e.g. mid-refetch), the list keeps showing them.
+   */
+  loading?: boolean;
 };
 
 export type SnippetCategoryListRef = {
@@ -78,9 +85,34 @@ function groupItems(items: SnippetCategoryItem[]): CategoryGroup[] {
  * no longer competing visually with the category name itself.
  */
 export const SnippetCategoryList = forwardRef<SnippetCategoryListRef, Props>(
-  ({ items, command, query }, ref) => {
+  ({ items, command, query, loading }, ref) => {
     const groups = useMemo(() => groupItems(items), [items]);
+    // Source names under each row only carry signal when more than one set is
+    // contributing categories. With a single set, the source label is just
+    // visual noise on every row — collapse to a single-line layout instead.
+    const showSources = useMemo(() => {
+      const distinct = new Set<string>();
+      for (const item of items) {
+        if (item.setName) distinct.add(item.setName);
+        if (distinct.size > 1) return true;
+      }
+      return false;
+    }, [items]);
     const [selectedIndex, setSelectedIndex] = useState(0);
+
+    const scrollRef = useRef<HTMLDivElement | null>(null);
+
+    // Two-line rows (with `sourcesText`) measure ≈52px; single-line rows ≈36px.
+    // The virtualizer re-measures via `measureElement` so the estimate only
+    // matters for the initial window — branch by `showSources` so the
+    // single-set common case overscans less aggressively.
+    const virtualizer = useVirtualizer({
+      count: groups.length,
+      getScrollElement: () => scrollRef.current,
+      estimateSize: () => (showSources ? 52 : 36),
+      overscan: 6,
+      getItemKey: (index) => groups[index]?.key ?? index,
+    });
 
     useEffect(() => {
       // Reset whenever the filtered group set changes so we never end up
@@ -97,11 +129,19 @@ export const SnippetCategoryList = forwardRef<SnippetCategoryListRef, Props>(
     useImperativeHandle(ref, () => ({
       onKeyDown: ({ event }) => {
         if (event.key === 'ArrowUp') {
-          setSelectedIndex((prev) => (prev + groups.length - 1) % Math.max(groups.length, 1));
+          setSelectedIndex((prev) => {
+            const next = (prev + groups.length - 1) % Math.max(groups.length, 1);
+            virtualizer.scrollToIndex(next, { align: 'auto' });
+            return next;
+          });
           return true;
         }
         if (event.key === 'ArrowDown') {
-          setSelectedIndex((prev) => (prev + 1) % Math.max(groups.length, 1));
+          setSelectedIndex((prev) => {
+            const next = (prev + 1) % Math.max(groups.length, 1);
+            virtualizer.scrollToIndex(next, { align: 'auto' });
+            return next;
+          });
           return true;
         }
         if (event.key === 'Enter' || event.key === 'Tab') {
@@ -114,28 +154,58 @@ export const SnippetCategoryList = forwardRef<SnippetCategoryListRef, Props>(
       },
     }));
 
+    const virtualItems = virtualizer.getVirtualItems();
+    const totalSize = virtualizer.getTotalSize();
+
     return (
-      <Paper className="z-50 max-h-72 overflow-y-auto" radius="md" withBorder shadow="md" miw={240}>
+      <Paper
+        ref={scrollRef}
+        className="z-50 max-h-72 overflow-y-auto"
+        radius="md"
+        withBorder
+        shadow="md"
+        miw={240}
+      >
         {groups.length === 0 ? (
           <Center p="sm">
-            <Text size="xs" c="dimmed">
-              {query ? `No categories match "${query}"` : 'No categories loaded'}
-            </Text>
+            {loading ? (
+              <Group gap={6} wrap="nowrap">
+                <Loader size="xs" />
+                <Text size="xs" c="dimmed">
+                  Loading categories…
+                </Text>
+              </Group>
+            ) : (
+              <Text size="xs" c="dimmed">
+                {query ? `No categories match "${query}"` : 'No categories loaded'}
+              </Text>
+            )}
           </Center>
         ) : (
-          <Stack gap={0}>
-            {groups.map((group, index) => {
-              const isActive = index === selectedIndex;
-              const sourcesText = group.sources.join(' · ');
+          <div style={{ height: totalSize, position: 'relative', width: '100%' }}>
+            {virtualItems.map((virtualRow) => {
+              const group = groups[virtualRow.index];
+              if (!group) return null;
+              const isActive = virtualRow.index === selectedIndex;
+              const sourcesText = showSources ? group.sources.join(' · ') : '';
               return (
                 <UnstyledButton
-                  key={group.key}
+                  key={String(virtualRow.key)}
+                  ref={virtualizer.measureElement}
+                  data-index={virtualRow.index}
                   className={clsx(
                     'flex flex-col gap-0.5 px-3 py-2 text-sm',
                     isActive && 'bg-gray-1 dark:bg-dark-5'
                   )}
-                  onMouseEnter={() => setSelectedIndex(index)}
-                  onClick={() => selectItem(index)}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                  onMouseEnter={() => setSelectedIndex(virtualRow.index)}
+                  onClick={() => selectItem(virtualRow.index)}
                 >
                   <span className="flex items-center justify-between gap-2">
                     <span className="truncate font-medium">#{group.label}</span>
@@ -153,7 +223,7 @@ export const SnippetCategoryList = forwardRef<SnippetCategoryListRef, Props>(
                 </UnstyledButton>
               );
             })}
-          </Stack>
+          </div>
         )}
       </Paper>
     );

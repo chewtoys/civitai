@@ -8,39 +8,44 @@ import clsx from 'clsx';
 import type { CSSProperties } from 'react';
 import { useEffect, useMemo, useRef } from 'react';
 import { editPromptAttentionRange } from '~/components/ImageGeneration/GenerationForm/generation.utils';
+import type { SnippetReference } from '~/shared/data-graph/generation/common';
 import { parsePromptSnippetReferences } from '~/utils/prompt-helpers';
 import { SnippetCategory } from './SnippetCategory';
 import type { SnippetCategoryItem } from './SnippetCategoryList';
 import { createSnippetCategorySuggestion } from './snippetCategorySuggestion';
+import { useSnippetCategories } from './useSnippetCategories';
 
 /**
- * Standalone Tiptap-based textarea-style input for the GenerationForm.
- * Headless of any parent context (no react-hook-form, no `~/libs/form`
- * `useCustomFormContext`, no graph subscriptions) — drops in anywhere with
- * just `value` + `onChange`. GenerationForm-specific features are opt-in
- * per-instance via props:
+ * Tiptap-based textarea-style input for the GenerationForm. Pairs with
+ * `createTextEditorGraph` from the data-graph layer — the form passes the
+ * editor node's meta straight through (`snippets`, `triggerWords`), no
+ * intermediate hooks.
  *
- *   - `snippets`           — `#category` chip rendering + autocomplete popover
- *   - `attentionEdit`      — mod+ArrowUp/Down weight nudging
- *   - `onSubmit`           — fires on mod+Enter; caller wires it to whatever
- *                            "submit the form" means in their context
- *   - `onPaste`            — observe paste events (e.g. detect "Steps: …")
+ * Mostly a dumb component:
+ *   - Plain `value` / `onChange` for the form value.
+ *   - Optional `attentionEdit` for mod+ArrowUp/Down weight nudging.
+ *   - Optional `onSubmit` for mod+Enter.
+ *   - Optional `onPaste` observer.
  *
- * Sizing mirrors Mantine `Textarea`: `minRows` sets the empty-state height,
- * `maxRows` caps growth (scrolls past). Without `maxRows`, the editor grows
- * unboundedly with content (matching `autosize` Textarea).
+ * The one feature that breaks the headless contract is `snippets`:
+ *   - When `snippets` is `undefined` (the editor's subgraph didn't merge
+ *     `snippetsGraph`), the component is purely headless — no graph
+ *     subscriptions, no trpc queries.
+ *   - When `snippets` is defined (even `[]`), the component pulls graph
+ *     context internally to fetch the loaded category list and resolves
+ *     orphan chips. The `SnippetReference[]` array itself is forwarded for
+ *     future per-target picker work and otherwise unused in v1.
  *
  * Form value is always a plain `string` round-tripped through Tiptap's
  * `getText()`. Snippet chips render `#${id}` so the serialized text matches
  * what `parsePromptSnippetReferences` and the server-side resolver expect.
+ *
+ * Sizing mirrors Mantine `Textarea`: `minRows` sets the empty-state height,
+ * `maxRows` caps growth (scrolls past). Without `maxRows`, the editor grows
+ * unboundedly with content (matching `autosize` Textarea).
  */
 
-export type RichTextareaSnippetsConfig = {
-  /** Category items shown in the `#` autocomplete popover. */
-  categories: SnippetCategoryItem[];
-};
-
-export type RichTextareaProps = {
+export type GenerationTextEditorProps = {
   // ──────────────── Form value ────────────────
   /** Plain-text value. */
   value?: string;
@@ -84,11 +89,22 @@ export type RichTextareaProps = {
   /** Enable mod+ArrowUp / mod+ArrowDown attention-weight editing. Default false. */
   attentionEdit?: boolean;
   /**
-   * When provided, enables `#category` autocomplete + chip rendering. Omit
-   * to render as a plain Tiptap textarea (no SnippetCategory extension
-   * loaded; form value is purely whatever the user types).
+   * Surfaced from `createTextEditorGraph`'s `meta.snippets`. `undefined` when
+   * the subgraph didn't merge `snippetsGraph` (feature off); an array
+   * (possibly empty) when it did (feature on). When defined, the component
+   * loads the `SnippetCategory` extension, opens the `#`-trigger popover,
+   * runs the orphan-chip scanner, and fetches the active wildcard-set
+   * categories via `useSnippetCategories`. The `SnippetReference[]` payload
+   * itself is reserved for the future per-target picker.
    */
-  snippets?: RichTextareaSnippetsConfig;
+  snippets?: SnippetReference[];
+  /**
+   * Trigger words for the active model/resources, surfaced from
+   * `createTextEditorGraph`'s `meta.triggerWords`. Currently received but
+   * not rendered — placeholder for future in-editor surfacing (chip strip,
+   * inline insertion shortcut, etc.). Pass-through is harmless when empty.
+   */
+  triggerWords?: string[];
 } & Omit<React.HTMLAttributes<HTMLDivElement>, 'onChange' | 'onBlur' | 'onPaste'>;
 
 // Approximate per-row height for sizing math. Matches `text-sm` + `leading-snug`
@@ -98,7 +114,29 @@ export type RichTextareaProps = {
 const ROW_HEIGHT_PX = 22;
 const SHELL_VERTICAL_PADDING_PX = 16; // py-2 → 8 + 8
 
-export function RichTextarea({
+/**
+ * Outer entry point. Bifurcates on whether the editor's subgraph opted into
+ * the snippets feature so the trpc / graph hooks inside `useSnippetCategories`
+ * only fire for editors that actually use them.
+ */
+export function GenerationTextEditor(props: GenerationTextEditorProps) {
+  if (props.snippets !== undefined) return <SnippetsAwareEditor {...props} />;
+  return <EditorBody {...props} />;
+}
+
+function SnippetsAwareEditor(props: GenerationTextEditorProps) {
+  const { categories, isLoading } = useSnippetCategories();
+  return <EditorBody {...props} _categories={categories} _loading={isLoading} />;
+}
+
+/**
+ * Inner body shared by both variants. The snippet category list and its
+ * loading state arrive via private props (filled by `SnippetsAwareEditor`
+ * when the feature is on, omitted otherwise). `snippets` itself still acts
+ * as the on/off discriminator — when `undefined`, the SnippetCategory
+ * extension never gets loaded.
+ */
+function EditorBody({
   value = '',
   onChange,
   onBlur,
@@ -116,8 +154,14 @@ export function RichTextarea({
   maxRows,
   attentionEdit = false,
   snippets,
+  triggerWords: _triggerWords,
+  _categories,
+  _loading,
   ...rest
-}: RichTextareaProps) {
+}: GenerationTextEditorProps & {
+  _categories?: SnippetCategoryItem[];
+  _loading?: boolean;
+}) {
   // Refs for parent-supplied callbacks / data: the suggestion plugin and
   // editor handlers are baked into the `useEditor` config that we
   // intentionally rebuild only on a tiny set of deps. Inline-arrow callers
@@ -131,10 +175,23 @@ export function RichTextarea({
     onSubmitRef.current = onSubmit;
   }, [onSubmit]);
 
-  const snippetCategoriesRef = useRef<SnippetCategoryItem[]>(snippets?.categories ?? []);
+  const snippetCategoriesRef = useRef<SnippetCategoryItem[]>(_categories ?? []);
   useEffect(() => {
-    snippetCategoriesRef.current = snippets?.categories ?? [];
-  }, [snippets?.categories]);
+    snippetCategoriesRef.current = _categories ?? [];
+  }, [_categories]);
+
+  // Loading state lives in a ref for the same reason categories do: the
+  // suggestion plugin is baked into the editor at build time and reads its
+  // inputs through these refs. The `suggestionRefreshRef` below pushes
+  // mid-popover updates so a fetch that resolves (or a set add/remove
+  // mutation that shifts the category list) while the popover is open
+  // refreshes without requiring a keystroke.
+  const snippetLoadingRef = useRef<boolean>(!!_loading);
+  const suggestionRefreshRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    snippetLoadingRef.current = !!_loading;
+    suggestionRefreshRef.current?.();
+  }, [_loading, _categories]);
 
   // Configuration toggles also live in refs so the keydown handler can read
   // the current value without rebuilding the editor on every flag flip.
@@ -147,7 +204,7 @@ export function RichTextarea({
   // be available — toggling the `snippets` prop on/off rebuilds the editor.
   // Inside a single editor lifetime, the categories list itself can change
   // freely (see snippetCategoriesRef) without remounting.
-  const snippetsEnabled = !!snippets;
+  const snippetsEnabled = snippets !== undefined;
 
   const extensions = useMemo(() => {
     const list = [
@@ -165,16 +222,17 @@ export function RichTextarea({
       }),
     ];
     if (snippetsEnabled) {
-      list.push(
-        SnippetCategory.configure({
-          suggestion: createSnippetCategorySuggestion((query) => {
-            const q = query.toLowerCase();
-            return snippetCategoriesRef.current
-              .filter((c) => (c.label ?? c.id).toLowerCase().startsWith(q))
-              .slice(0, 8);
-          }),
-        }) as never
+      const { suggestion, refresh } = createSnippetCategorySuggestion(
+        (query) => {
+          const q = query.toLowerCase();
+          return snippetCategoriesRef.current.filter((c) =>
+            (c.label ?? c.id).toLowerCase().startsWith(q)
+          );
+        },
+        () => snippetLoadingRef.current
       );
+      suggestionRefreshRef.current = refresh;
+      list.push(SnippetCategory.configure({ suggestion }) as never);
     }
     return list;
   }, [snippetsEnabled]);
@@ -186,7 +244,11 @@ export function RichTextarea({
       immediatelyRender: false,
       content: parseTextToDoc(value, snippetsEnabled),
       editable: !disabled,
-      onUpdate: ({ editor }) => {
+      onUpdate: ({ editor, transaction }) => {
+        // Orphan-scan transactions only adjust the `orphan` attribute on
+        // existing chips — the serialized text is byte-identical, so skip
+        // the emit to avoid round-tripping a no-op value through the form.
+        if (transaction.getMeta('orphanScan')) return;
         onChange?.(serializeEditorToText(editor));
       },
       onBlur: () => {
@@ -243,6 +305,23 @@ export function RichTextarea({
           }
           return false;
         },
+        handleClickOn(view, _pos, node, nodePos, event) {
+          // Orphan chip dismiss: clicks on the in-chip "×" affordance delete
+          // the parent chip. `handleClickOn` fires with `node` set to the atom
+          // the user clicked on; the target element check distinguishes a
+          // click on the X from a click on the chip body (e.g. selecting text
+          // around it), so non-remove clicks pass through to Tiptap's default
+          // selection behavior. Delete uses `nodePos` (the atom's start) — not
+          // the click `pos`, which can land inside the atom and produce a
+          // wrong-range delete that leaves the chip in place.
+          if (node.type.name !== 'snippetCategory' || !node.attrs.orphan) return false;
+          const target = event.target;
+          if (!(target instanceof Element)) return false;
+          if (!target.closest('[data-snippet-chip-remove]')) return false;
+          event.preventDefault();
+          view.dispatch(view.state.tr.delete(nodePos, nodePos + node.nodeSize));
+          return true;
+        },
       },
     },
     // Rebuild only when the extension set or editable flag changes — content
@@ -266,6 +345,58 @@ export function RichTextarea({
   useEffect(() => {
     if (autoFocus && editor) editor.commands.focus('end');
   }, [autoFocus, editor]);
+
+  // Reactively flag `#category` chips that don't resolve against any loaded
+  // wildcard set. Skipped while the snippet-category fetch hasn't resolved
+  // yet so we never flash valid chips red during the initial fetch — orphans
+  // only emerge once we have an authoritative "this is the full set of
+  // loaded categories" list.
+  //
+  // The update path is attribute-only (`tr.setNodeAttribute`) — ProseMirror
+  // preserves text content and selection across these transactions, so the
+  // user's cursor stays put and `getText()` returns the same string (no
+  // spurious onChange propagation up to the form).
+  //
+  // Re-runs whenever the loaded category set changes (and on doc updates,
+  // so chips inserted after the initial scan get flagged too).
+  useEffect(() => {
+    if (!editor) return;
+    if (!snippetsEnabled) return;
+    if (_loading) return;
+
+    const known = new Set<string>(
+      (_categories ?? []).map((c) => (c.label ?? c.id).toLowerCase())
+    );
+
+    const evaluate = () => {
+      const updates: Array<{ pos: number; orphan: boolean }> = [];
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name !== 'snippetCategory') return true;
+        const rawId = typeof node.attrs.id === 'string' ? node.attrs.id : '';
+        const orphan = rawId.length > 0 && !known.has(rawId.toLowerCase());
+        if (!!node.attrs.orphan !== orphan) {
+          updates.push({ pos, orphan });
+        }
+        // Chips are atoms — no descendants worth walking into.
+        return false;
+      });
+      if (updates.length === 0) return;
+      const tr = editor.state.tr;
+      for (const { pos, orphan } of updates) {
+        tr.setNodeAttribute(pos, 'orphan', orphan);
+      }
+      // Tag the transaction so the editor's `onUpdate` can skip the
+      // serialize-to-text + onChange path for these no-op text changes.
+      tr.setMeta('orphanScan', true);
+      editor.view.dispatch(tr);
+    };
+
+    evaluate();
+    editor.on('update', evaluate);
+    return () => {
+      editor.off('update', evaluate);
+    };
+  }, [editor, snippetsEnabled, _loading, _categories]);
 
   // Sizing math: minRows establishes the empty-state height; maxRows caps
   // growth and switches the shell to scroll past that bound. Without
@@ -321,7 +452,7 @@ export function RichTextarea({
  * node; otherwise the text is a single literal text node. Either way the
  * doc serializes back through `editor.getText()` to the same source string.
  */
-export function parseTextToDoc(text: string, snippetsEnabled: boolean): JSONContent {
+function parseTextToDoc(text: string, snippetsEnabled: boolean): JSONContent {
   if (!text) {
     return { type: 'doc', content: [{ type: 'paragraph' }] };
   }
@@ -362,7 +493,7 @@ export function parseTextToDoc(text: string, snippetsEnabled: boolean): JSONCont
  * `#${id}` for snippet chips — so the form's serialized value matches
  * what `parsePromptSnippetReferences` and the server-side resolver expect.
  */
-export function serializeEditorToText(editor: Editor): string {
+function serializeEditorToText(editor: Editor): string {
   return editor.getText();
 }
 

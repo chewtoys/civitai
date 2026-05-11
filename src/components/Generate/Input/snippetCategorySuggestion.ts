@@ -1,6 +1,6 @@
 import { computePosition, flip, shift } from '@floating-ui/dom';
 import { posToDOMRect, ReactRenderer } from '@tiptap/react';
-import type { SuggestionOptions } from '@tiptap/suggestion';
+import type { SuggestionOptions, SuggestionProps } from '@tiptap/suggestion';
 import type { Editor } from '@tiptap/react';
 import {
   SnippetCategoryList,
@@ -17,11 +17,27 @@ import {
  * extension on every render. The popover calls `getItems(query)` whenever
  * the user's typing changes; filtering / ordering / capping is the caller's
  * responsibility — we forward the filtered list straight to the renderer.
+ *
+ * `getLoading` is optional and reports whether the underlying category
+ * source is still being fetched. The flag is merged into the renderer's
+ * props so the popover can render a loading state when no items have
+ * arrived yet. The Tiptap suggestion plugin only re-evaluates `items` on
+ * query/selection change, so loading-state transitions that happen while
+ * the popover sits idle won't refresh on their own — callers can invoke
+ * the returned `refresh()` to push a fresh `loading` value into the active
+ * renderer without waiting for the user to type.
  */
 export function createSnippetCategorySuggestion(
-  getItems: (query: string) => SnippetCategoryItem[]
-): Omit<SuggestionOptions<SnippetCategoryItem>, 'editor'> {
-  return {
+  getItems: (query: string) => SnippetCategoryItem[],
+  getLoading: () => boolean = () => false
+): {
+  suggestion: Omit<SuggestionOptions<SnippetCategoryItem>, 'editor'>;
+  refresh: () => void;
+} {
+  let component: ReactRenderer<SnippetCategoryListRef> | null = null;
+  let latestProps: SuggestionProps<SnippetCategoryItem> | null = null;
+
+  const suggestion: Omit<SuggestionOptions<SnippetCategoryItem>, 'editor'> = {
     char: '#',
     // Allow the suggestion to fire when `#` is typed at the start of input
     // OR after whitespace. Don't trigger when `#` is buried inside a word
@@ -29,12 +45,11 @@ export function createSnippetCategorySuggestion(
     allowSpaces: false,
     items: ({ query }) => getItems(query),
     render: () => {
-      let component: ReactRenderer<SnippetCategoryListRef> | null = null;
-
       return {
         onStart: (props) => {
+          latestProps = props;
           component = new ReactRenderer(SnippetCategoryList, {
-            props,
+            props: { ...props, loading: getLoading() },
             editor: props.editor,
           });
           if (!props.clientRect) return;
@@ -46,8 +61,9 @@ export function createSnippetCategorySuggestion(
         },
 
         onUpdate: (props) => {
+          latestProps = props;
           if (!component) return;
-          component.updateProps(props);
+          component.updateProps({ ...props, loading: getLoading() });
           if (!props.clientRect) return;
           updatePosition(props.editor, component.element as HTMLElement);
         },
@@ -57,6 +73,7 @@ export function createSnippetCategorySuggestion(
             component?.element.remove();
             component?.destroy();
             component = null;
+            latestProps = null;
             return true;
           }
           return component?.ref?.onKeyDown(props) ?? false;
@@ -67,10 +84,22 @@ export function createSnippetCategorySuggestion(
           component.element.remove();
           component.destroy();
           component = null;
+          latestProps = null;
         },
       };
     },
   };
+
+  const refresh = () => {
+    if (!component || !latestProps) return;
+    // Re-evaluate `items` against the latest query so additions/removals
+    // (set added → categories grew, set removed → categories shrank) land
+    // in the open popover instead of waiting for the next keystroke.
+    const items = getItems(latestProps.query);
+    component.updateProps({ ...latestProps, items, loading: getLoading() });
+  };
+
+  return { suggestion, refresh };
 }
 
 /**
