@@ -644,8 +644,17 @@ function QuantityFieldInner({
   };
 
   const handleChange = (val: number | string) => {
-    // Visual-only during typing/keyboard-arrow. Commit happens on blur.
     setDisplayValue(val);
+    // Commit valid in-range, step-aligned values immediately so whatIf
+    // (which subscribes to graph changes) refetches without waiting for
+    // blur. Out-of-range or partially-typed values still defer to blur,
+    // which is where snapping happens.
+    if (val === '' || val === undefined || val === null) return;
+    const n = Number(val);
+    if (!Number.isFinite(n)) return;
+    if (n < min || n > tierMax) return;
+    if ((n - min) % step !== 0) return;
+    if (n !== value) onChange(n);
   };
 
   const handleBlur: React.FocusEventHandler<HTMLInputElement> = (e) => {
