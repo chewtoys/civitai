@@ -176,6 +176,7 @@ const featureFlags = createFeatureFlags({
   modelVersionPopularity: ['mod'],
   kinguinIframe: ['dev'],
   trainingModelsModeration: ['granted'],
+  serviceStatus: ['granted'],
   cashManagement: { availability: ['granted'], fliptKey: 'feature-cash-management' },
   auctionsMod: ['granted'],
   challengePlatform: ['public'],

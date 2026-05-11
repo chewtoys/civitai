@@ -15,21 +15,11 @@ import {
 import { showNotification } from '@mantine/notifications';
 import { IconSettings, IconSparkles } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
+import { Page } from '~/components/AppLayout/Page';
 import { Meta } from '~/components/Meta/Meta';
-import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { trpc } from '~/utils/trpc';
 
-export const getServerSideProps = createServerSideProps({
-  useSession: true,
-  resolver: async ({ session }) => {
-    if (!session || !session.user?.isModerator)
-      return { redirect: { destination: '/', permanent: false } };
-
-    return { props: {} };
-  },
-});
-
-export default function ServiceStatusPage() {
+function ServiceStatusPage() {
   return (
     <>
       <Meta title="Service Status" deIndex />
@@ -146,3 +136,7 @@ function TrainingStatusCard() {
     </Card>
   );
 }
+
+export default Page(ServiceStatusPage, {
+  features: (features) => features.serviceStatus,
+});

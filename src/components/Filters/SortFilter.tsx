@@ -1,6 +1,7 @@
 import type { ButtonProps } from '@mantine/core';
 import { useRouter } from 'next/router';
 import { SelectMenuV2 } from '~/components/SelectMenu/SelectMenu';
+import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useBrowsingSettings } from '~/providers/BrowserSettingsProvider';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import type { FilterSubTypes } from '~/providers/FiltersProvider';
@@ -75,6 +76,7 @@ type DumbProps = {
 function DumbSortFilter({ type, value, onChange, ignoreNsfwLevel, options, ...props }: DumbProps) {
   const showNsfw = useBrowsingSettings((x) => x.showNsfw);
   const { canViewNsfw } = useFeatureFlags();
+  const isModerator = useCurrentUser()?.isModerator ?? false;
 
   return (
     <SelectMenuV2
@@ -82,7 +84,7 @@ function DumbSortFilter({ type, value, onChange, ignoreNsfwLevel, options, ...pr
       onClick={onChange}
       value={value}
       options={(options ?? sortOptions[type].map((x) => ({ label: x, value: x }))).filter((x) => {
-        if (ignoreNsfwLevel) return true;
+        if (ignoreNsfwLevel || isModerator) return true;
         if (!canViewNsfw && (x.value === 'Newest' || x.value === 'Oldest')) return false;
         if (type === 'images') {
           if (!showNsfw && x.value === 'Newest') return false;

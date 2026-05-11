@@ -8,12 +8,11 @@ const {
   mockCreateNotification,
   mockModelsSearchIndexQueueUpdate,
   mockDataForModelsCacheRefresh,
-  mockIsFlipt,
-  mockRequestScannerTasks,
   mockCreateModelFileScanRequest,
   mockModelFileScanSubmissionError,
   mockLimitConcurrency,
   mockUnpublishModelById,
+  mockSetNxKeepTtlWithEx,
 } = vi.hoisted(() => {
   // Test-local copy of the real error class so rescanModel's instanceof
   // check resolves without importing the real orchestrator module.
@@ -58,8 +57,6 @@ const {
     mockCreateNotification: vi.fn().mockResolvedValue(undefined),
     mockModelsSearchIndexQueueUpdate: vi.fn().mockResolvedValue(undefined),
     mockDataForModelsCacheRefresh: vi.fn().mockResolvedValue(undefined),
-    mockIsFlipt: vi.fn(),
-    mockRequestScannerTasks: vi.fn(),
     mockCreateModelFileScanRequest: vi.fn(),
     mockModelFileScanSubmissionError: MockModelFileScanSubmissionError,
     // sequential runner so per-file effects assert deterministically
@@ -67,6 +64,7 @@ const {
       for (const t of tasks) await t();
     }),
     mockUnpublishModelById: vi.fn().mockResolvedValue({}),
+    mockSetNxKeepTtlWithEx: vi.fn().mockResolvedValue(true),
   };
 });
 
@@ -107,18 +105,6 @@ vi.mock('~/server/services/notification.service', () => ({
   createNotification: mockCreateNotification,
 }));
 
-vi.mock('~/server/flipt/client', () => ({
-  isFlipt: mockIsFlipt,
-  FLIPT_FEATURE_FLAGS: { MODEL_FILE_SCAN_ORCHESTRATOR: 'model-file-scan-orchestrator' },
-}));
-
-// scan-files transitively imports delivery-worker which validates S3 env vars
-// at module-load. Stub the legacy adapter directly to keep the test hermetic.
-vi.mock('~/server/jobs/scan-files', () => ({
-  requestScannerTasks: mockRequestScannerTasks,
-  ScannerTasks: ['Import', 'Hash', 'Scan', 'Convert', 'ParseMetadata'],
-}));
-
 vi.mock('~/server/services/orchestrator/orchestrator.service', () => ({
   createModelFileScanRequest: mockCreateModelFileScanRequest,
   ModelFileScanSubmissionError: mockModelFileScanSubmissionError,
@@ -133,6 +119,13 @@ vi.mock('~/server/utils/concurrency-helpers', () => ({
 // Stub the whole module to avoid loading its dep tree.
 vi.mock('~/server/services/model.service', () => ({
   unpublishModelById: mockUnpublishModelById,
+}));
+
+vi.mock('~/server/redis/client', () => ({
+  sysRedis: { setNxKeepTtlWithEx: mockSetNxKeepTtlWithEx },
+  REDIS_SYS_KEYS: {
+    WEBHOOKS: { MODEL_FILE_SCAN_PROCESSED: 'webhooks:model-file-scan:processed' },
+  },
 }));
 
 import {
@@ -273,13 +266,14 @@ describe('model-file-scan.service', () => {
     it('logs a warning and returns without writes when the file is not found', async () => {
       setupFileFound(null);
 
-      await applyScanOutcome({ fileId: 999 });
+      await applyScanOutcome({ fileId: 999, modelVersionId: 42 });
 
       expect(mockLogToAxiom).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'warning',
           name: 'apply-scan-outcome',
           fileId: 999,
+          modelVersionId: 42,
         }),
         'webhooks'
       );
@@ -511,6 +505,56 @@ describe('model-file-scan.service', () => {
       mockDbWrite.modelFile.update.mockResolvedValue({});
       mockDbWrite.$transaction.mockResolvedValue([]);
       mockDbWrite.modelFileHash.findMany.mockResolvedValue([]);
+      // Default: dedupe key acquired (first delivery for this workflow).
+      mockSetNxKeepTtlWithEx.mockResolvedValue(true);
+    });
+
+    it('suppresses duplicate callbacks for the same workflowId without side-effects', async () => {
+      // Second delivery: dedupe lock already held by first delivery.
+      mockSetNxKeepTtlWithEx.mockResolvedValueOnce(false);
+
+      await processModelFileScanResult(
+        makeReq({ workflowId: 'wf-dup', type: 'workflow', status: 'succeeded' })
+      );
+
+      expect(mockSetNxKeepTtlWithEx).toHaveBeenCalledWith(
+        'webhooks:model-file-scan:processed:wf-dup',
+        '1',
+        expect.any(Number)
+      );
+      // No orchestrator round-trip, no DB writes, no cache busts on duplicate.
+      expect(mockGetWorkflow).not.toHaveBeenCalled();
+      expect(mockDbWrite.modelFile.update).not.toHaveBeenCalled();
+      expect(mockDeleteFilesForModelVersionCache).not.toHaveBeenCalled();
+      expect(mockLogToAxiom).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          name: 'model-file-scan-result',
+          workflowId: 'wf-dup',
+          duplicate: true,
+        }),
+        'webhooks'
+      );
+    });
+
+    it('acquires the dedupe lock on first delivery and proceeds to process the workflow', async () => {
+      mockGetWorkflow.mockResolvedValue({
+        data: {
+          metadata: { fileId: 1, modelVersionId: 100 },
+          steps: [],
+        },
+      });
+
+      await processModelFileScanResult(
+        makeReq({ workflowId: 'wf-first', type: 'workflow', status: 'succeeded' })
+      );
+
+      expect(mockSetNxKeepTtlWithEx).toHaveBeenCalledWith(
+        'webhooks:model-file-scan:processed:wf-first',
+        '1',
+        expect.any(Number)
+      );
+      expect(mockGetWorkflow).toHaveBeenCalledTimes(1);
     });
 
     it('throws when the orchestrator returns no workflow data', async () => {
@@ -973,211 +1017,151 @@ describe('model-file-scan.service', () => {
   });
 
   // ==========================================================================
-  // rescanModel — flag-branched dispatch. A wrong branch silently routes to
-  // the wrong scanner, so cover both paths and the soft-deleted edge.
+  // rescanModel — orchestrator dispatch. Covers the soft-deleted edge and
+  // submission-failure handling.
   // ==========================================================================
   describe('rescanModel', () => {
     beforeEach(() => {
       mockDbWrite.modelFile.findMany.mockReset().mockResolvedValue([]);
       mockDbWrite.modelFile.updateMany.mockReset().mockResolvedValue({ count: 0 });
-      mockIsFlipt.mockReset();
       mockCreateModelFileScanRequest.mockReset();
-      mockRequestScannerTasks.mockReset();
     });
 
-    describe('orchestrator path (flag ON)', () => {
-      beforeEach(() => {
-        mockIsFlipt.mockResolvedValue(true);
-      });
+    it('returns { sent: 0, failed: 0 } when the model has no files', async () => {
+      mockDbWrite.modelFile.findMany.mockResolvedValue([]);
 
-      it('returns { sent: 0, failed: 0 } when the model has no files', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([]);
+      const result = await rescanModel({ id: 1 });
 
-        const result = await rescanModel({ id: 1 });
+      expect(result).toEqual({ sent: 0, failed: 0 });
+      expect(mockCreateModelFileScanRequest).not.toHaveBeenCalled();
+    });
 
-        expect(result).toEqual({ sent: 0, failed: 0 });
-        expect(mockCreateModelFileScanRequest).not.toHaveBeenCalled();
-        expect(mockRequestScannerTasks).not.toHaveBeenCalled();
-      });
+    it('queries with the orchestrator-shaped select (includes modelVersion + model)', async () => {
+      mockDbWrite.modelFile.findMany.mockResolvedValue([]);
 
-      it('queries with the orchestrator-shaped select (includes modelVersion + model)', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([]);
+      await rescanModel({ id: 1 });
 
-        await rescanModel({ id: 1 });
-
-        const findManyArgs = mockDbWrite.modelFile.findMany.mock.calls[0][0];
-        expect(findManyArgs.select).toMatchObject({
-          id: true,
-          url: true,
-          modelVersion: expect.objectContaining({
-            select: expect.objectContaining({
-              baseModel: true,
-              model: expect.any(Object),
-            }),
+      const findManyArgs = mockDbWrite.modelFile.findMany.mock.calls[0][0];
+      expect(findManyArgs.select).toMatchObject({
+        id: true,
+        url: true,
+        modelVersion: expect.objectContaining({
+          select: expect.objectContaining({
+            baseModel: true,
+            model: expect.any(Object),
           }),
-        });
-      });
-
-      it('routes every file through createModelFileScanRequest (NOT requestScannerTasks)', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([
-          {
-            id: 1,
-            url: 's3://k1',
-            modelVersion: {
-              id: 10,
-              baseModel: 'SD 1.5',
-              model: { id: 100, type: 'Checkpoint' },
-            },
-          },
-          {
-            id: 2,
-            url: 's3://k2',
-            modelVersion: { id: 20, baseModel: 'SDXL', model: { id: 200, type: 'LORA' } },
-          },
-        ]);
-        mockCreateModelFileScanRequest.mockResolvedValue(undefined);
-
-        const result = await rescanModel({ id: 999 });
-
-        expect(mockCreateModelFileScanRequest).toHaveBeenCalledTimes(2);
-        expect(mockRequestScannerTasks).not.toHaveBeenCalled();
-        expect(mockCreateModelFileScanRequest).toHaveBeenCalledWith({
-          fileId: 1,
-          modelVersionId: 10,
-          modelId: 100,
-          modelType: 'Checkpoint',
-          baseModel: 'SD 1.5',
-          url: 's3://k1',
-          priority: 'low',
-        });
-        expect(result).toEqual({ sent: 2, failed: 0 });
-      });
-
-      it('skips files with a null modelVersion (orphaned/soft-deleted) without crashing', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([
-          { id: 1, url: 's3://k1', modelVersion: null },
-          {
-            id: 2,
-            url: 's3://k2',
-            modelVersion: { id: 20, baseModel: 'SDXL', model: { id: 200, type: 'LORA' } },
-          },
-        ]);
-        mockCreateModelFileScanRequest.mockResolvedValue(undefined);
-
-        const result = await rescanModel({ id: 1 });
-
-        expect(mockCreateModelFileScanRequest).toHaveBeenCalledTimes(1);
-        expect(result).toEqual({ sent: 1, failed: 1 });
-      });
-
-      it('counts createModelFileScanRequest throws as failures, not crashes', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([
-          {
-            id: 1,
-            url: 's3://k1',
-            modelVersion: {
-              id: 10,
-              baseModel: 'SD 1.5',
-              model: { id: 100, type: 'Checkpoint' },
-            },
-          },
-          {
-            id: 2,
-            url: 's3://k2',
-            modelVersion: { id: 20, baseModel: 'SDXL', model: { id: 200, type: 'LORA' } },
-          },
-        ]);
-        mockCreateModelFileScanRequest
-          .mockResolvedValueOnce(undefined)
-          .mockRejectedValueOnce(new Error('orchestrator down'));
-
-        const result = await rescanModel({ id: 1 });
-
-        expect(result).toEqual({ sent: 1, failed: 1 });
-      });
-
-      it('marks scanRequestedAt=now only for files that were sent', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([
-          {
-            id: 1,
-            url: 's3://k1',
-            modelVersion: {
-              id: 10,
-              baseModel: 'SD 1.5',
-              model: { id: 100, type: 'Checkpoint' },
-            },
-          },
-          { id: 2, url: 's3://k2', modelVersion: null }, // skipped
-        ]);
-        mockCreateModelFileScanRequest.mockResolvedValue(undefined);
-
-        await rescanModel({ id: 1 });
-
-        expect(mockDbWrite.modelFile.updateMany).toHaveBeenCalledWith({
-          where: { id: { in: [1] } },
-          data: { scanRequestedAt: expect.any(Date) },
-        });
-      });
-
-      it('does NOT call updateMany when no files were sent', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([
-          { id: 1, url: 's3://k1', modelVersion: null },
-        ]);
-
-        await rescanModel({ id: 1 });
-
-        expect(mockDbWrite.modelFile.updateMany).not.toHaveBeenCalled();
+        }),
       });
     });
 
-    describe('legacy path (flag OFF)', () => {
-      beforeEach(() => {
-        mockIsFlipt.mockResolvedValue(false);
+    it('routes every file through createModelFileScanRequest', async () => {
+      mockDbWrite.modelFile.findMany.mockResolvedValue([
+        {
+          id: 1,
+          url: 's3://k1',
+          modelVersion: {
+            id: 10,
+            baseModel: 'SD 1.5',
+            model: { id: 100, type: 'Checkpoint' },
+          },
+        },
+        {
+          id: 2,
+          url: 's3://k2',
+          modelVersion: { id: 20, baseModel: 'SDXL', model: { id: 200, type: 'LORA' } },
+        },
+      ]);
+      mockCreateModelFileScanRequest.mockResolvedValue(undefined);
+
+      const result = await rescanModel({ id: 999 });
+
+      expect(mockCreateModelFileScanRequest).toHaveBeenCalledTimes(2);
+      expect(mockCreateModelFileScanRequest).toHaveBeenCalledWith({
+        fileId: 1,
+        modelVersionId: 10,
+        modelId: 100,
+        modelType: 'Checkpoint',
+        baseModel: 'SD 1.5',
+        url: 's3://k1',
+        priority: 'low',
       });
+      expect(result).toEqual({ sent: 2, failed: 0 });
+    });
 
-      it('queries with the slim legacy select (only id + url)', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([]);
+    it('skips files with a null modelVersion (orphaned/soft-deleted) without crashing', async () => {
+      mockDbWrite.modelFile.findMany.mockResolvedValue([
+        { id: 1, url: 's3://k1', modelVersion: null },
+        {
+          id: 2,
+          url: 's3://k2',
+          modelVersion: { id: 20, baseModel: 'SDXL', model: { id: 200, type: 'LORA' } },
+        },
+      ]);
+      mockCreateModelFileScanRequest.mockResolvedValue(undefined);
 
-        await rescanModel({ id: 1 });
+      const result = await rescanModel({ id: 1 });
 
-        const findManyArgs = mockDbWrite.modelFile.findMany.mock.calls[0][0];
-        expect(findManyArgs.select).toEqual({ id: true, url: true });
+      expect(mockCreateModelFileScanRequest).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ sent: 1, failed: 1 });
+    });
+
+    it('counts createModelFileScanRequest throws as failures, not crashes', async () => {
+      mockDbWrite.modelFile.findMany.mockResolvedValue([
+        {
+          id: 1,
+          url: 's3://k1',
+          modelVersion: {
+            id: 10,
+            baseModel: 'SD 1.5',
+            model: { id: 100, type: 'Checkpoint' },
+          },
+        },
+        {
+          id: 2,
+          url: 's3://k2',
+          modelVersion: { id: 20, baseModel: 'SDXL', model: { id: 200, type: 'LORA' } },
+        },
+      ]);
+      mockCreateModelFileScanRequest
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('orchestrator down'));
+
+      const result = await rescanModel({ id: 1 });
+
+      expect(result).toEqual({ sent: 1, failed: 1 });
+    });
+
+    it('marks scanRequestedAt=now only for files that were sent', async () => {
+      mockDbWrite.modelFile.findMany.mockResolvedValue([
+        {
+          id: 1,
+          url: 's3://k1',
+          modelVersion: {
+            id: 10,
+            baseModel: 'SD 1.5',
+            model: { id: 100, type: 'Checkpoint' },
+          },
+        },
+        { id: 2, url: 's3://k2', modelVersion: null }, // skipped
+      ]);
+      mockCreateModelFileScanRequest.mockResolvedValue(undefined);
+
+      await rescanModel({ id: 1 });
+
+      expect(mockDbWrite.modelFile.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: [1] } },
+        data: { scanRequestedAt: expect.any(Date) },
       });
+    });
 
-      it('routes every file through requestScannerTasks (NOT createModelFileScanRequest)', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([
-          { id: 1, url: 's3://k1' },
-          { id: 2, url: 's3://k2' },
-        ]);
-        mockRequestScannerTasks.mockResolvedValue('sent');
+    it('does NOT call updateMany when no files were sent', async () => {
+      mockDbWrite.modelFile.findMany.mockResolvedValue([
+        { id: 1, url: 's3://k1', modelVersion: null },
+      ]);
 
-        const result = await rescanModel({ id: 1 });
+      await rescanModel({ id: 1 });
 
-        expect(mockRequestScannerTasks).toHaveBeenCalledTimes(2);
-        expect(mockCreateModelFileScanRequest).not.toHaveBeenCalled();
-        expect(mockRequestScannerTasks).toHaveBeenCalledWith({
-          file: { id: 1, url: 's3://k1' },
-          tasks: ['Hash', 'Scan', 'ParseMetadata'],
-          lowPriority: true,
-        });
-        expect(result).toEqual({ sent: 2, failed: 0 });
-      });
-
-      it('counts non-"sent" return values as failed', async () => {
-        mockDbWrite.modelFile.findMany.mockResolvedValue([
-          { id: 1, url: 's3://k1' },
-          { id: 2, url: 's3://k2' },
-          { id: 3, url: 's3://k3' },
-        ]);
-        mockRequestScannerTasks
-          .mockResolvedValueOnce('sent')
-          .mockResolvedValueOnce('not-found')
-          .mockResolvedValueOnce('error');
-
-        const result = await rescanModel({ id: 1 });
-
-        expect(result).toEqual({ sent: 1, failed: 2 });
-      });
+      expect(mockDbWrite.modelFile.updateMany).not.toHaveBeenCalled();
     });
   });
 
