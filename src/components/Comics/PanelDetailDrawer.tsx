@@ -1,8 +1,9 @@
-import { ActionIcon, Badge, Text, Title } from '@mantine/core';
+import { ActionIcon, Badge, Button, Text, Title } from '@mantine/core';
 import {
   IconAlertTriangle,
   IconCopy,
   IconMessages,
+  IconPencil,
   IconPlus,
   IconRefreshDot,
   IconShield,
@@ -17,9 +18,12 @@ import { createPortal } from 'react-dom';
 import { openConfirmModal } from '@mantine/modals';
 import { getEdgeUrl } from '~/client-utils/cf-images-utils';
 import { getNsfwLabel } from '~/components/Comics/PanelCard';
+import { dialogStore } from '~/components/Dialog/dialogStore';
 import { openSetBrowsingLevelModal } from '~/components/Dialog/triggers/set-browsing-level';
-import { NsfwLevel } from '~/server/common/enums';
+import { ImageMetaModal } from '~/components/Post/EditV2/ImageMetaModal';
+import { BlockedReason, NsfwLevel } from '~/server/common/enums';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
+import type { ImageMetaProps } from '~/server/schema/image.schema';
 import { hasSafeBrowsingLevel } from '~/shared/constants/browsingLevel.constants';
 import { trpc } from '~/utils/trpc';
 import styles from '~/pages/comics/project/[id]/ProjectWorkspace.module.scss';
@@ -34,7 +38,17 @@ interface PanelDetailDrawerProps {
     id: number;
     imageId?: number | null;
     imageUrl: string | null;
-    image?: { width: number; height: number; nsfwLevel: number } | null;
+    image?: {
+      width: number;
+      height: number;
+      nsfwLevel: number;
+      // Surfaced so the drawer can show the "Add generation details" CTA
+      // when the underlying Image was blocked for AI verification. The
+      // remaining moderation fields are populated by `getChapter` but
+      // not used here directly — the badge on PanelCard handles those.
+      blockedFor?: string | null;
+      meta?: Record<string, unknown> | null;
+    } | null;
     status: string;
     prompt: string;
     enhancedPrompt: string | null;
@@ -73,6 +87,33 @@ export function PanelDetailDrawer({
     isGreen &&
     detailPanel?.status === 'Ready' &&
     (detailPanel?.image ? !hasSafeBrowsingLevel(detailPanel.image.nsfwLevel) : !!detailPanel?.imageUrl);
+
+  // Opens the standard ImageMetaModal against the panel's underlying Image
+  // record. Used both for the "AI verification failed" banner CTA and for
+  // the always-on "Edit generation details" action — the owner may want to
+  // tweak prompt/sampler even on a panel that scanned cleanly. The same
+  // server path (`post.updateImage` → `updatePostImage`) handles both: if
+  // the image was blocked for `AiNotVerified` and the new meta is now
+  // verifiable, it flips back to `Pending` ingestion automatically.
+  const openMetaEditor = () => {
+    if (!detailPanel?.imageId) return;
+    dialogStore.trigger({
+      component: ImageMetaModal,
+      props: {
+        id: detailPanel.imageId,
+        meta: (detailPanel.image?.meta ?? undefined) as ImageMetaProps | undefined,
+        nsfwLevel: detailPanel.image?.nsfwLevel ?? NsfwLevel.PG,
+        blockedFor: detailPanel.image?.blockedFor ?? undefined,
+        updateImage: () => {
+          void utils.comics.getChapter.invalidate({
+            projectId,
+            chapterPosition,
+          });
+          void utils.comics.getProjectShell.invalidate({ id: projectId });
+        },
+      },
+    });
+  };
 
   // Lock body scroll when drawer is open
   useEffect(() => {
@@ -136,6 +177,46 @@ export function PanelDetailDrawer({
                   </div>
                 )}
               </div>
+
+              {/* AI verification fix — when the panel's image was blocked
+                  because we couldn't verify it was AI-generated, give the
+                  owner a way to add the generation metadata (prompt,
+                  sampler, steps, etc.) inline. Submitting via
+                  `post.updateImage` re-runs the AI-verification audit, and
+                  if the new meta is sufficient the image goes back to
+                  `Pending` ingestion and the chapter unblocks
+                  automatically once it's re-scanned. */}
+              {detailPanel.imageId &&
+                detailPanel.image?.blockedFor === BlockedReason.AiNotVerified && (
+                  <div
+                    className="rounded-md p-3 flex flex-col gap-2"
+                    style={{
+                      border: '1px solid var(--mantine-color-yellow-7)',
+                      background: 'rgba(250, 176, 5, 0.08)',
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <IconAlertTriangle size={16} style={{ color: '#fab005' }} />
+                      <Text size="sm" fw={600} c="yellow">
+                        AI generation could not be verified
+                      </Text>
+                    </div>
+                    <Text size="xs" c="dimmed">
+                      This panel was blocked because we couldn&apos;t verify it was AI-generated
+                      from its metadata. Add the prompt, sampler, steps and other settings used
+                      to generate it, and we&apos;ll re-scan it automatically.
+                    </Text>
+                    <Button
+                      size="compact-sm"
+                      color="yellow"
+                      variant="light"
+                      leftSection={<IconPencil size={14} />}
+                      onClick={openMetaEditor}
+                    >
+                      Add generation details
+                    </Button>
+                  </div>
+                )}
 
               {/* Status + Reference row */}
               <div className="flex items-center gap-3 flex-wrap">
@@ -348,6 +429,16 @@ export function PanelDetailDrawer({
                   >
                     <IconPlus size={14} />
                     Insert after
+                  </button>
+                )}
+                {detailPanel.imageId && (
+                  <button
+                    className={styles.subtleBtn}
+                    onClick={openMetaEditor}
+                    title="Edit generation metadata (prompt, sampler, steps, etc.)"
+                  >
+                    <IconPencil size={14} />
+                    Edit metadata
                   </button>
                 )}
                 <button

@@ -15,14 +15,17 @@ import {
   IconBan,
   IconCheck,
   IconExternalLink,
+  IconPhoto,
   IconUser,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { getEdgeUrl } from '~/client-utils/cf-images-utils';
 import { ImageGuard2 } from '~/components/ImageGuard/ImageGuard2';
+import { MediaHash } from '~/components/ImageHash/ImageHash';
 import { Meta } from '~/components/Meta/Meta';
 import { NoContent } from '~/components/NoContent/NoContent';
+import { BlockedReason } from '~/server/common/enums';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import {
   showErrorNotification,
@@ -45,6 +48,111 @@ const reviewReasonOptions = [
   { value: 'appeal', label: 'Appeal pending' },
   { value: 'csam', label: 'CSAM (manual)' },
 ];
+
+// Friendly labels for `Image.blockedFor` values. Known `BlockedReason`
+// enum members map to short human strings; anything else (the scanner
+// stores audit terms as a comma-joined string) falls through as-is so
+// mods can still see what tripped the audit.
+const blockedForLabels: Record<string, string> = {
+  [BlockedReason.AiNotVerified]: 'AI verification missing',
+  [BlockedReason.TOS]: 'TOS violation (auto)',
+  [BlockedReason.Moderated]: 'Moderated',
+  [BlockedReason.CSAM]: 'CSAM',
+};
+
+function formatBlockedFor(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return blockedForLabels[value] ?? value;
+}
+
+// Friendly labels for non-Scanned ingestion states. These are the states
+// the workspace banner ("review pending") treats as blocking. The label
+// adds a hint of what action got the image into that state so mods can
+// tell apart "automated scan blocked it" vs. "manual queue waiting".
+const ingestionLabels: Record<string, string> = {
+  Pending: 'Awaiting scan',
+  Blocked: 'Blocked by scanner',
+  Error: 'Scan error',
+  NotFound: 'Not found',
+  PendingManualAssignment: 'Pending manual review',
+  Rescan: 'Queued for rescan',
+};
+
+function formatIngestion(value: string | null | undefined): string | null {
+  if (!value || value === 'Scanned') return null;
+  return ingestionLabels[value] ?? value;
+}
+
+type ReviewSignal = {
+  key: string;
+  label: string;
+  color: string;
+  variant: 'filled' | 'light';
+  tooltip?: string;
+};
+
+function buildReviewSignals(image: {
+  tosViolation?: boolean | null;
+  blockedFor?: string | null;
+  needsReview?: string | null;
+  ingestion?: string | null;
+}): ReviewSignal[] {
+  const signals: ReviewSignal[] = [];
+  // Order: most actionable / most severe first.
+  if (image.tosViolation) {
+    signals.push({
+      key: 'tos',
+      label: 'TOS violation',
+      color: 'red',
+      variant: 'filled',
+      tooltip: 'Image has been hard-flagged as a TOS violation.',
+    });
+  }
+  const blockedForLabel = formatBlockedFor(image.blockedFor);
+  if (blockedForLabel) {
+    signals.push({
+      key: 'blockedFor',
+      label: blockedForLabel,
+      // AiNotVerified is owner-fixable (just needs metadata) — softer color
+      // so it visually splits from real moderation blocks.
+      color: image.blockedFor === BlockedReason.AiNotVerified ? 'yellow' : 'orange',
+      variant: 'filled',
+      tooltip:
+        image.blockedFor === BlockedReason.AiNotVerified
+          ? 'The image was blocked because we could not verify it was AI-generated from its metadata. The creator can fix this by adding prompt/sampler/steps to the panel.'
+          : `Raw scanner reason: ${image.blockedFor ?? ''}`,
+    });
+  }
+  if (image.needsReview) {
+    signals.push({
+      key: 'needsReview',
+      label: `Review: ${image.needsReview}`,
+      color: 'orange',
+      variant: 'light',
+      tooltip: 'Image is queued for moderator review (set by the scanner or an appeal).',
+    });
+  }
+  // Skip the ingestion chip when blockedFor already covers the reason — they
+  // co-occur (Blocked + AiNotVerified, Blocked + TOS) and a second chip just
+  // adds noise.
+  const ingestionLabel = formatIngestion(image.ingestion);
+  if (ingestionLabel && !image.blockedFor) {
+    signals.push({
+      key: 'ingestion',
+      label: ingestionLabel,
+      color: 'gray',
+      variant: 'light',
+      tooltip: `Ingestion state: ${image.ingestion ?? ''}`,
+    });
+  }
+  // Fallback so a row never lands without any signal (shouldn't happen
+  // because the queue WHERE clause matches one of these flags, but defends
+  // against future filter widening).
+  if (signals.length === 0) {
+    signals.push({ key: 'unknown', label: 'Unknown reason', color: 'gray', variant: 'light' });
+  }
+  return signals;
+}
 
 export const getServerSideProps = createServerSideProps({
   useSession: true,
@@ -142,10 +250,16 @@ export default function ComicsModerationReview() {
               const project = panel.chapter.project;
               const author = project.user;
               const image = panel.image;
-              const isBlocked = image?.tosViolation === true;
-              const reasonLabel = isBlocked
-                ? 'TOS violation'
-                : image?.needsReview ?? '—';
+              const signals = image
+                ? buildReviewSignals(image)
+                : [
+                    {
+                      key: 'no-image',
+                      label: 'Image missing',
+                      color: 'gray',
+                      variant: 'light' as const,
+                    },
+                  ];
 
               return (
                 <div
@@ -171,9 +285,18 @@ export default function ComicsModerationReview() {
                               className="absolute inset-0 w-full h-full object-cover"
                             />
                           ) : (
-                            <div className="absolute inset-0 bg-dark-6 flex items-center justify-center text-dimmed text-sm">
-                              Hidden
-                            </div>
+                            // Blurhash placeholder — matches the ImagesCard
+                            // pattern. ImageGuard2 stacks its "Rated X / Show"
+                            // overlay on top of this, so we deliberately
+                            // render *no* text/buttons here. Rendering a
+                            // second centered "Hidden" element collides with
+                            // that overlay and produces the bundled-up look.
+                            <MediaHash
+                              id={image.id}
+                              hash={image.hash}
+                              width={image.width}
+                              height={image.height}
+                            />
                           )
                         }
                       </ImageGuard2>
@@ -185,14 +308,30 @@ export default function ComicsModerationReview() {
                   </div>
                   <div className="flex flex-col gap-2 p-3">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <Badge
-                        color={isBlocked ? 'red' : 'orange'}
-                        leftSection={<IconAlertCircle size={11} />}
-                        size="sm"
-                        variant="filled"
-                      >
-                        {reasonLabel}
-                      </Badge>
+                      {signals.map((s) =>
+                        s.tooltip ? (
+                          <Tooltip key={s.key} label={s.tooltip} withArrow multiline maw={280}>
+                            <Badge
+                              color={s.color}
+                              size="sm"
+                              variant={s.variant}
+                              leftSection={<IconAlertCircle size={11} />}
+                            >
+                              {s.label}
+                            </Badge>
+                          </Tooltip>
+                        ) : (
+                          <Badge
+                            key={s.key}
+                            color={s.color}
+                            size="sm"
+                            variant={s.variant}
+                            leftSection={<IconAlertCircle size={11} />}
+                          >
+                            {s.label}
+                          </Badge>
+                        )
+                      )}
                       {project.tosViolation && (
                         <Badge color="red" size="sm" variant="light">
                           Project TOS
@@ -285,6 +424,18 @@ export default function ComicsModerationReview() {
                       >
                         Open
                       </Button>
+                      {image && (
+                        <Button
+                          component={Link}
+                          href={`/images/${image.id}`}
+                          target="_blank"
+                          size="compact-xs"
+                          variant="default"
+                          leftSection={<IconPhoto size={12} />}
+                        >
+                          Image
+                        </Button>
+                      )}
                     </Group>
                   </div>
                 </div>

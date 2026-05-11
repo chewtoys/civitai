@@ -8,7 +8,6 @@ import { env } from '~/env/server';
 import type { TagType } from '~/shared/utils/prisma/enums';
 import { ImageIngestionStatus, NewOrderRankType, TagSource } from '~/shared/utils/prisma/enums';
 import {
-  BlockedReason,
   NsfwLevel,
   SearchIndexUpdateQueueAction,
   SignalMessages,
@@ -31,7 +30,6 @@ import {
   orchestratorNsfwLevelMap,
   sfwBrowsingLevelsFlag,
 } from '~/shared/constants/browsingLevel.constants';
-import { isValidAIGeneration } from '~/utils/image-utils';
 import { createImageTagsForReview } from '~/server/services/image-review.service';
 import { tagIdsForImagesCache } from '~/server/redis/caches';
 import type { MediaMetadata } from '~/server/schema/media.schema';
@@ -285,24 +283,20 @@ export async function processImageScanWorkflow({
     negativePrompt,
   });
 
-  const validAiGeneration = isValidAIGeneration({ ...image, tags, meta: image.meta as any });
-
   const toUpdate: Prisma.ImageUpdateInput = {
     updatedAt: new Date(),
     pHash,
   };
+  // AI-generation verification is no longer a blocking gate (per operations
+  // 2026-05-11): nsfw images that we couldn't auto-verify as AI used to
+  // land in `Blocked + AiNotVerified`, but the false-positive rate didn't
+  // justify the friction. The remaining `audit.blockedFor` branch still
+  // catches hard violations (TOS / Moderated / CSAM) — everything else
+  // falls through to Scanned.
   if (audit.blockedFor) {
     toUpdate.ingestion = ImageIngestionStatus.Blocked;
     toUpdate.blockedFor = audit.blockedFor;
     toUpdate.nsfwLevel = NsfwLevel.Blocked;
-  } else if (
-    audit.nsfw &&
-    !validAiGeneration &&
-    !(await isExemptFromAiVerification(image.id, image.metadata as MediaMetadata | null))
-  ) {
-    toUpdate.ingestion = ImageIngestionStatus.Blocked;
-    toUpdate.blockedFor = BlockedReason.AiNotVerified;
-    toUpdate.nsfwLevel = audit.nsfwLevel;
   } else {
     toUpdate.ingestion = ImageIngestionStatus.Scanned;
     toUpdate.needsReview = audit.reviewKey ?? null;

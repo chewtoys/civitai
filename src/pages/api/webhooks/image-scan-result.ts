@@ -17,7 +17,7 @@ import { dbRead, dbWrite } from '~/server/db/client';
 import { getExplainSql } from '~/server/db/db-helpers';
 import { logToAxiom } from '~/server/logging/client';
 import { tagIdsForImagesCache } from '~/server/redis/caches';
-import type { ImageMetadata, MediaMetadata, VideoMetadata } from '~/server/schema/media.schema';
+import type { ImageMetadata, VideoMetadata } from '~/server/schema/media.schema';
 import { addImageToQueue } from '~/server/services/games/new-order.service';
 import { createImageTagsForReview } from '~/server/services/image-review.service';
 import {
@@ -32,7 +32,6 @@ import {
   insertTagsOnImageNew,
   upsertTagsOnImageNew,
 } from '~/server/services/tagsOnImageNew.service';
-import { isExemptFromAiVerification } from '~/server/services/image-scan-result.service';
 import { deleteUserProfilePictureCache } from '~/server/services/user.service';
 import { WebhookEndpoint } from '~/server/utils/endpoint-helpers';
 import { evaluateRules } from '~/server/utils/mod-rules';
@@ -48,7 +47,6 @@ import {
   TagType,
 } from '~/shared/utils/prisma/enums';
 import { decreaseDate } from '~/utils/date-helpers';
-import { isValidAIGeneration } from '~/utils/image-utils';
 import {
   auditMetaData,
   getTagsFromPrompt,
@@ -1002,7 +1000,9 @@ async function auditImageScanResults({ image }: { image: GetImageReturn }) {
   if (hasBlockedTag) flags.tagReview = true;
 
   // TODO - add information to ImageForReview entity based on any connected entities
-  const [{ poi, minor, hasResource }] = await dbWrite.$queryRaw<
+  // `hasResource` is still selected for legacy debugging/visibility but is
+  // no longer consumed now that AI-verification blocking is gone.
+  const [{ poi, minor }] = await dbWrite.$queryRaw<
     { poi: boolean; minor: boolean; hasResource: boolean }[]
   >`
       WITH to_check AS (
@@ -1098,22 +1098,11 @@ async function auditImageScanResults({ image }: { image: GetImageReturn }) {
   if (flags.poi) data.poi = true;
   if (flags.minor) data.minor = true;
 
-  const validAiGeneration = isValidAIGeneration({
-    ...image,
-    nsfwLevel: Math.max(nsfwLevel, flags.nsfw ? NsfwLevel.X : NsfwLevel.PG),
-    meta: image.meta as ImageMetadata | VideoMetadata,
-    tools: image.tools,
-    // Avoids blocking images that we know are AI generated with some resources.
-    resources: hasResource ? [1] : [],
-  });
-  if (
-    flags.nsfw &&
-    !validAiGeneration &&
-    !(await isExemptFromAiVerification(image.id, image.metadata as MediaMetadata | null))
-  ) {
-    data.ingestion = ImageIngestionStatus.Blocked;
-    data.blockedFor = BlockedReason.AiNotVerified;
-  }
+  // AI-generation verification is no longer a blocking gate (per operations
+  // 2026-05-11). Hard audit violations (TOS / Moderated / CSAM) still come
+  // through the `auditMetaData` branch below; nsfw-without-metadata
+  // falls through to Scanned with whatever `needsReview` tag the scanner
+  // assigned.
 
   if (flags.nsfw && prompt && data.ingestion !== ImageIngestionStatus.Blocked) {
     // Determine if we need to block the image

@@ -17,6 +17,7 @@ import {
 } from '@mantine/core';
 import { Dropzone, IMAGE_MIME_TYPE } from '@mantine/dropzone';
 import {
+  IconAlertTriangle,
   IconClock,
   IconInfoCircle,
   IconPencil,
@@ -55,6 +56,7 @@ import { useAvailableBuzz } from '~/components/Buzz/useAvailableBuzz';
 import { dialogStore } from '~/components/Dialog/dialogStore';
 import { showErrorNotification } from '~/utils/notifications';
 import { useCFImageUpload } from '~/hooks/useCFImageUpload';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { fetchAndUploadGeneratorImage } from '~/utils/comic-image-picker';
 import { trpc } from '~/utils/trpc';
 import { useComicsQueueStatus } from '~/components/Comics/hooks/useComicsQueueStatus';
@@ -233,6 +235,11 @@ export function PanelModal({
   const [panelMode, setPanelMode] = useState<'generate' | 'enhance' | 'bulk' | 'import'>(
     'generate'
   );
+
+  // Green is SFW-only — the NSFW-metadata warnings below only apply on
+  // red, where users can upload mature content that needs AI-generation
+  // metadata to pass our scanner.
+  const { isGreen } = useFeatureFlags();
 
   // Allowed buzz account types (includes blue + domain currency)
   const availableBuzzTypes = useAvailableBuzz(['blue']);
@@ -698,8 +705,9 @@ export function PanelModal({
       )}
 
       <Text size="xs" c="dimmed">
-        Generated panels use the selected AI model and some are SFW only. Uploaded or imported images can
-        be NSFW but will be scanned.
+        {isGreen
+          ? 'Generated panels use the selected AI model and some are SFW only.'
+          : "Generated panels use the selected AI model and some are SFW only. Uploaded or imported images can be NSFW, but they must include generation metadata (prompt, sampler, steps…) or they'll be blocked from publishing."}
       </Text>
 
       {panelMode === 'generate' ? (
@@ -1020,6 +1028,28 @@ export function PanelModal({
       ) : panelMode === 'bulk' ? (
         /* ── Bulk Add tab ─── */
         <Stack gap="md">
+          {/* Same AI-verification gotcha as the Import tab — bulk-uploaded
+              images that come in NSFW without generation metadata will be
+              blocked. Red-only; green has no NSFW publishing path. */}
+          {!isGreen && (
+            <Alert
+              color="yellow"
+              variant="light"
+              icon={<IconAlertTriangle size={16} />}
+              title="NSFW uploads need generation metadata"
+            >
+              <Text size="xs">
+                If an uploaded image is classified as NSFW and we can&apos;t verify it was
+                AI-generated, it will be blocked from publishing until you add the prompt,
+                sampler, steps, and other generation settings via{' '}
+                <Text component="span" fw={600} inherit>
+                  Add generation details
+                </Text>{' '}
+                in the panel detail view.
+              </Text>
+            </Alert>
+          )}
+
           <Dropzone
             onDrop={handleBulkImageDrop}
             accept={IMAGE_MIME_TYPE}
@@ -1170,6 +1200,34 @@ export function PanelModal({
           <Text size="sm" c="dimmed">
             Select images from your generator history to import as panels.
           </Text>
+
+          {/* AI-verification requirement — imported images keep whatever
+              generation metadata they shipped with, but if any of those
+              fields are missing AND the image is classified NSFW, our
+              ingest pipeline will block them for `AiNotVerified`. Surface
+              this up-front so creators aren't blindsided when their
+              chapter refuses to publish; the panel detail drawer already
+              has the fix-it flow via "Add generation details". Skipped on
+              green where NSFW publishing isn't possible to begin with. */}
+          {!isGreen && (
+            <Alert
+              color="yellow"
+              variant="light"
+              icon={<IconAlertTriangle size={16} />}
+              title="NSFW images need generation metadata"
+            >
+              <Text size="xs">
+                If an imported image is classified as NSFW and we can&apos;t verify it was
+                AI-generated from its metadata, it will be blocked from publishing until you
+                add the prompt, sampler, steps, and other generation settings. You can do
+                this later from the panel detail view by clicking{' '}
+                <Text component="span" fw={600} inherit>
+                  Add generation details
+                </Text>
+                .
+              </Text>
+            </Alert>
+          )}
 
           <Button
             variant="light"

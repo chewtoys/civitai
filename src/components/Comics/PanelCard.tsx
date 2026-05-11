@@ -16,9 +16,12 @@ import { CSS } from '@dnd-kit/utilities';
 import { useSortable } from '@dnd-kit/sortable';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getEdgeUrl } from '~/client-utils/cf-images-utils';
+import { dialogStore } from '~/components/Dialog/dialogStore';
 import { openSetBrowsingLevelModal } from '~/components/Dialog/triggers/set-browsing-level';
+import { ImageMetaModal } from '~/components/Post/EditV2/ImageMetaModal';
 import { useSignalConnection } from '~/components/Signals/SignalsProvider';
-import { NsfwLevel, SignalMessages } from '~/server/common/enums';
+import { BlockedReason, NsfwLevel, SignalMessages } from '~/server/common/enums';
+import type { ImageMetaProps } from '~/server/schema/image.schema';
 import { ComicPanelStatus } from '~/shared/utils/prisma/enums';
 import { browsingLevelLabels } from '~/shared/constants/browsingLevel.constants';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
@@ -61,7 +64,25 @@ export interface PanelCardProps {
     workflowId: string | null;
     errorMessage: string | null;
     metadata?: any;
-    image?: { nsfwLevel: number } | null;
+    image?: {
+      nsfwLevel: number;
+      // Moderation state — populated by `getChapter` so the workspace can
+      // surface, on the panel itself, *why* the parent chapter is hidden
+      // from readers. Mirrors the chapter sidebar's TOS / Review pill.
+      tosViolation?: boolean;
+      needsReview?: string | null;
+      ingestion?: string;
+      // `AiNotVerified` is owner-fixable: the underlying image was blocked
+      // because we couldn't verify the AI generation from its metadata. The
+      // owner can resolve it by clicking the "Add Metadata" badge directly
+      // (one-click flow) or via the detail drawer's Edit metadata action.
+      blockedFor?: string | null;
+      // Current generation meta — fed into `ImageMetaModal` as defaults so
+      // the owner doesn't have to retype the prompt they've already entered.
+      // Stored as `JsonValue` server-side; cast at the call site since the
+      // modal validates with its own zod schema anyway.
+      meta?: unknown;
+    } | null;
   };
   projectId: number;
   /**
@@ -373,6 +394,76 @@ export function PanelCard({
 
   const nsfwInfo = panel.image?.nsfwLevel ? getNsfwLabel(panel.image.nsfwLevel) : null;
 
+  // One-click metadata editor — opens the same `ImageMetaModal` the post
+  // editor uses. Mirrors `PanelDetailDrawer`'s `openMetaEditor`, but lives
+  // on the card itself so the owner can fix `AiNotVerified` blocks
+  // straight from the badge without having to open the drawer first.
+  const openMetaEditor = () => {
+    if (!panel.imageId) return;
+    dialogStore.trigger({
+      component: ImageMetaModal,
+      props: {
+        id: panel.imageId,
+        meta: (panel.image?.meta ?? undefined) as ImageMetaProps | undefined,
+        nsfwLevel: panel.image?.nsfwLevel ?? NsfwLevel.PG,
+        blockedFor: panel.image?.blockedFor ?? undefined,
+        // No local image-state to mutate; invalidate the chapter so the
+        // next render pulls fresh `blockedFor` / `ingestion` / `meta`.
+        updateImage: () => {
+          void utils.comics.getChapter.invalidate({ projectId, chapterPosition });
+          void utils.comics.getProjectShell.invalidate({ id: projectId });
+        },
+      },
+    });
+  };
+
+  // Mirror the chapter-sidebar pill on the panel itself so the owner sees,
+  // at a glance, *which* panel is holding the chapter back. Order matches
+  // `getProjectShell`'s `hiddenReason` precedence with one addition:
+  // `AiNotVerified` is owner-fixable and its badge doubles as a CTA — the
+  // optional `onClick` opens the meta editor inline.
+  const reviewStatus: {
+    label: string;
+    color: string;
+    tooltip: string;
+    onClick?: (e: React.MouseEvent) => void;
+  } | null = (() => {
+    const img = panel.image;
+    if (!img) return null;
+    if (img.tosViolation) {
+      return {
+        label: 'TOS',
+        color: 'red',
+        tooltip:
+          'This panel image violates our TOS. The chapter will stay hidden from readers until it is regenerated or removed.',
+      };
+    }
+    if (img.blockedFor === BlockedReason.AiNotVerified) {
+      return {
+        label: 'Add Metadata',
+        color: 'yellow',
+        tooltip:
+          'This panel was blocked because we could not verify it was AI-generated. Click to add the prompt, sampler, and other generation details — the chapter will unblock automatically once the image re-ingests.',
+        onClick: (e: React.MouseEvent) => {
+          e.stopPropagation();
+          openMetaEditor();
+        },
+      };
+    }
+    const pendingReview =
+      img.needsReview != null ||
+      (img.ingestion != null && img.ingestion !== 'Scanned');
+    if (pendingReview) {
+      return {
+        label: 'Review',
+        color: 'orange',
+        tooltip:
+          'This panel image is awaiting moderator review. The chapter will publish automatically once it is cleared.',
+      };
+    }
+    return null;
+  })();
+
   const promptPreview = prompt?.length > 80 ? `${prompt.slice(0, 80)}...` : prompt;
 
   return (
@@ -394,6 +485,26 @@ export function PanelCard({
         >
           <Loader size="sm" color="yellow" />
         </div>
+      )}
+      {/* Fallback review/TOS badge for non-image render branches (NSFW
+          stripped, RequireUnlock, candidate-picker, Failed, empty). When
+          `imageUrl` is rendering, the inline overlay badge below covers it
+          — placing this absolute element there would collide with the
+          menu icon on hover. */}
+      {reviewStatus && !imageUrl && (
+        <Tooltip label={reviewStatus.tooltip} withArrow multiline maw={260}>
+          <Badge
+            size="xs"
+            color={reviewStatus.color}
+            variant="filled"
+            leftSection={<IconAlertTriangle size={10} />}
+            className="absolute top-2 right-2"
+            style={{ zIndex: 4, cursor: reviewStatus.onClick ? 'pointer' : 'default' }}
+            onClick={reviewStatus.onClick ?? ((e: React.MouseEvent) => e.stopPropagation())}
+          >
+            {reviewStatus.label}
+          </Badge>
+        </Tooltip>
       )}
       {isNsfwBlocked ? (
         <>
@@ -437,6 +548,20 @@ export function PanelCard({
                   >
                     {nsfwInfo.label}
                   </Badge>
+                )}
+                {reviewStatus && (
+                  <Tooltip label={reviewStatus.tooltip} withArrow multiline maw={260}>
+                    <Badge
+                      size="xs"
+                      color={reviewStatus.color}
+                      variant="filled"
+                      leftSection={<IconAlertTriangle size={10} />}
+                      style={{ cursor: reviewStatus.onClick ? 'pointer' : 'default' }}
+                      onClick={reviewStatus.onClick ?? ((e: React.MouseEvent) => e.stopPropagation())}
+                    >
+                      {reviewStatus.label}
+                    </Badge>
+                  </Tooltip>
                 )}
               </div>
               <div className={styles.panelMenu}>

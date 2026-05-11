@@ -1039,7 +1039,12 @@ export const comicsRouter = router({
       });
 
       if (!project) throw throwNotFoundError();
-      if (project.userId !== ctx.user.id) throw throwAuthorizationError();
+      // Moderators always have access — they need to be able to load any
+      // comic's workspace to investigate flagged content. All public-state
+      // mutations stay owner-only via their own checks.
+      const isOwner = project.userId === ctx.user.id;
+      const isModerator = ctx.user.isModerator === true;
+      if (!isOwner && !isModerator) throw throwAuthorizationError();
 
       const projectRefs = await dbWrite.comicProjectReference.findMany({
         where: { projectId: project.id },
@@ -1049,7 +1054,10 @@ export const comicsRouter = router({
       const references =
         refIds.length > 0
           ? await dbWrite.comicReference.findMany({
-              where: { id: { in: refIds }, userId: ctx.user.id },
+              // For mods viewing someone else's comic, scope by reference
+              // ids only — the project-owner constraint on `userId` would
+              // hide all of the comic's references.
+              where: { id: { in: refIds }, ...(isOwner ? { userId: ctx.user.id } : {}) },
               orderBy: { createdAt: 'asc' },
               include: {
                 images: {
@@ -1084,21 +1092,28 @@ export const comicsRouter = router({
         // We only flag Published chapters — drafts are obviously hidden
         // and don't need a separate reason. TOS wins over review when
         // both are present (more severe / final).
+        // Compute the flag for *all* chapters, not just Published ones.
+        // Draft chapters with already-flagged panels still need the signal
+        // — otherwise a creator with three chapters all containing
+        // problem panels only sees the warning on whichever one happened
+        // to be published, and the rest look fine until publish time.
+        // The banner copy ("won't appear publicly until cleared … will
+        // publish automatically once approved") reads correctly for both
+        // Published (currently hidden) and Draft (will be hidden when
+        // published) cases.
         let hiddenReason: 'tosViolation' | 'reviewPending' | null = null;
-        if (chapter.status === ComicChapterStatus.Published) {
-          const readyPanels = chapter.panels.filter(
-            (p) => p.status === ComicPanelStatus.Ready
-          );
-          const hasTosImage = readyPanels.some((p) => p.image?.tosViolation === true);
-          const hasReviewImage = readyPanels.some(
-            (p) =>
-              !!p.image &&
-              !p.image.tosViolation &&
-              (p.image.needsReview != null || p.image.ingestion !== ImageIngestionStatus.Scanned)
-          );
-          if (hasTosImage) hiddenReason = 'tosViolation';
-          else if (hasReviewImage) hiddenReason = 'reviewPending';
-        }
+        const readyPanels = chapter.panels.filter(
+          (p) => p.status === ComicPanelStatus.Ready
+        );
+        const hasTosImage = readyPanels.some((p) => p.image?.tosViolation === true);
+        const hasReviewImage = readyPanels.some(
+          (p) =>
+            !!p.image &&
+            !p.image.tosViolation &&
+            (p.image.needsReview != null || p.image.ingestion !== ImageIngestionStatus.Scanned)
+        );
+        if (hasTosImage) hiddenReason = 'tosViolation';
+        else if (hasReviewImage) hiddenReason = 'reviewPending';
 
         // Strip the panel array from the returned shape — callers that need
         // panel data should use `getChapter`. The derived flags above are
@@ -1123,12 +1138,15 @@ export const comicsRouter = router({
     .input(getChapterSchema)
     .query(async ({ ctx, input }) => {
       // Owner check via the parent project — chapters don't store userId.
+      // Mods are allowed through for moderation review.
       const project = await dbWrite.comicProject.findUnique({
         where: { id: input.projectId },
         select: { id: true, userId: true },
       });
       if (!project) throw throwNotFoundError();
-      if (project.userId !== ctx.user.id) throw throwAuthorizationError();
+      const isOwner = project.userId === ctx.user.id;
+      const isModerator = ctx.user.isModerator === true;
+      if (!isOwner && !isModerator) throw throwAuthorizationError();
 
       const chapter = await dbWrite.comicChapter.findUnique({
         where: {
@@ -1142,7 +1160,26 @@ export const comicsRouter = router({
             orderBy: { position: 'asc' },
             include: {
               references: { select: { referenceId: true } },
-              image: { select: { nsfwLevel: true, width: true, height: true } },
+              image: {
+                select: {
+                  nsfwLevel: true,
+                  width: true,
+                  height: true,
+                  // Exposed to the workspace UI so PanelCard can show *why*
+                  // a panel is blocking its chapter from publishing.
+                  ingestion: true,
+                  needsReview: true,
+                  tosViolation: true,
+                  // `blockedFor` distinguishes `AiNotVerified` (the owner
+                  // can fix it by adding generation metadata) from other
+                  // moderator-only blocks. `meta` is the current generation
+                  // metadata — passed into ImageMetaModal as the starting
+                  // values so the owner doesn't lose any prompt they've
+                  // already entered.
+                  blockedFor: true,
+                  meta: true,
+                },
+              },
             },
           },
         },
@@ -5026,23 +5063,40 @@ export const comicsRouter = router({
     .query(async ({ input }) => {
       const { limit, cursor, needsReview, includeTosViolations } = input;
 
-      // Build the Image-level filter. Either `needsReview` is set, or
-      // the panel's Image is TOS-violated. Both keep the panel out of
-      // the public listing, so both belong in the mod queue.
-      const imageFilters: any[] = [];
+      // Build top-level OR conditions. Each branch is `{ image: { ... } }`
+      // so Prisma generates JOIN + WHERE on the related Image row rather
+      // than a nested OR inside a relation filter (which has been finicky
+      // in this codebase before).
+      //
+      // The "any reason" path mirrors the workspace banner — a panel is
+      // surfaced if ANY of the following is true:
+      //  - `needsReview` is set (automated or manual review request),
+      //  - `tosViolation` is true (already flagged),
+      //  - `ingestion` is anything other than `Scanned` (Blocked,
+      //    PendingManualAssignment, Error, Rescan, NotFound). These are
+      //    the same states `getProjectShell` uses to drive the
+      //    `reviewPending` chapter pill, so a panel a creator sees as
+      //    "hidden from readers — review pending" will reliably appear
+      //    here for the mod team.
+      const orConditions: any[] = [];
       if (needsReview) {
-        imageFilters.push({ needsReview });
+        // Specific reason selected — only that one. Don't union in other
+        // states or the dropdown becomes meaningless.
+        orConditions.push({ image: { needsReview } });
       } else {
-        imageFilters.push({ needsReview: { not: null } });
+        orConditions.push({ image: { needsReview: { not: null } } });
+        orConditions.push({
+          image: { ingestion: { not: ImageIngestionStatus.Scanned } },
+        });
       }
       if (includeTosViolations) {
-        imageFilters.push({ tosViolation: true });
+        orConditions.push({ image: { tosViolation: true } });
       }
 
       const panels = await dbRead.comicPanel.findMany({
         where: {
           imageId: { not: null },
-          image: { OR: imageFilters },
+          OR: orConditions,
         },
         take: limit + 1,
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
