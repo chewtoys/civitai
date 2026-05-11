@@ -34,7 +34,11 @@ export function ModerationNav() {
         { label: 'Articles', href: '/moderator/articles' },
         // { label: 'Tags', href: '/moderator/tags' },
         { label: 'Generation', href: '/moderator/generation' },
-        { label: 'Service Status', href: '/moderator/service-status' },
+        {
+          label: 'Service Status',
+          href: '/moderator/service-status',
+          hidden: !features.serviceStatus,
+        },
         // { label: 'Withdrawal Requests', href: '/moderator/buzz-withdrawal-requests' },
         {
           label: 'Cash Management',
