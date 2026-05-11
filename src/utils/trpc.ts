@@ -16,7 +16,6 @@ type RequestHeaders = {
   'x-client-date': string;
   'x-client': string;
   'x-client-version'?: string;
-  'x-fingerprint'?: string;
 };
 
 const url = '/api/trpc';
@@ -92,14 +91,7 @@ const authedCacheBypassLink: TRPCLink<AppRouter> = () => {
  */
 function getHeaders(ctx?: NextPageContext) {
   return function () {
-    const mergedHeaders = { ...ctx?.req?.headers, ...headers };
-    if (typeof window === 'undefined') return mergedHeaders;
-    const fingerprint = window.localStorage.getItem('fingerprint') ?? '';
-
-    return {
-      ...mergedHeaders,
-      'x-fingerprint': fingerprint ? JSON.parse(fingerprint) : undefined,
-    };
+    return { ...ctx?.req?.headers, ...headers };
   };
 }
 

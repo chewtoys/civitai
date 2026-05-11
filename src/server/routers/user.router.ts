@@ -43,7 +43,6 @@ import { createToken } from '~/server/integrations/integration-token';
 import { getAllQuerySchema, getByIdSchema } from '~/server/schema/base.schema';
 import { paymentMethodDeleteInput } from '~/server/schema/stripe.schema';
 import {
-  computeDeviceFingerprintSchema,
   deleteUserSchema,
   dismissAlertSchema,
   restoreAlertSchema,
@@ -72,7 +71,6 @@ import {
   validateEmailTokenSchema,
 } from '~/server/schema/user.schema';
 import {
-  computeFingerprint,
   cosmeticStatus,
   equipCosmetic,
   getUserArticleEngagements,
@@ -333,12 +331,6 @@ export const userRouter = router({
   setLeaderboardEligibility: moderatorProcedure
     .input(setLeaderboardEligbilitySchema)
     .mutation(setLeaderboardEligibilityHandler),
-  ingestFingerprint: publicProcedure
-    .meta({ requiredScope: TokenScope.UserWrite })
-    .input(computeDeviceFingerprintSchema)
-    .mutation(({ input, ctx }) =>
-      computeFingerprint({ fingerprint: input.fingerprint, userId: ctx.user?.id })
-    ),
   requestAdToken: verifiedProcedure
     .meta({ requiredScope: TokenScope.UserWrite })
     .mutation(({ ctx }) => requestAdToken({ userId: ctx.user.id })),

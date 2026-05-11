@@ -1,7 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { uniq } from 'lodash-es';
 import dayjs from '~/shared/utils/dayjs';
-import { env } from '~/env/server';
 import { CacheTTL, constants, USERS_SEARCH_INDEX } from '~/server/common/constants';
 import {
   BanReasonCode,
@@ -39,7 +38,6 @@ import {
 import { redis, REDIS_KEYS } from '~/server/redis/client';
 import type { GetByIdInput } from '~/server/schema/base.schema';
 import type {
-  ComputeDeviceFingerprintInput,
   DeleteUserInput,
   GetAllUsersInput,
   GetByUsernameSchema,
@@ -87,7 +85,7 @@ import {
   throwConflictError,
   throwNotFoundError,
 } from '~/server/utils/errorHandling';
-import { encryptText, generateKey, generateSecretHash } from '~/server/utils/key-generator';
+import { generateKey, generateSecretHash } from '~/server/utils/key-generator';
 import { DEFAULT_PAGE_SIZE, getPagination, getPagingData } from '~/server/utils/pagination-helpers';
 import { invalidateSession, refreshSession } from '~/server/auth/session-invalidation';
 import { getNsfwLevelDeprecatedReverseMapping } from '~/shared/constants/browsingLevel.constants';
@@ -1910,18 +1908,6 @@ export async function amIBlockedByUser({
   });
 
   return !!engagement;
-}
-
-export function computeFingerprint({
-  fingerprint,
-  userId,
-}: ComputeDeviceFingerprintInput & { userId?: number }) {
-  if (!env.FINGERPRINT_SECRET || !env.FINGERPRINT_IV) return fingerprint;
-  return encryptText({
-    text: `${fingerprint}:${userId ?? 0}:${Date.now()}`,
-    key: env.FINGERPRINT_SECRET,
-    iv: env.FINGERPRINT_IV,
-  });
 }
 
 export async function requestAdToken({ userId }: { userId: number }) {

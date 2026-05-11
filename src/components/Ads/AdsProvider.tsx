@@ -6,7 +6,6 @@ import { adUnitsLoaded } from '~/components/Ads/ads.utils';
 import { useSignalContext } from '~/components/Signals/SignalsProvider';
 import { isDev } from '~/env/other';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useDeviceFingerprint } from '~/providers/ActivityReportingProvider';
 import { useBrowsingSettings } from '~/providers/BrowserSettingsProvider';
 import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 
@@ -222,7 +221,6 @@ export function AdsProvider({ children }: { children: React.ReactNode }) {
 function ImpressionTracker() {
   const currentUser = useCurrentUser();
   const { worker } = useSignalContext();
-  const { fingerprint } = useDeviceFingerprint();
 
   useEffect(() => {
     const listener = ((e: CustomEvent) => {
@@ -231,7 +229,6 @@ function ImpressionTracker() {
       if (worker && currentUser) {
         worker.send('recordAdImpression', {
           userId: currentUser.id,
-          fingerprint,
           adId: adUnit,
         });
       }
@@ -241,7 +238,7 @@ function ImpressionTracker() {
     return () => {
       window.removeEventListener('civitai-ad-impression', listener);
     };
-  }, [fingerprint, worker, currentUser]);
+  }, [worker, currentUser]);
 
   return null;
 }

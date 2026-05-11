@@ -87,7 +87,7 @@ export const createPostHandler = async ({
   ctx: ProtectedContext;
 }) => {
   try {
-    const { ip, fingerprint } = ctx;
+    const { ip } = ctx;
     const today = new Date();
 
     const post = await createPost({ userId: ctx.user.id, ...input });
@@ -105,10 +105,7 @@ export const createPostHandler = async ({
     });
 
     if (isPublished && !isScheduled) {
-      await firstDailyPostReward.apply(
-        { postId: post.id, posterId: post.user.id },
-        { ip, fingerprint }
-      );
+      await firstDailyPostReward.apply({ postId: post.id, posterId: post.user.id }, { ip });
 
       await ctx.track.post({
         type: 'Publish',
@@ -357,7 +354,7 @@ export const updatePostHandler = async ({
             modelVersionId: updatedPost.modelVersionId,
             posterId: updatedPost.userId,
           },
-          { ip: ctx.ip, fingerprint: ctx.fingerprint }
+          { ip: ctx.ip }
         );
       }
 
@@ -367,7 +364,7 @@ export const updatePostHandler = async ({
           postId: updatedPost.id,
           posterId: updatedPost.userId,
         },
-        { ip: ctx.ip, fingerprint: ctx.fingerprint }
+        { ip: ctx.ip }
       );
 
       if (!isScheduled) {
@@ -580,12 +577,10 @@ export const addPostTagHandler = async ({
         },
       },
     } as const;
-    const post = await dbRead.post
-      .findFirstOrThrow(postFindArgs)
-      .catch(() => {
-        dbReadFallbackCounter.inc({ entity: 'post', caller: 'addPostTagHandler' });
-        return dbWrite.post.findFirstOrThrow(postFindArgs);
-      });
+    const post = await dbRead.post.findFirstOrThrow(postFindArgs).catch(() => {
+      dbReadFallbackCounter.inc({ entity: 'post', caller: 'addPostTagHandler' });
+      return dbWrite.post.findFirstOrThrow(postFindArgs);
+    });
     await ctx.track.post({
       type: 'Tags',
       postId: input.id,
