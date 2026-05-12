@@ -71,9 +71,29 @@ type WdTaggingStep = {
   $type: 'wdTagging';
   output: { tags: Record<string, number>; rating: Record<string, number> };
 };
+type AgeDetection = {
+  detectorType?: string;
+  boundingBox: { x1: number; y1: number; x2: number; y2: number };
+  ageLabel: string;
+  confidence: number;
+  isMinor: boolean;
+  topK: Record<string, number>;
+};
+type FaceDetection = {
+  boundingBox: { x1: number; y1: number; x2: number; y2: number };
+};
+type RecognitionResult = { label: string; confidence: number };
 type MediaRatingStep = {
   $type: 'mediaRating';
-  output: { nsfwLevel: string; isBlocked: boolean; blockedReason?: string };
+  output: {
+    nsfwLevel: string;
+    isBlocked: boolean;
+    blockedReason?: string;
+    ageClassification?: { detections: AgeDetection[] };
+    faceRecognition?: { faces: FaceDetection[] };
+    aiRecognition?: RecognitionResult;
+    animeRecognition?: RecognitionResult;
+  };
 };
 type MediaHashStep = {
   $type: 'mediaHash';
@@ -684,12 +704,41 @@ function aggregateMediaRatingRepeater(steps: ScanResultStep[]) {
 
   return mediaRatingSteps.reduce<MediaRatingStep['output']>(
     (acc, step) => {
-      const { nsfwLevel, isBlocked, blockedReason } = step.output;
+      const {
+        nsfwLevel,
+        isBlocked,
+        blockedReason,
+        ageClassification,
+        faceRecognition,
+        aiRecognition,
+        animeRecognition,
+      } = step.output;
       if (!acc.isBlocked) acc.isBlocked = isBlocked;
       if (!acc.blockedReason) acc.blockedReason = blockedReason;
 
       if (orchestratorNsfwLevelMap[nsfwLevel] > orchestratorNsfwLevelMap[acc.nsfwLevel])
         acc.nsfwLevel = nsfwLevel;
+
+      if (ageClassification?.detections.length) {
+        acc.ageClassification ??= { detections: [] };
+        acc.ageClassification.detections.push(...ageClassification.detections);
+      }
+      if (faceRecognition?.faces.length) {
+        acc.faceRecognition ??= { faces: [] };
+        acc.faceRecognition.faces.push(...faceRecognition.faces);
+      }
+      if (
+        aiRecognition &&
+        (!acc.aiRecognition || aiRecognition.confidence > acc.aiRecognition.confidence)
+      ) {
+        acc.aiRecognition = aiRecognition;
+      }
+      if (
+        animeRecognition &&
+        (!acc.animeRecognition || animeRecognition.confidence > acc.animeRecognition.confidence)
+      ) {
+        acc.animeRecognition = animeRecognition;
+      }
 
       return acc;
     },

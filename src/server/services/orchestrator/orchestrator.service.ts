@@ -135,6 +135,10 @@ export async function createImageIngestionRequest({
                       path: 'url',
                     },
                     engine: 'civitai',
+                    includeAgeClassification: true,
+                    includeAIRecognition: true,
+                    includeFaceRecognition: true,
+                    includeAnimeRecognition: true,
                   },
                 },
               },
@@ -178,24 +182,58 @@ export async function createImageIngestionRequest({
   return { data, body, error, status: response.status };
 }
 
-export async function createTextModerationRequest({
-  entityType,
-  entityId,
-  content,
-  labels,
-  callbackUrl,
-  wait,
-  priority = 'normal',
-}: {
+type XGuardModerationArgs = {
   entityType: string;
   entityId: number;
-  content: string;
   labels?: string[];
   callbackUrl?: string;
   wait?: number;
   priority?: Priority;
-}) {
-  const metadata = { entityType, entityId };
+  /**
+   * When true, the webhook handler will persist this scan's results to the
+   * scanner audit store (ClickHouse + Postgres review tables) for prompt
+   * tuning. Default false. Plumbed through workflow metadata so the webhook
+   * doesn't need any other signal.
+   */
+  recordForReview?: boolean;
+} & (
+  | { mode: 'text'; content: string }
+  | {
+      mode: 'prompt';
+      positivePrompt: string;
+      negativePrompt?: string;
+      instructions?: string;
+    }
+);
+
+export async function createXGuardModerationRequest(args: XGuardModerationArgs) {
+  const {
+    entityType,
+    entityId,
+    labels,
+    callbackUrl,
+    wait,
+    priority = 'normal',
+    recordForReview = false,
+  } = args;
+  const metadata = { entityType, entityId, recordForReview };
+
+  const input =
+    args.mode === 'text'
+      ? {
+          mode: 'text' as const,
+          text: args.content,
+          labels,
+          storeFullResponse: false,
+        }
+      : {
+          mode: 'prompt' as const,
+          positivePrompt: args.positivePrompt,
+          negativePrompt: args.negativePrompt ?? null,
+          instructions: args.instructions ?? null,
+          labels,
+          storeFullResponse: false,
+        };
 
   const { data, error, response } = await submitWorkflow({
     client: internalOrchestratorClient,
@@ -206,15 +244,10 @@ export async function createTextModerationRequest({
       steps: [
         {
           $type: 'xGuardModeration',
-          name: 'textModeration',
+          name: args.mode === 'text' ? 'textModeration' : 'promptModeration',
           metadata,
           priority,
-          input: {
-            text: content,
-            mode: 'text',
-            labels,
-            storeFullResponse: false,
-          },
+          input,
         } as XGuardModerationStepTemplate,
       ],
       callbacks: callbackUrl
@@ -238,7 +271,8 @@ export async function createTextModerationRequest({
   if (!data) {
     logToAxiom({
       type: 'error',
-      name: 'text-moderation',
+      name: 'xguard-moderation',
+      mode: args.mode,
       entityType,
       entityId,
       responseStatus: response?.status,
