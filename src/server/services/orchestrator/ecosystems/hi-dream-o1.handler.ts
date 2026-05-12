@@ -24,7 +24,7 @@ import { hiDreamO1VersionIds } from '~/shared/data-graph/generation/hi-dream-o1-
 import { defineHandler } from './handler-factory';
 
 type EcosystemGraphOutput = Extract<GenerationGraphTypes['Ctx'], { ecosystem: string }>;
-type HiDreamO1Ctx = EcosystemGraphOutput & { ecosystem: 'HiDreamO1' };
+type HiDreamO1Ctx = EcosystemGraphOutput & { ecosystem: 'HiDream-O1' };
 
 export const createHiDreamO1Input = defineHandler<HiDreamO1Ctx, [ImageGenStepTemplate]>(
   (data, ctx) => {
@@ -52,7 +52,7 @@ export const createHiDreamO1Input = defineHandler<HiDreamO1Ctx, [ImageGenStepTem
     // Shared fields across all four variants
     const base = {
       engine: 'comfy' as const,
-      ecosystem: 'hidream' as const,
+      ecosystem: 'hidream-o1' as 'hidream',
       prompt: data.prompt,
       negativePrompt: 'negativePrompt' in data ? data.negativePrompt : undefined,
       width: data.aspectRatio.width,

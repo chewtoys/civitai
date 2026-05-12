@@ -394,7 +394,10 @@ export const orchestratorRouter = router({
     .input(z.any())
     .query(async ({ ctx, input }) => {
       const userTier = ctx.user.tier ?? 'free';
-      const { externalCtx, status } = await buildGenerationContext(userTier, ctx.features);
+      const { externalCtx, status } = await buildGenerationContext(userTier, ctx.features, {
+        id: ctx.user.id,
+        isModerator: ctx.user.isModerator,
+      });
 
       if (!status.available && !ctx.user.isModerator) {
         throw new TRPCError({

@@ -62,6 +62,10 @@ export async function createImageIngestionRequest({
               input: {
                 mediaUrl: { $ref: '$arguments', path: 'mediaUrl' },
                 engine: 'civitai',
+                includeAgeClassification: true,
+                includeAIRecognition: true,
+                includeFaceRecognition: true,
+                includeAnimeRecognition: true,
               },
             } as WorkflowStepTemplate,
             {

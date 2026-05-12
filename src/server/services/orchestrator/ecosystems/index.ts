@@ -126,7 +126,7 @@ export type ZImageCtx = EcosystemGraphOutput & { ecosystem: 'ZImageTurbo' | 'ZIm
 export type HiDreamCtx = EcosystemGraphOutput & { ecosystem: 'HiDream' };
 
 /** HiDream-O1 context */
-export type HiDreamO1Ctx = EcosystemGraphOutput & { ecosystem: 'HiDreamO1' };
+export type HiDreamO1Ctx = EcosystemGraphOutput & { ecosystem: 'HiDream-O1' };
 
 /** Anima context */
 export type AnimaCtx = EcosystemGraphOutput & { ecosystem: 'Anima' };
@@ -309,7 +309,7 @@ async function createEcosystemStep(
       return createHiDreamInput(normalizedData, handlerCtx);
 
     // HiDream-O1
-    case 'HiDreamO1':
+    case 'HiDream-O1':
       return createHiDreamO1Input(normalizedData, handlerCtx);
 
     // PonyV7

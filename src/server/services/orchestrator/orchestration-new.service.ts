@@ -439,9 +439,31 @@ function normalizeInput(input: Record<string, unknown>): Record<string, unknown>
  * (computed values like `triggerWords` are derived, not user input).
  */
 function validateInput(input: Record<string, unknown>, externalCtx: GenerationCtx) {
-  const result = generationGraph.safeParse(normalizeInput(input), externalCtx);
+  const normalized = normalizeInput(input);
+  const result = generationGraph.safeParse(normalized, externalCtx);
 
   if (!result.success) {
+    // TEMP DEBUG: investigating "ecosystem: expected string, received undefined" on HiDream-O1
+    const ext = externalCtx as unknown as {
+      gatedEcosystems?: string[];
+      gatedVersionIds?: number[];
+    };
+    // eslint-disable-next-line no-console
+    console.log('[validateInput DEBUG]', {
+      inputEcosystem: input.ecosystem,
+      inputModelId: (input.model as { id?: number } | undefined)?.id,
+      inputModelBaseModel: (input.model as { baseModel?: string } | undefined)?.baseModel,
+      inputWorkflow: input.workflow,
+      normalizedEcosystem: (normalized as Record<string, unknown>).ecosystem,
+      gatedEcosystems: ext.gatedEcosystems,
+      hiDreamO1IsGated: ext.gatedEcosystems?.includes('HiDream-O1'),
+      gatedVersionIdsCount: ext.gatedVersionIds?.length,
+      hiDreamO1DevGated: ext.gatedVersionIds?.includes(2939964),
+      hiDreamO1FullGated: ext.gatedVersionIds?.includes(2939946),
+      errors: Object.fromEntries(
+        Object.entries(result.errors).map(([k, e]) => [k, e.message])
+      ),
+    });
     const errorMessages = Object.entries(result.errors)
       .map(([key, error]) => `${key}: ${error.message}`)
       .join(', ');

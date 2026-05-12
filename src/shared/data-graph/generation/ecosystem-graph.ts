@@ -261,7 +261,7 @@ export const ecosystemGraph = new DataGraph<
     { values: ['ZImageTurbo', 'ZImageBase'] as const, graph: zImageGraph },
     { values: ['Chroma'] as const, graph: chromaGraph },
     { values: ['HiDream'] as const, graph: hiDreamGraph },
-    { values: ['HiDreamO1'] as const, graph: hiDreamO1Graph },
+    { values: ['HiDream-O1'] as const, graph: hiDreamO1Graph },
     { values: ['PonyV7'] as const, graph: ponyV7Graph },
     { values: ['Anima'] as const, graph: animaGraph },
     { values: ['Ernie'] as const, graph: ernieGraph },
