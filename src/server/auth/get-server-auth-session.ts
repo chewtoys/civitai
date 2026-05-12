@@ -7,6 +7,18 @@ import { getBaseUrl } from '~/server/utils/url-helpers';
 import { getSessionFromBearerToken } from './bearer-token';
 import { SESSION_REFRESH_HEADER, SESSION_REFRESH_COOKIE } from '~/shared/constants/auth.constants';
 import { REDIS_SYS_KEYS, sysRedis } from '~/server/redis/client';
+import { callbackCookieName } from '~/libs/auth';
+
+function isValidCallbackUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    if (value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\')) return true;
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 type AuthRequest = (GetServerSidePropsContext['req'] | NextApiRequest) & {
   context?: Record<string, unknown>;
@@ -77,6 +89,36 @@ export const getServerAuthSession = async ({
     return req.context.session as Session | null;
   }
   try {
+    // Strip any malformed next-auth.callback-url cookie before next-auth's
+    // assertConfig rejects the request with INVALID_CALLBACK_URL_ERROR.
+    const reqCookies = (req as NextApiRequest).cookies as
+      | Record<string, string | undefined>
+      | undefined;
+    if (reqCookies) {
+      const candidates = [
+        callbackCookieName,
+        'next-auth.callback-url',
+        '__Secure-next-auth.callback-url',
+      ];
+      const clearCookies: string[] = [];
+      for (const name of candidates) {
+        const value = reqCookies[name];
+        if (value && !isValidCallbackUrl(value)) {
+          delete reqCookies[name];
+          clearCookies.push(
+            `${name}=; Path=/; Max-Age=0; SameSite=Lax${
+              name.startsWith('__Secure-') ? '; Secure' : ''
+            }`
+          );
+        }
+      }
+      if (clearCookies.length) {
+        try {
+          (res as NextApiResponse).setHeader?.('Set-Cookie', clearCookies);
+        } catch {}
+      }
+    }
+
     const authOptions = createAuthOptions(req);
     const session = await getServerSession(req, res, authOptions);
     req.context.session = await checkAndSetSessionHeaders(session, res);
