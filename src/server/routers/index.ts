@@ -29,6 +29,7 @@ import { userProfileRouter } from '~/server/routers/user-profile.router';
 import { userReferralCodeRouter } from '~/server/routers/user-referral-code.router';
 import { referralRouter } from '~/server/routers/referral.router';
 import { vimeoRouter } from '~/server/routers/vimeo.router';
+import { xguardPolicyRouter } from '~/server/routers/xguard-policy.router';
 import { router } from '~/server/trpc';
 import { accountRouter } from './account.router';
 import { announcementRouter } from './announcement.router';
@@ -177,6 +178,7 @@ export const appRouter = router({
   rewardsBonusEvent: rewardsBonusEventRouter,
   oauthClient: oauthClientRouter,
   oauthConsent: oauthConsentRouter,
+  xguardPolicy: xguardPolicyRouter,
 });
 
 // export type definition of API

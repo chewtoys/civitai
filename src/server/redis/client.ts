@@ -781,6 +781,17 @@ export const REDIS_SYS_KEYS = {
   WEBHOOKS: {
     MODEL_FILE_SCAN_PROCESSED: 'webhooks:model-file-scan:processed',
   },
+  XGUARD: {
+    /*
+      Civitai-owned XGuard policy overrides, one Redis hash per scan mode.
+      Hash field = label name; value = JSON XGuardPolicyEntry (policy text +
+      threshold + action + self-describing policyHash + audit metadata).
+      Managed via /moderator/xguard-policies; read by createXGuardModerationRequest
+      to build labelOverrides for the orchestrator call.
+     */
+    POLICIES_TEXT: 'xguard:policies:text',
+    POLICIES_PROMPT: 'xguard:policies:prompt',
+  },
 } as const;
 
 // Cached data

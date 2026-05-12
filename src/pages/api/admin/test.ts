@@ -38,7 +38,7 @@ export default WebhookEndpoint(async (req, res) => {
             positivePrompt: POSITIVE_PROMPT,
             negativePrompt: NEGATIVE_PROMPT || null,
             labels: ['cr', 'csam'],
-            storeFullResponse: true,
+            storeFullResponse: false,
           },
         } as XGuardModerationStepTemplate,
       ],
