@@ -96,6 +96,8 @@ import { registerMediaLocation } from '~/server/services/storage-resolver';
 import { env } from '~/env/server';
 import { randomUUID } from 'crypto';
 import { TokenScope } from '~/shared/constants/token-scope.constants';
+import { comicMetricsCache } from '~/server/redis/entity-metric-populate';
+import { Prisma } from '@prisma/client';
 
 // Feature flag gate — all procedures require the comicCreator flag
 const comicFlag = isFlagProtected('comicCreator');
@@ -1128,8 +1130,29 @@ export const comicsRouter = router({
         ? 'tosViolation'
         : null;
 
+      // Pull watcher-fed metrics so the workspace header can show the
+      // creator the same public counters readers see — reader count,
+      // chapter reads, followers, hides, tips. Same cache the public
+      // listing uses, so a creator opening their workspace right after
+      // publishing typically hits a warm Redis key.
+      const metrics =
+        (await comicMetricsCache.fetch(project.id))[project.id] ?? null;
+
       const { chapters: _chapters, ...projectRest } = project;
-      return { ...projectRest, chapters, references, hiddenReason: projectHiddenReason };
+      return {
+        ...projectRest,
+        chapters,
+        references,
+        hiddenReason: projectHiddenReason,
+        metrics: {
+          readerCount: metrics?.readerCount ?? 0,
+          chapterReadCount: metrics?.chapterReadCount ?? 0,
+          followerCount: metrics?.followerCount ?? 0,
+          hiddenCount: metrics?.hiddenCount ?? 0,
+          tippedCount: metrics?.tippedCount ?? 0,
+          tippedAmount: metrics?.tippedAmount ?? 0,
+        },
+      };
     }),
 
   // Full panel data for a single chapter. Pair with `getProjectShell`.
@@ -1263,7 +1286,11 @@ export const comicsRouter = router({
     .input(
       z.object({
         limit: z.number().int().min(1).max(50).default(20),
-        cursor: z.number().int().optional(),
+        // For `Newest` the cursor is the trailing comic id (number).
+        // For `MostFollowed` / `MostChapters` we need a compound cursor
+        // — see the comment on `prefilteredIds` below — so we encode it
+        // as `"<rank>:<id>"` and accept either shape here.
+        cursor: z.union([z.number().int(), z.string()]).optional(),
         genre: z.nativeEnum(ComicGenre).optional(),
         period: z.enum(['Day', 'Week', 'Month', 'Year', 'AllTime']).optional(),
         sort: z.enum(['Newest', 'MostFollowed', 'MostChapters']).default('Newest'),
@@ -1274,6 +1301,29 @@ export const comicsRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const { limit, cursor, genre, period, sort, followed, userId, browsingLevel } = input;
+
+      // Cursor handling: `Newest` carries the trailing id as a number,
+      // `MostFollowed` / `MostChapters` carry a compound `<rank>:<id>`
+      // string so we can do row-constructor comparison in raw SQL. Parse
+      // once up-front and route each shape to the right code path.
+      const isPrefilteredSort = sort === 'MostFollowed' || sort === 'MostChapters';
+      let numericCursor: number | undefined;
+      let compoundCursor: { rank: bigint; id: number } | undefined;
+      if (cursor != null) {
+        if (typeof cursor === 'number') {
+          numericCursor = cursor;
+        } else if (isPrefilteredSort && cursor.includes(':')) {
+          const [rankStr, idStr] = cursor.split(':');
+          const rank = BigInt(rankStr);
+          const id = parseInt(idStr, 10);
+          if (!Number.isNaN(id)) compoundCursor = { rank, id };
+        } else {
+          // String cursor passed on the Newest path (or malformed
+          // compound) — best-effort parse as numeric id.
+          const parsed = parseInt(cursor, 10);
+          if (!Number.isNaN(parsed)) numericCursor = parsed;
+        }
+      }
 
       // Build where clause
       //
@@ -1405,19 +1455,116 @@ export const comicsRouter = router({
         };
       }
 
-      // Build orderBy – always include id tie-breaker for stable cursor pagination
+      // Build orderBy – always include id tie-breaker for stable cursor pagination.
+      // `MostFollowed` and `MostChapters` need filtered relation counts —
+      // engagements has multiple types (only `Notify` counts as a follow) and
+      // chapters can be Draft or Published (only `Published` should count).
+      // Prisma's `_count` in orderBy can't take a `where` filter, so for those
+      // sorts we fetch the ID order via `$queryRaw` and let findMany hydrate
+      // with the full visibility WHERE intact. `Newest` stays on the pure
+      // Prisma path.
       let orderBy: any[] = [{ updatedAt: 'desc' }, { id: 'desc' }];
-      if (sort === 'MostFollowed') {
-        orderBy = [{ engagements: { _count: 'desc' } }, { id: 'desc' }];
-      } else if (sort === 'MostChapters') {
-        orderBy = [{ chapters: { _count: 'desc' } }, { id: 'desc' }];
+      let prefilteredIds: number[] | null = null;
+
+      // Prefiltered sorts also carry the rank_value back so we can build
+      // a `<rank>:<id>` cursor for the next page. Same row keyed in JS
+      // so we don't have to re-query the rank for cursor encoding.
+      let prefilteredRanked: { id: number; rank_value: bigint }[] | null = null;
+
+      if (isPrefilteredSort) {
+        // Overfetch to compensate for rows that the findMany WHERE later
+        // rejects (panel-level review/TOS filters that we deliberately don't
+        // duplicate in the raw query — keeping the visibility contract in
+        // one place).
+        const overfetch = (limit + 1) * 5;
+
+        // Cursor predicate uses row-constructor comparison: `(rank, id) <
+        // (cursorRank, cursorId)` returns every row strictly AFTER the
+        // cursor in the sort order. This is what makes pagination
+        // correct — a plain `cp.id < cursor` filter would re-show
+        // high-rank low-id comics that were already on a previous page.
+        const cursorFilter = compoundCursor
+          ? Prisma.sql`AND (rank_value, cp.id) < (${compoundCursor.rank}::bigint, ${compoundCursor.id}::int)`
+          : Prisma.empty;
+
+        // Each query returns one row per comic with a `rank_value` column
+        // computed by a correlated scalar subquery — for every `cp` row,
+        // the subquery is evaluated against THAT row's projectId. PG
+        // then orders by the per-row scalar, exactly like
+        // `ORDER BY UPPER(name)` would. The CTE makes the rank_value
+        // alias visible to the cursor predicate in the outer WHERE.
+        if (sort === 'MostFollowed') {
+          // Count only ComicProjectEngagement rows of type 'Notify'. Other
+          // engagement types (Hide, None) still live in the same table but
+          // don't represent followers.
+          prefilteredRanked = await dbRead.$queryRaw<{ id: number; rank_value: bigint }[]>(
+            Prisma.sql`
+              WITH ranked AS (
+                SELECT
+                  cp.id,
+                  (
+                    SELECT COUNT(*) FROM "ComicProjectEngagement"
+                    WHERE "projectId" = cp.id AND type = 'Notify'::"ComicEngagementType"
+                  ) AS rank_value
+                FROM "ComicProject" cp
+                LEFT JOIN "User" u ON u.id = cp."userId"
+                WHERE cp.status = 'Active'::"ComicProjectStatus"
+                  AND cp."tosViolation" = false
+                  AND cp."userId" != -1
+                  AND u."bannedAt" IS NULL
+              )
+              SELECT id, rank_value
+              FROM ranked cp
+              WHERE TRUE
+                ${cursorFilter}
+              ORDER BY rank_value DESC, cp.id DESC
+              LIMIT ${overfetch}
+            `
+          );
+        } else {
+          // Count only Published chapters — Draft / scheduled chapters
+          // shouldn't influence the "Most Chapters" ranking since readers
+          // can't see them anyway.
+          prefilteredRanked = await dbRead.$queryRaw<{ id: number; rank_value: bigint }[]>(
+            Prisma.sql`
+              WITH ranked AS (
+                SELECT
+                  cp.id,
+                  (
+                    SELECT COUNT(*) FROM "ComicChapter"
+                    WHERE "projectId" = cp.id AND status = 'Published'::"ComicChapterStatus"
+                  ) AS rank_value
+                FROM "ComicProject" cp
+                LEFT JOIN "User" u ON u.id = cp."userId"
+                WHERE cp.status = 'Active'::"ComicProjectStatus"
+                  AND cp."tosViolation" = false
+                  AND cp."userId" != -1
+                  AND u."bannedAt" IS NULL
+              )
+              SELECT id, rank_value
+              FROM ranked cp
+              WHERE TRUE
+                ${cursorFilter}
+              ORDER BY rank_value DESC, cp.id DESC
+              LIMIT ${overfetch}
+            `
+          );
+        }
+        prefilteredIds = prefilteredRanked.map((r) => r.id);
       }
 
       const projects = await dbRead.comicProject.findMany({
-        where,
-        take: limit + 1,
-        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-        orderBy,
+        // For filtered sorts, restrict to the pre-sorted IDs from raw SQL.
+        // findMany still applies the full visibility WHERE for safety; the
+        // raw SQL only constrains ordering.
+        where: prefilteredIds ? { ...where, id: { in: prefilteredIds } } : where,
+        // For prefiltered sorts, take everything that matched (already capped
+        // at `overfetch` upstream). We trim to `limit + 1` after re-sorting.
+        take: prefilteredIds ? undefined : limit + 1,
+        ...(numericCursor != null && !prefilteredIds
+          ? { cursor: { id: numericCursor }, skip: 1 }
+          : {}),
+        orderBy: prefilteredIds ? undefined : orderBy,
         select: {
           id: true,
           name: true,
@@ -1454,9 +1601,6 @@ export const comicsRouter = router({
           updatedAt: true,
           user: {
             select: userWithCosmeticsSelect,
-          },
-          _count: {
-            select: { engagements: true },
           },
           chapters: {
             where: { status: ComicChapterStatus.Published },
@@ -1506,11 +1650,52 @@ export const comicsRouter = router({
         },
       });
 
-      let nextCursor: number | undefined;
-      if (projects.length > limit) {
-        const nextItem = projects.pop()!;
-        nextCursor = nextItem.id;
+      // For prefiltered sorts the findMany result came back in arbitrary
+      // (id-ordered) order — restore the raw-SQL ranking by matching each
+      // project against its position in `prefilteredIds`. After re-sorting,
+      // trim to `limit` and use the next-in-line item's id as the cursor.
+      if (prefilteredIds) {
+        const orderMap = new Map(prefilteredIds.map((id, i) => [id, i]));
+        projects.sort(
+          (a, b) =>
+            (orderMap.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+            (orderMap.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+        );
       }
+
+      // nextCursor type depends on the sort:
+      //  - Newest:        numeric (trailing id), back-compat
+      //  - MostFollowed / MostChapters: `<rank>:<id>` string so the next
+      //    page can do a row-constructor comparison against the same
+      //    (rank, id) tuple this page ended on.
+      let nextCursor: number | string | undefined;
+      if (projects.length > limit) {
+        if (prefilteredIds && prefilteredRanked) {
+          // Cursor = LAST shown item's (rank, id). The next page asks
+          // for rows strictly AFTER it in the sort order, so there's no
+          // overlap (the old `cp.id < cursor` filter was the source of
+          // the repeats users were seeing).
+          const lastShown = projects[limit - 1];
+          const rankRow = prefilteredRanked.find((r) => r.id === lastShown.id);
+          if (rankRow) {
+            nextCursor = `${rankRow.rank_value.toString()}:${rankRow.id}`;
+          }
+          projects.length = limit;
+        } else {
+          const nextItem = projects.pop()!;
+          nextCursor = nextItem.id;
+        }
+      }
+
+      // Hydrate ClickHouse-backed counters (reads / followers / tips / hides)
+      // from Redis. The cache lazily populates from `entityMetricDailyAgg_new`
+      // on miss, so first-page-of-a-cold-comic costs one CH query and
+      // subsequent pages are pure Redis. Fall back to the PG engagement
+      // count for `followerCount` until the watcher has fully backfilled.
+      const projectIds = projects.map((p) => p.id);
+      const metricsByProject = projectIds.length > 0
+        ? await comicMetricsCache.fetch(projectIds)
+        : ({} as Record<string, Awaited<ReturnType<typeof comicMetricsCache.fetch>>[string]>);
 
       const items = projects.map((p) => {
         const readyPanelCount = p.chapters.reduce((sum, ch) => sum + ch._count.panels, 0);
@@ -1547,6 +1732,7 @@ export const comicsRouter = router({
           publishedAt: ch.publishedAt,
         }));
 
+        const m = metricsByProject[p.id] ?? null;
         return {
           id: p.id,
           name: p.name,
@@ -1559,7 +1745,18 @@ export const comicsRouter = router({
           readyPanelCount,
           chapterCount,
           latestChapters,
-          followerCount: p._count.engagements,
+          // All counters come from the watcher via `comicMetricsCache`.
+          // We deliberately don't fall back to `_count.engagements` —
+          // that PG aggregate counts every ComicProjectEngagement row
+          // regardless of `type`, so Hide + Notify rows would both
+          // inflate the displayed "follower" number. The watcher
+          // already filters to `type=Notify` on its side.
+          followerCount: m?.followerCount ?? 0,
+          readerCount: m?.readerCount ?? 0,
+          chapterReadCount: m?.chapterReadCount ?? 0,
+          hiddenCount: m?.hiddenCount ?? 0,
+          tippedCount: m?.tippedCount ?? 0,
+          tippedAmount: m?.tippedAmount ?? 0,
           user: p.user,
           updatedAt: p.updatedAt,
         };
@@ -1811,13 +2008,12 @@ export const comicsRouter = router({
         stripNsfwPanelImages(chapters, !!ctx.user);
       }
 
-      // Aggregate tip total from BuzzTip table
-      const tipResult = await dbRead.$queryRaw<[{ total: number }]>`
-        SELECT COALESCE(SUM(amount), 0)::int AS total
-        FROM "BuzzTip"
-        WHERE "entityType" = 'ComicProject' AND "entityId" = ${project.id}
-      `;
-      const tippedAmountCount = tipResult?.[0]?.total ?? 0;
+      // Pull all watcher-fed counters (tips / reads / followers / hides)
+      // through the cache. Replaces the previous inline aggregate against
+      // BuzzTip — the watcher already rolls those tips up into
+      // `entityMetricDailyAgg_new` under `entityType = 'ComicProject'`,
+      // and the cache merges them in with the engagement counters.
+      const metrics = (await comicMetricsCache.fetch(project.id))[project.id] ?? null;
 
       return {
         id: project.id,
@@ -1831,7 +2027,18 @@ export const comicsRouter = router({
         user: project.user,
         isOwnerOrMod: canViewDrafts,
         tosViolation: project.tosViolation,
-        tippedAmountCount,
+        // Preserved for back-compat with existing readers — same value the
+        // old BuzzTip aggregate produced, just sourced from ClickHouse now.
+        tippedAmountCount: metrics?.tippedAmount ?? 0,
+        tippedCount: metrics?.tippedCount ?? 0,
+        // All counters come from the watcher. No PG fallback: the
+        // `_count.engagements` aggregate would count every engagement
+        // type (Notify + Hide + None), which doesn't match the
+        // type-filtered `followerCount` the watcher emits.
+        followerCount: metrics?.followerCount ?? 0,
+        readerCount: metrics?.readerCount ?? 0,
+        chapterReadCount: metrics?.chapterReadCount ?? 0,
+        hiddenCount: metrics?.hiddenCount ?? 0,
         chapters,
       };
     }),

@@ -1,6 +1,6 @@
 import { Badge, Text } from '@mantine/core';
 import { memo } from 'react';
-import { IconBook } from '@tabler/icons-react';
+import { IconBell, IconBolt, IconBook, IconUsers } from '@tabler/icons-react';
 import clsx from 'clsx';
 import cardClasses from '~/components/Cards/Cards.module.css';
 import { ComicCardContextMenu } from '~/components/Cards/ComicCardContextMenu';
@@ -63,18 +63,67 @@ export const ComicCard = memo(function ComicCard({ data }: { data: ComicItem }) 
           <Text className={cardClasses.dropShadow} size="xl" fw={700} lineClamp={2} lh={1.2}>
             {data.name}
           </Text>
-          <Badge
-            className={clsx(cardClasses.statChip, cardClasses.chip)}
-            variant="light"
-            radius="xl"
-          >
-            <div className="flex items-center gap-0.5">
-              <IconBook size={14} strokeWidth={2.5} />
-              <Text fw="bold" size="xs">
-                {abbreviateNumber(data.chapterCount)} ch.
-              </Text>
-            </div>
-          </Badge>
+          {/* Metric pills — ClickHouse-backed counters from the watcher.
+              Each is rendered only when non-zero so cards stay clean for
+              brand-new comics. Order is "how many people have read it"
+              first (most useful social-proof signal), then commitment
+              (followers), then tips. */}
+          <div className="flex flex-wrap items-center gap-1">
+            <Badge
+              className={clsx(cardClasses.statChip, cardClasses.chip)}
+              variant="light"
+              radius="xl"
+            >
+              <div className="flex items-center gap-0.5">
+                <IconBook size={14} strokeWidth={2.5} />
+                <Text fw="bold" size="xs">
+                  {abbreviateNumber(data.chapterCount)} ch.
+                </Text>
+              </div>
+            </Badge>
+            {data.readerCount > 0 && (
+              <Badge
+                className={clsx(cardClasses.statChip, cardClasses.chip)}
+                variant="light"
+                radius="xl"
+              >
+                <div className="flex items-center gap-0.5">
+                  <IconUsers size={14} strokeWidth={2.5} />
+                  <Text fw="bold" size="xs">
+                    {abbreviateNumber(data.readerCount)}
+                  </Text>
+                </div>
+              </Badge>
+            )}
+            {data.followerCount > 0 && (
+              <Badge
+                className={clsx(cardClasses.statChip, cardClasses.chip)}
+                variant="light"
+                radius="xl"
+              >
+                <div className="flex items-center gap-0.5">
+                  <IconBell size={14} strokeWidth={2.5} />
+                  <Text fw="bold" size="xs">
+                    {abbreviateNumber(data.followerCount)}
+                  </Text>
+                </div>
+              </Badge>
+            )}
+            {data.tippedAmount > 0 && (
+              <Badge
+                className={clsx(cardClasses.statChip, cardClasses.chip)}
+                variant="light"
+                radius="xl"
+              >
+                <div className="flex items-center gap-0.5">
+                  <IconBolt size={14} strokeWidth={2.5} />
+                  <Text fw="bold" size="xs">
+                    {abbreviateNumber(data.tippedAmount)}
+                  </Text>
+                </div>
+              </Badge>
+            )}
+          </div>
         </div>
       }
       footerGradient

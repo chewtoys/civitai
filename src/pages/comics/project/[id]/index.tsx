@@ -18,6 +18,8 @@ import { openConfirmModal } from '@mantine/modals';
 import {
   IconAlertCircle,
   IconArrowLeft,
+  IconBell,
+  IconBolt,
   IconBook,
   IconCalendar,
   IconCopy,
@@ -32,6 +34,7 @@ import {
   IconSettings,
   IconSparkles,
   IconUser,
+  IconUsers,
   IconWorld,
 } from '@tabler/icons-react';
 import clsx from 'clsx';
@@ -40,6 +43,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { slugit } from '~/utils/string-helpers';
+import { abbreviateNumber } from '~/utils/number-helpers';
 
 import type { DragEndEvent } from '@dnd-kit/core';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
@@ -1320,7 +1324,7 @@ function ProjectWorkspace() {
                 </Text>
               )}
 
-              <div className="flex gap-3 items-center">
+              <div className="flex gap-3 items-center flex-wrap">
                 <span className={styles.statPill}>
                   <span className={styles.statDot} />
                   {project.chapters.length}{' '}
@@ -1330,6 +1334,60 @@ function ProjectWorkspace() {
                   <span className={styles.statDot} />
                   {totalPanelCount} {totalPanelCount === 1 ? 'panel' : 'panels'}
                 </span>
+                {/* Public-facing engagement counters (watcher → ClickHouse →
+                    Redis). Shown to the creator on their own workspace so
+                    they can see how their comic is performing without
+                    having to navigate to the public page. Each pill is
+                    only rendered when non-zero so a brand-new comic still
+                    looks clean. */}
+                {project.metrics?.readerCount > 0 && (
+                  <Tooltip label="Unique readers" withArrow>
+                    <span className={styles.statPill}>
+                      <IconUsers size={12} />
+                      {abbreviateNumber(project.metrics.readerCount)}
+                    </span>
+                  </Tooltip>
+                )}
+                {project.metrics?.chapterReadCount > 0 && (
+                  <Tooltip label="Total chapter reads" withArrow>
+                    <span className={styles.statPill}>
+                      <IconEye size={12} />
+                      {abbreviateNumber(project.metrics.chapterReadCount)}
+                    </span>
+                  </Tooltip>
+                )}
+                {project.metrics?.followerCount > 0 && (
+                  <Tooltip label="Followers" withArrow>
+                    <span className={styles.statPill}>
+                      <IconBell size={12} />
+                      {abbreviateNumber(project.metrics.followerCount)}
+                    </span>
+                  </Tooltip>
+                )}
+                {project.metrics?.tippedAmount > 0 && (
+                  <Tooltip
+                    label={`Buzz tipped (${abbreviateNumber(project.metrics.tippedCount)} tip${
+                      project.metrics.tippedCount === 1 ? '' : 's'
+                    })`}
+                    withArrow
+                  >
+                    <span className={styles.statPill}>
+                      <IconBolt size={12} />
+                      {abbreviateNumber(project.metrics.tippedAmount)}
+                    </span>
+                  </Tooltip>
+                )}
+                {project.metrics?.hiddenCount > 0 && (
+                  <Tooltip
+                    label="Users who have hidden this comic from their feed"
+                    withArrow
+                  >
+                    <span className={styles.statPill}>
+                      <IconEyeOff size={12} />
+                      {abbreviateNumber(project.metrics.hiddenCount)}
+                    </span>
+                  </Tooltip>
+                )}
                 {(() => {
                   const nsfw = getNsfwLabel(project.nsfwLevel);
                   return nsfw ? (

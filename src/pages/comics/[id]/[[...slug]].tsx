@@ -29,6 +29,8 @@ import {
   IconChevronRight,
   IconColumns,
   IconDotsVertical,
+  IconEye,
+  IconEyeOff,
   IconFlag,
   IconLayoutList,
   IconLock,
@@ -38,6 +40,7 @@ import {
   IconPencil,
   IconPhoto,
   IconPhotoOff,
+  IconUsers,
   IconShare,
   IconTrash,
 } from '@tabler/icons-react';
@@ -605,6 +608,59 @@ function ComicOverview({ project }: { project: Project }) {
           <div className={styles.overviewCreatorRow}>
             <UserAvatarSimple {...project.user} />
           </div>
+
+          {/* Public metric strip — ClickHouse-backed counters via the
+              watcher. Readers (unique viewers) and chapter-reads (total
+              page turns) are the most useful social-proof signals; we
+              also surface followers and the tip total. Moderators
+              additionally see the hide count which is otherwise
+              suppressed (creators don't need to know how many people
+              muted them). Each pill renders only when non-zero. */}
+          {(project.readerCount > 0 ||
+            project.chapterReadCount > 0 ||
+            project.followerCount > 0 ||
+            (project.tippedAmountCount ?? 0) > 0 ||
+            (isMod && project.hiddenCount > 0)) && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {project.readerCount > 0 && (
+                <Tooltip label="Unique readers">
+                  <IconBadge radius="sm" color="gray" size="md" icon={<IconUsers size={14} />}>
+                    <span className="text-xs">{abbreviateNumber(project.readerCount)}</span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+              {project.chapterReadCount > 0 && (
+                <Tooltip label="Total chapter reads">
+                  <IconBadge radius="sm" color="gray" size="md" icon={<IconEye size={14} />}>
+                    <span className="text-xs">{abbreviateNumber(project.chapterReadCount)}</span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+              {project.followerCount > 0 && (
+                <Tooltip label="Followers">
+                  <IconBadge radius="sm" color="gray" size="md" icon={<IconBell size={14} />}>
+                    <span className="text-xs">{abbreviateNumber(project.followerCount)}</span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+              {(project.tippedAmountCount ?? 0) > 0 && (
+                <Tooltip label="Buzz tipped">
+                  <IconBadge radius="sm" color="gray" size="md" icon={<IconBolt size={14} />}>
+                    <span className="text-xs">
+                      {abbreviateNumber((project.tippedAmountCount ?? 0) + tippedAmount)}
+                    </span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+              {isMod && project.hiddenCount > 0 && (
+                <Tooltip label="Moderator-only: users who hid this comic">
+                  <IconBadge radius="sm" color="yellow" size="md" icon={<IconEyeOff size={14} />}>
+                    <span className="text-xs">{abbreviateNumber(project.hiddenCount)}</span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+            </div>
+          )}
 
           {/* Description */}
           {project.description && (
