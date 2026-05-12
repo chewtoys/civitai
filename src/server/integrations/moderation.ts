@@ -6,6 +6,7 @@ const falsePositiveTriggers = Object.entries({
   '\\d*girls': 'women',
   '\\d*boys': 'men',
   'school uniform': 'uniform',
+  'breasts?': 'chest',
 }).map(([k, v]) => ({ regex: new RegExp(`\\b${k}\\b`, 'gi'), replacement: v }));
 function removeFalsePositiveTriggers(prompt: string) {
   for (const trigger of falsePositiveTriggers) {
