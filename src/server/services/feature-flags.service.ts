@@ -409,11 +409,14 @@ const hasFeature = (
 };
 
 export type FeatureAccess = Record<FeatureFlagKey, boolean>;
+// Sparse payload: only `true` flags are included; consumers must use truthy checks.
+// Type stays as `Record<FeatureFlagKey, boolean>` for one deploy to keep client/server
+// in sync during rollout; Phase 3 will tighten to `Partial<Record<FeatureFlagKey, true>>`.
 export const getFeatureFlags = (ctx: FeatureAccessContext) => {
   const keys = Object.keys(featureFlags) as FeatureFlagKey[];
 
   return keys.reduce<FeatureAccess>((acc, key) => {
-    acc[key] = hasFeature(key, ctx);
+    if (hasFeature(key, ctx)) acc[key] = true;
     return acc;
   }, {} as FeatureAccess);
 };

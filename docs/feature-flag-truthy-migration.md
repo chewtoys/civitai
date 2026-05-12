@@ -134,20 +134,28 @@ Server-side `ctx.features` destructures (2 files: [tag.controller.ts](../src/ser
 
 **Step 1.6 — Lint rule (deferred to Phase 2).** Add an ESLint rule banning `=== false` / `!== false` / `=== undefined` / `'X' in features` against `FeatureAccess`-typed values, plus a rule banning destructure of `useFeatureFlags()` / `ctx.features`. Deferred because there are no current violations to lint against; the rule prevents regression once Phase 2 lands.
 
-### Phase 2 — Server: ship sparse payload
+### Phase 2 — Server: ship sparse payload ✅ DONE
 
-In [feature-flags.service.ts:413 `getFeatureFlags`](../src/server/services/feature-flags.service.ts#L413), filter out `false` values before returning:
+[`getFeatureFlags`](../src/server/services/feature-flags.service.ts#L412) now skips assignment for `false` values:
 
 ```ts
-return keys.reduce<Partial<Record<FeatureFlagKey, true>>>((acc, key) => {
+return keys.reduce<FeatureAccess>((acc, key) => {
   if (hasFeature(key, ctx)) acc[key] = true;
   return acc;
-}, {});
+}, {} as FeatureAccess);
 ```
 
-Same change in `getFeatureFlagsAsync` and `getFeatureFlagsLazy` (the lazy variant needs to read the cached `obj.features` and short-circuit on `undefined`).
+`getFeatureFlagsAsync` delegates to `getFeatureFlags`, so it inherits the change. `getFeatureFlagsLazy` reads from `getFeatureFlags` for its cached object, so the underlying lookup also returns `undefined` for absent keys (the getter still returns the value at that key — JavaScript-wise this is fine; the cast hides the type lie).
 
-Keep the `FeatureAccess` type as-is for one deploy so client + server agree on the wire shape during rollout. The payload shrinks immediately; type stays loose.
+The `FeatureAccess` type intentionally stays as `Record<FeatureFlagKey, boolean>` for one deploy so client + server agree on the wire shape during rollout. The payload shrinks immediately; the type lies temporarily. Phase 3 will tighten it.
+
+**Why this is safe given Phase 1:**
+
+- Every consumer uses truthy checks (`if (features.X)`, `!features.X`) — `undefined` evaluates the same as `false` in those expressions
+- No `Object.keys(features)` / `...features` on the wire payload (verified in Phase 1 — those patterns only appear on the user-settings preferences object)
+- No `=== false` / `!== false` consumers (Phase 1 normalized the only two)
+- `isFlagProtected` middleware uses `!features[flag]` — works identically with `undefined`
+- `getUserFeatureFlagsHandler` at [user.controller.ts:1297](../src/server/controllers/user.controller.ts#L1297) uses `!ctx.features[key]` — also identical
 
 ### Phase 3 — Client: tighten the type
 
