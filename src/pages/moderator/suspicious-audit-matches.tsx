@@ -12,7 +12,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { openConfirmModal } from '@mantine/modals';
-import { IconRefresh, IconTrash } from '@tabler/icons-react';
+import { IconDownload, IconRefresh, IconTrash } from '@tabler/icons-react';
 import { Page } from '~/components/AppLayout/Page';
 import { Meta } from '~/components/Meta/Meta';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
@@ -204,6 +204,35 @@ function SuspiciousAuditMatchesPage() {
 
   const matches = (data?.matches ?? []) as SuspiciousMatch[];
 
+  const handleDownload = () => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      count: matches.length,
+      matches: matches.map((m) => ({
+        flaggedAt: m.flaggedAt,
+        flaggedBy: m.flaggedBy,
+        userId: m.userId,
+        check: m.check,
+        matchedText: m.matchedText,
+        regex: m.regex,
+        context: m.context,
+        odometer: m.odometer,
+        prompt: m.prompt,
+        negativePrompt: m.negativePrompt,
+      })),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    a.href = url;
+    a.download = `suspicious-audit-matches-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <>
       <Meta title="Suspicious Audit Matches" deIndex />
@@ -225,6 +254,14 @@ function SuspiciousAuditMatchesPage() {
                   loading={isRefetching}
                 >
                   Refresh
+                </Button>
+                <Button
+                  leftSection={<IconDownload size={16} />}
+                  variant="light"
+                  onClick={handleDownload}
+                  disabled={matches.length === 0}
+                >
+                  Download JSON
                 </Button>
                 <Button
                   leftSection={<IconTrash size={16} />}
