@@ -222,16 +222,19 @@ CREATE TABLE scanner_label_results (
   score          Float32,                   -- confidence or first-token prob, 0-1
   threshold      Nullable(Float32),
   triggered      UInt8,                     -- did this signal fire
-  policyVersion  LowCardinality(String),    -- per-label policy hash (e.g. 'sha256-8:a3f5b2c8') or 'default' when no override
-  modelVersion   LowCardinality(String),    -- workflow-level model version; hardcoded '1' for now
-  modelReason    String                     -- only populated when triggered = 1; empty otherwise
+  policyVersion        LowCardinality(String),  -- per-label policy hash (e.g. 'sha256-8:a3f5b2c8') or 'default' when no override
+  modelVersion         LowCardinality(String),  -- workflow-level model version; hardcoded '1' for now
+  modelReason          String,                  -- only populated when triggered = 1; empty otherwise
+  matchedText          Array(String),           -- text-mode: tokens that tripped the policy. Empty unless triggered = 1.
+  matchedPositivePrompt Array(String),          -- prompt-mode positive: tokens that tripped the policy. Empty unless triggered = 1.
+  matchedNegativePrompt Array(String)           -- prompt-mode negative: tokens that tripped the policy. Empty unless triggered = 1.
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(createdAt)
 ORDER BY (scanner, label, triggered, createdAt)
 ```
 
-`modelReason` is the XGuard per-label explanation text. It's disabled by default in prod and can be a wall of text when enabled — so the write path only populates it on rows where `triggered = 1`, leaving it empty for the (much more numerous) non-triggered rows. This keeps the long-text rows confined to the small fraction of scans where the explanation actually carries signal. ClickHouse compresses empty `String` columns near-zero cost.
+`modelReason` (free-text reasoning) and the three `matchedText` / `matchedPositivePrompt` / `matchedNegativePrompt` arrays are the XGuard per-label explanation fields. All four are only populated on rows where `triggered = 1`. Text-mode scans populate `matchedText`; prompt-mode scans populate `matchedPositivePrompt` and `matchedNegativePrompt`. Together they let a moderator see at a glance why a label fired, and the array form lets the tuning team aggregate ("top matched terms for csam this week") cheaply via `ARRAY JOIN`.
 
 The `(scanner, label, triggered, createdAt)` sort key makes the mod queue's primary query — "recent scans of scanner S where label L is in state T" — a tiny range scan. Same shape powers near-miss FN browse: `WHERE scanner='xguard_text' AND label='csam' AND triggered=0 ORDER BY score DESC`.
 

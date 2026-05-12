@@ -1,53 +1,41 @@
 /**
- * Debug endpoint for inspecting an XGuard prompt-mode scan end-to-end.
+ * Debug endpoint for exercising the full XGuard prompt-mode pipeline:
+ * Redis policy fetch → labelOverrides → orchestrator submit → wait.
  *
  * GET /api/admin/test?token=$WEBHOOK_TOKEN
  *
- * Submits an xGuardModeration step in prompt mode with labels ['nsfw', 'csam'],
- * waits for completion, and returns the full workflow JSON so we can inspect
- * the response shape (specifically: whether a per-label policy hash comes back
- * for use as our policyVersion).
- *
- * Uses storeFullResponse=true so the response includes everything the model
- * emits, including non-triggered label scores and any reasoning text.
- *
- * Edit `TEST_PROMPT` below to change what gets scanned.
+ * Edit the constants below to change what gets scanned. Labels listed in
+ * `LABELS` that don't have a Redis entry at /moderator/xguard-policies are
+ * silently dropped. If LABELS is empty, every configured prompt-mode policy
+ * runs. If nothing's configured for any requested label, the call short-
+ * circuits and the endpoint returns `{ status: 'skipped' }`.
  */
-import type { XGuardModerationStepTemplate } from '@civitai/client';
-import { submitWorkflow } from '@civitai/client';
-import { internalOrchestratorClient } from '~/server/services/orchestrator/client';
+import { createXGuardModerationRequest } from '~/server/services/orchestrator/orchestrator.service';
 import { WebhookEndpoint } from '~/server/utils/endpoint-helpers';
 
 const POSITIVE_PROMPT = 'a photo of a woman in a park';
 const NEGATIVE_PROMPT = '';
+const LABELS: string[] = ['cr', 'csam']; // empty array = use every configured policy
 
 export default WebhookEndpoint(async (req, res) => {
-  const { data, error, response } = await submitWorkflow({
-    client: internalOrchestratorClient,
-    query: { wait: 60 },
-    body: {
-      metadata: { source: 'admin-test' },
-      currencies: [],
-      steps: [
-        {
-          $type: 'xGuardModeration',
-          name: 'promptModeration',
-          priority: 'normal',
-          input: {
-            mode: 'prompt',
-            positivePrompt: POSITIVE_PROMPT,
-            negativePrompt: NEGATIVE_PROMPT || null,
-            labels: ['cr', 'csam'],
-            storeFullResponse: false,
-          },
-        } as XGuardModerationStepTemplate,
-      ],
-    },
+  const workflow = await createXGuardModerationRequest({
+    mode: 'prompt',
+    entityType: 'admin-test',
+    entityId: 0,
+    positivePrompt: POSITIVE_PROMPT,
+    negativePrompt: NEGATIVE_PROMPT || undefined,
+    labels: LABELS.length > 0 ? LABELS : undefined,
+    wait: 60,
   });
 
-  res.status(data ? 200 : 500).json({
-    status: response?.status,
-    error,
-    workflow: data,
-  });
+  if (!workflow) {
+    res.status(200).json({
+      status: 'skipped',
+      reason: 'no-redis-policies-matched',
+      requestedLabels: LABELS,
+    });
+    return;
+  }
+
+  res.status(200).json({ workflow });
 });
