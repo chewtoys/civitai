@@ -43,6 +43,7 @@ import { createChromaInput } from './chroma.handler';
 import { createErnieInput } from './ernie.handler';
 import { createZImageInput } from './z-image.handler';
 import { createHiDreamInput } from './hi-dream.handler';
+import { createHiDreamO1Input } from './hi-dream-o1.handler';
 import { createPonyV7Input } from './pony-v7.handler';
 
 // Audio ecosystem handlers
@@ -124,6 +125,9 @@ export type ZImageCtx = EcosystemGraphOutput & { ecosystem: 'ZImageTurbo' | 'ZIm
 /** HiDream context */
 export type HiDreamCtx = EcosystemGraphOutput & { ecosystem: 'HiDream' };
 
+/** HiDream-O1 context */
+export type HiDreamO1Ctx = EcosystemGraphOutput & { ecosystem: 'HiDreamO1' };
+
 /** Anima context */
 export type AnimaCtx = EcosystemGraphOutput & { ecosystem: 'Anima' };
 
@@ -200,6 +204,7 @@ export { createAnimaInput } from './anima.handler';
 export { createChromaInput } from './chroma.handler';
 export { createZImageInput } from './z-image.handler';
 export { createHiDreamInput } from './hi-dream.handler';
+export { createHiDreamO1Input } from './hi-dream-o1.handler';
 export { createPonyV7Input } from './pony-v7.handler';
 export { createErnieInput } from './ernie.handler';
 
@@ -302,6 +307,10 @@ async function createEcosystemStep(
     // HiDream
     case 'HiDream':
       return createHiDreamInput(normalizedData, handlerCtx);
+
+    // HiDream-O1
+    case 'HiDreamO1':
+      return createHiDreamO1Input(normalizedData, handlerCtx);
 
     // PonyV7
     case 'PonyV7':

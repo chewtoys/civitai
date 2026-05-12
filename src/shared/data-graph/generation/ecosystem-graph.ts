@@ -43,6 +43,7 @@ import { fluxKontextGraph } from './flux-kontext-graph';
 import { zImageGraph } from './z-image-graph';
 import { chromaGraph } from './chroma-graph';
 import { hiDreamGraph } from './hi-dream-graph';
+import { hiDreamO1Graph } from './hi-dream-o1-graph';
 import { ponyV7Graph } from './pony-v7-graph';
 import { viduGraph } from './vidu-graph';
 import { openaiGraph } from './openai-graph';
@@ -260,6 +261,7 @@ export const ecosystemGraph = new DataGraph<
     { values: ['ZImageTurbo', 'ZImageBase'] as const, graph: zImageGraph },
     { values: ['Chroma'] as const, graph: chromaGraph },
     { values: ['HiDream'] as const, graph: hiDreamGraph },
+    { values: ['HiDreamO1'] as const, graph: hiDreamO1Graph },
     { values: ['PonyV7'] as const, graph: ponyV7Graph },
     { values: ['Anima'] as const, graph: animaGraph },
     { values: ['Ernie'] as const, graph: ernieGraph },

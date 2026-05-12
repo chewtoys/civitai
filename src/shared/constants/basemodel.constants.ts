@@ -587,7 +587,7 @@ export const ecosystems: EcosystemRecord[] = [
   },
   {
     id: ECO.HiDreamO1,
-    key: 'HiDreamO1',
+    key: 'HiDream-O1',
     displayName: 'HiDream-O1',
     familyId: 19,
     sortOrder: 141,
@@ -818,6 +818,10 @@ export const ecosystemSupport: EcosystemSupport[] = [
   { ecosystemId: ECO.HiDream, supportType: 'generation', modelTypes: checkpointAndLora },
   { ecosystemId: ECO.HiDream, supportType: 'training', modelTypes: [ModelType.LORA] },
 
+  // HiDream-O1 - checkpoint and LORA
+  { ecosystemId: ECO.HiDreamO1, supportType: 'generation', modelTypes: checkpointAndLora },
+  { ecosystemId: ECO.HiDreamO1, supportType: 'training', modelTypes: [ModelType.LORA] },
+
   // NanoBanana - checkpoint only
   { ecosystemId: ECO.NanoBanana, supportType: 'generation', modelTypes: checkpointOnly },
 
@@ -996,6 +1000,13 @@ export const ecosystemSettings: EcosystemSettings[] = [
     ecosystemId: ECO.HiDream,
     defaults: {
       model: { id: 1771369 },
+      modelLocked: true,
+    },
+  },
+  {
+    ecosystemId: ECO.HiDreamO1,
+    defaults: {
+      model: { id: 2939964 },
       modelLocked: true,
     },
   },
@@ -2182,8 +2193,7 @@ export const baseModelRecords: BaseModelRecord[] = [
   {
     id: BM.HiDreamO1,
     name: 'HiDream-O1',
-    description:
-      "HiDream.ai's unified pixel-level transformer for text-to-image generation",
+    description: "HiDream.ai's unified pixel-level transformer for text-to-image generation",
     type: 'image',
     ecosystemId: ECO.HiDreamO1,
     licenseId: 19,
