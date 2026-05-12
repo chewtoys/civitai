@@ -157,27 +157,34 @@ The `FeatureAccess` type intentionally stays as `Record<FeatureFlagKey, boolean>
 - `isFlagProtected` middleware uses `!features[flag]` — works identically with `undefined`
 - `getUserFeatureFlagsHandler` at [user.controller.ts:1297](../src/server/controllers/user.controller.ts#L1297) uses `!ctx.features[key]` — also identical
 
-### Phase 3 — Client: tighten the type
+### Phase 3 — Client: tighten the type ❌ DECIDED AGAINST
 
-Change the type:
+Tried it. Changed `FeatureAccess` to `Partial<Record<FeatureFlagKey, true>>` and surfaced 13 type errors across the codebase — all `boolean | undefined not assignable to boolean` at boundaries where flag values flow into typed slots (context props, function params, predicate return types).
+
+**Why we backed out:** the fixes all required `!!features.X` coercion, which adds friction at every boundary without a corresponding behavior gain. The runtime is already sparse from Phase 2; consumers already use truthy checks (Phase 1). Forcing every boundary to coerce was noise without payoff.
+
+**What we're keeping instead:**
 
 ```ts
-export type FeatureAccess = Partial<Record<FeatureFlagKey, true>>;
+export type FeatureAccess = Record<FeatureFlagKey, boolean>;
 ```
 
-Run `pnpm run typecheck`. The compiler will surface every place that:
+The type "lies" — it claims every flag is present and boolean, when at runtime absent flags are `undefined`. The lie is benign because:
 
-- Treats `features.X` as a `boolean` argument to another function
-- Destructures into a `boolean`-typed local
-- Uses `=== false` (should be zero after Phase 1, but verify)
+- `if (features.X)` works for both `false` and `undefined`
+- `!features.X` works for both `false` and `undefined`
+- Truthy ternary works the same way
+- The wire payload is still sparse (Phase 2 stays — half the win was the bytes)
+- **The flag-removal safety net still works**: `FeatureFlagKey` is the keyspace, so removing a flag from the registry shrinks the union and produces a type error at every consumer (including destructure sites)
 
-Each surfaced site becomes `Boolean(features.X)` or `!!features.X` — or, better, a `features.X ?? false` if the value is being passed to an API that wants `boolean`.
+**What we lose:** the type doesn't enforce write safety (`features.X = false` compiles even though wire payload never produces `false`). Acceptable — no consumer writes to the cache except [SettingsCard.tsx:242](../src/components/Account/SettingsCard.tsx#L242), and that one assignment is internal optimistic-cache state, not the wire payload.
 
-### Phase 4 — Reap the benefits
+### Phase 4 — Benefits realized
 
-- New flags can be deleted from the registry with the compiler as a safety net — **this kills the destructure-blind-spot bug** that bit us in Tier 1 cleanup, because removing a flag from `FeatureFlagKey` produces a type error at every destructure site
 - Wire payload is smaller (most users have ~25 of ~80 flags true)
 - Cache hit ratios improve since the payload is more uniform across users
+- Removing a flag from the registry produces type errors at every consumer (destructure-blind-spot bug from Tier 1 is fixed) — this works because `FeatureFlagKey` is the keyspace, regardless of `Record` vs `Partial<Record>`
+- Consumers stay terse — no `!!` coercion required at boundaries
 
 ## Risks & gotchas
 

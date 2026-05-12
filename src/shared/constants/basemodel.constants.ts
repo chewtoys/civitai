@@ -129,6 +129,7 @@ export const ECO = {
   HyDit1: 12,
   AuraFlow: 13,
   HiDream: 14,
+  HiDreamO1: 29,
   Kolors: 15,
   Lumina: 16,
   Mochi: 17,
@@ -576,6 +577,22 @@ export const ecosystems: EcosystemRecord[] = [
     sortOrder: 130,
   },
 
+  // HiDream Family (familyId: 19)
+  {
+    id: ECO.HiDream,
+    key: 'HiDream',
+    displayName: 'HiDream',
+    familyId: 19,
+    sortOrder: 140,
+  },
+  {
+    id: ECO.HiDreamO1,
+    key: 'HiDreamO1',
+    displayName: 'HiDream-O1',
+    familyId: 19,
+    sortOrder: 141,
+  },
+
   // Standalone ecosystems (no family)
   { id: ECO.Anima, key: 'Anima', displayName: 'Anima', sortOrder: 199 },
   { id: ECO.AuraFlow, key: 'AuraFlow', displayName: 'AuraFlow', sortOrder: 200 },
@@ -586,12 +603,6 @@ export const ecosystems: EcosystemRecord[] = [
     displayName: 'CogVideoX',
     sortOrder: 202,
     // No generation support - training only
-  },
-  {
-    id: ECO.HiDream,
-    key: 'HiDream',
-    displayName: 'HiDream',
-    sortOrder: 203,
   },
   { id: ECO.Kolors, key: 'Kolors', displayName: 'Kolors', sortOrder: 204 },
   {
@@ -1641,6 +1652,7 @@ export const BM = {
   Flux2Klein_4B: 75,
   Flux2Klein_4B_base: 76,
   HiDream: 9,
+  HiDreamO1: 87,
   Hunyuan1: 10,
   HunyuanVideo: 11,
   Illustrious: 12,
@@ -1997,6 +2009,11 @@ export const ecosystemFamilies: BaseModelFamilyRecord[] = [
     name: 'Alibaba - Taotian',
     description: "Alibaba Taotian Future Life Lab's video generation models",
   },
+  {
+    id: 19,
+    name: 'HiDream',
+    description: "HiDream.ai's image generation models",
+  },
 ];
 
 export const ecosystemFamilyById = new Map(ecosystemFamilies.map((f) => [f.id, f]));
@@ -2160,6 +2177,15 @@ export const baseModelRecords: BaseModelRecord[] = [
     description: 'High-resolution image generation model optimized for detailed outputs',
     type: 'image',
     ecosystemId: ECO.HiDream,
+    licenseId: 19,
+  },
+  {
+    id: BM.HiDreamO1,
+    name: 'HiDream-O1',
+    description:
+      "HiDream.ai's unified pixel-level transformer for text-to-image generation",
+    type: 'image',
+    ecosystemId: ECO.HiDreamO1,
     licenseId: 19,
   },
 

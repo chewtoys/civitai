@@ -408,10 +408,12 @@ const hasFeature = (
   return true;
 };
 
+// Sparse payload at runtime: only `true` flags are actually present, absent keys
+// are `undefined`. Type stays as `Record<FeatureFlagKey, boolean>` so consumers
+// read `features.X` as `boolean` without coercion. Truthy checks work the same
+// way against `false` and `undefined`. Removing a flag from the registry shrinks
+// `FeatureFlagKey`, which surfaces a type error at every consumer.
 export type FeatureAccess = Record<FeatureFlagKey, boolean>;
-// Sparse payload: only `true` flags are included; consumers must use truthy checks.
-// Type stays as `Record<FeatureFlagKey, boolean>` for one deploy to keep client/server
-// in sync during rollout; Phase 3 will tighten to `Partial<Record<FeatureFlagKey, true>>`.
 export const getFeatureFlags = (ctx: FeatureAccessContext) => {
   const keys = Object.keys(featureFlags) as FeatureFlagKey[];
 
