@@ -42,6 +42,7 @@ import {
 import { getChainDisplayName, getNetworkDisplayName } from '~/server/common/chain-config';
 import { numberWithCommas } from '~/utils/number-helpers';
 import { trpc } from '~/utils/trpc';
+import { BulkBonusNotice } from '~/components/Buzz/CryptoDeposit/BulkBonusNotice';
 
 const QRCodeSVG = dynamic(() => import('qrcode.react').then((mod) => mod.QRCodeSVG), {
   ssr: false,
@@ -225,6 +226,10 @@ export function DepositCardContent({ depositAddress, error, loading, onRetry, ch
               <FactRow text="Send any amount above the minimum" />
               <FactRow text="Works from any wallet or exchange" />
             </Stack>
+
+            <Divider className="opacity-15 dark:opacity-15" />
+
+            <BulkBonusNotice fiatSymbol={fiatSymbol} buzzPrice={buzzPrice} />
           </Stack>
         </div>
 
