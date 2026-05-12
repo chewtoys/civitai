@@ -24,9 +24,9 @@ import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { Redirect } from '~/components/Redirect/Redirect';
 
 export default function ArticlesSearch() {
-  const { articles } = useFeatureFlags();
+  const features = useFeatureFlags();
 
-  if (!articles) return <Redirect url="/" />;
+  if (!features.articles) return <Redirect url="/" />;
 
   return (
     <SearchLayout.Root>

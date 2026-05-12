@@ -288,7 +288,7 @@ export const AuctionInfo = () => {
   const { ref: placeBidRef, inView: placeBidInView } = useInView();
   const router = useRouter();
   const { selectedAuction, selectedModel, validAuction, setSelectedModel } = useAuctionContext();
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
   const { baseModels } = useFiltersContext((state) => state.auctions);
 
   const [searchText, setSearchText] = useState<string>('');
@@ -445,7 +445,7 @@ export const AuctionInfo = () => {
   };
 
   const isSelectedModelBlocked =
-    isGreen &&
+    features.isGreen &&
     !!selectedModel &&
     !!(selectedModel.model?.nsfw || selectedModel.model?.poi || selectedModel.model?.minor);
   const validBid = !!bidPrice && bidPrice > 0 && !!selectedModel && !isSelectedModelBlocked;

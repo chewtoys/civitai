@@ -75,7 +75,7 @@ type DumbProps = {
 
 function DumbSortFilter({ type, value, onChange, ignoreNsfwLevel, options, ...props }: DumbProps) {
   const showNsfw = useBrowsingSettings((x) => x.showNsfw);
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
   const isModerator = useCurrentUser()?.isModerator ?? false;
 
   return (
@@ -85,7 +85,7 @@ function DumbSortFilter({ type, value, onChange, ignoreNsfwLevel, options, ...pr
       value={value}
       options={(options ?? sortOptions[type].map((x) => ({ label: x, value: x }))).filter((x) => {
         if (ignoreNsfwLevel || isModerator) return true;
-        if (!canViewNsfw && (x.value === 'Newest' || x.value === 'Oldest')) return false;
+        if (!features.canViewNsfw && (x.value === 'Newest' || x.value === 'Oldest')) return false;
         if (type === 'images') {
           if (!showNsfw && x.value === 'Newest') return false;
           return true;

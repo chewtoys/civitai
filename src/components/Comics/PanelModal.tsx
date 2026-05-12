@@ -94,7 +94,10 @@ function ReferencePanelPicker({
               minWidth: 56,
               borderRadius: 6,
               overflow: 'hidden',
-              border: selectedId === p.id ? '2px solid var(--mantine-color-blue-5)' : '2px solid transparent',
+              border:
+                selectedId === p.id
+                  ? '2px solid var(--mantine-color-blue-5)'
+                  : '2px solid transparent',
               position: 'relative',
             }}
           >
@@ -239,7 +242,7 @@ export function PanelModal({
   // Green is SFW-only — the NSFW-metadata warnings below only apply on
   // red, where users can upload mature content that needs AI-generation
   // metadata to pass our scanner.
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
 
   // Allowed buzz account types (includes blue + domain currency)
   const availableBuzzTypes = useAvailableBuzz(['blue']);
@@ -271,10 +274,7 @@ export function PanelModal({
   const [annotationElements, setAnnotationElements] = useState<DrawingElement[]>([]);
   // The original (clean, un-annotated) source URL for re-opening the editor
   const [originalSourceUrl, setOriginalSourceUrl] = useState<string | null>(null);
-  const {
-    uploadToCF: uploadEnhanceToCF,
-    resetFiles: resetEnhanceFiles,
-  } = useCFImageUpload();
+  const { uploadToCF: uploadEnhanceToCF, resetFiles: resetEnhanceFiles } = useCFImageUpload();
 
   // Enhance tab cost — uses the actual source image for accurate img2img pricing
   const { data: enhanceImgCost } = trpc.comics.getGenerationCostEstimate.useQuery(
@@ -283,12 +283,16 @@ export function PanelModal({
       aspectRatio,
       quantity: 1,
       sourceImage: enhanceSourceImage
-        ? { url: enhanceSourceImage.url, width: enhanceSourceImage.width, height: enhanceSourceImage.height }
+        ? {
+            url: enhanceSourceImage.url,
+            width: enhanceSourceImage.width,
+            height: enhanceSourceImage.height,
+          }
         : undefined,
     },
     { enabled: !!enhanceSourceImage, staleTime: 30_000, retry: 2 }
   );
-  const enhanceGenCost = enhanceSourceImage ? (enhanceImgCost?.cost ?? null) : panelCost;
+  const enhanceGenCost = enhanceSourceImage ? enhanceImgCost?.cost ?? null : panelCost;
 
   // Bulk tab state
   const [bulkItems, setBulkItems] = useState<BulkPanelItem[]>([]);
@@ -376,11 +380,7 @@ export function PanelModal({
 
           setEnhanceUploading(true);
           try {
-            const cfId = await fetchAndUploadGeneratorImage(
-              img.url,
-              'enhance',
-              uploadEnhanceToCF
-            );
+            const cfId = await fetchAndUploadGeneratorImage(img.url, 'enhance', uploadEnhanceToCF);
             setEnhanceSourceImage({
               url: cfId,
               previewUrl: getEdgeUrl(cfId, { width: 400 }) ?? cfId,
@@ -669,17 +669,11 @@ export function PanelModal({
             )}
             onClick={() => setPanelMode('enhance')}
           >
-            <IconWand
-              size={14}
-              style={{ display: 'inline', verticalAlign: -2, marginRight: 4 }}
-            />
+            <IconWand size={14} style={{ display: 'inline', verticalAlign: -2, marginRight: 4 }} />
             Enhance
           </button>
           <button
-            className={clsx(
-              styles.panelModeTab,
-              panelMode === 'bulk' && styles.panelModeTabActive
-            )}
+            className={clsx(styles.panelModeTab, panelMode === 'bulk' && styles.panelModeTabActive)}
             onClick={() => setPanelMode('bulk')}
           >
             <IconUpload
@@ -695,17 +689,14 @@ export function PanelModal({
             )}
             onClick={() => setPanelMode('import')}
           >
-            <IconPhoto
-              size={14}
-              style={{ display: 'inline', verticalAlign: -2, marginRight: 4 }}
-            />
+            <IconPhoto size={14} style={{ display: 'inline', verticalAlign: -2, marginRight: 4 }} />
             Import
           </button>
         </div>
       )}
 
       <Text size="xs" c="dimmed">
-        {isGreen
+        {features.isGreen
           ? 'Generated panels use the selected AI model and some are SFW only.'
           : "Generated panels use the selected AI model and some are SFW only. Uploaded or imported images can be NSFW, but they must include generation metadata (prompt, sampler, steps…) or they'll be blocked from publishing."}
       </Text>
@@ -799,7 +790,15 @@ export function PanelModal({
               Cancel
             </Button>
             <Tooltip
-              label={queueFull ? `Queue full (${used}/${limit})` : generationDisabled ? 'Generation unavailable' : costReady ? `Generation: ${effectivePanelCost} Buzz` : 'Loading cost...'}
+              label={
+                queueFull
+                  ? `Queue full (${used}/${limit})`
+                  : generationDisabled
+                  ? 'Generation unavailable'
+                  : costReady
+                  ? `Generation: ${effectivePanelCost} Buzz`
+                  : 'Loading cost...'
+              }
               disabled={!queueFull && !generationDisabled && costReady}
               withArrow
               position="top"
@@ -807,9 +806,19 @@ export function PanelModal({
               <BuzzTransactionButton
                 buzzAmount={effectivePanelCost}
                 accountTypes={availableBuzzTypes}
-                label={!costReady ? 'Loading cost...' : insertAtPosition != null ? 'Insert' : quantity > 1 ? `Generate ${quantity} images` : 'Generate'}
+                label={
+                  !costReady
+                    ? 'Loading cost...'
+                    : insertAtPosition != null
+                    ? 'Insert'
+                    : quantity > 1
+                    ? `Generate ${quantity} images`
+                    : 'Generate'
+                }
                 loading={isSubmitting || isCreatePending}
-                disabled={!prompt.trim() || !costReady || queueFull || generationDisabled || isEnhancing}
+                disabled={
+                  !prompt.trim() || !costReady || queueFull || generationDisabled || isEnhancing
+                }
                 onPerformTransaction={onGeneratePanel}
                 showPurchaseModal
               />
@@ -1008,7 +1017,13 @@ export function PanelModal({
               Cancel
             </Button>
             <Tooltip
-              label={queueFull && prompt.trim() ? `Queue full (${used}/${limit})` : generationDisabled && prompt.trim() ? 'Generation unavailable' : undefined}
+              label={
+                queueFull && prompt.trim()
+                  ? `Queue full (${used}/${limit})`
+                  : generationDisabled && prompt.trim()
+                  ? 'Generation unavailable'
+                  : undefined
+              }
               disabled={!((queueFull || generationDisabled) && prompt.trim())}
               withArrow
               position="top"
@@ -1016,9 +1031,20 @@ export function PanelModal({
               <BuzzTransactionButton
                 buzzAmount={enhanceGenCost ?? 0}
                 accountTypes={availableBuzzTypes}
-                label={enhanceGenCost == null ? 'Loading cost...' : regeneratingPanelId ? 'Regenerate' : 'Enhance'}
+                label={
+                  enhanceGenCost == null
+                    ? 'Loading cost...'
+                    : regeneratingPanelId
+                    ? 'Regenerate'
+                    : 'Enhance'
+                }
                 loading={isSubmitting || isEnhancePending}
-                disabled={!enhanceSourceImage || enhanceGenCost == null || (!!prompt.trim() && (queueFull || generationDisabled)) || isEnhancing}
+                disabled={
+                  !enhanceSourceImage ||
+                  enhanceGenCost == null ||
+                  (!!prompt.trim() && (queueFull || generationDisabled)) ||
+                  isEnhancing
+                }
                 onPerformTransaction={handleEnhanceSubmit}
                 showPurchaseModal
               />
@@ -1031,7 +1057,7 @@ export function PanelModal({
           {/* Same AI-verification gotcha as the Import tab — bulk-uploaded
               images that come in NSFW without generation metadata will be
               blocked. Red-only; green has no NSFW publishing path. */}
-          {!isGreen && (
+          {!features.isGreen && (
             <Alert
               color="yellow"
               variant="light"
@@ -1040,8 +1066,8 @@ export function PanelModal({
             >
               <Text size="xs">
                 If an uploaded image is classified as NSFW and we can&apos;t verify it was
-                AI-generated, it will be blocked from publishing until you add the prompt,
-                sampler, steps, and other generation settings via{' '}
+                AI-generated, it will be blocked from publishing until you add the prompt, sampler,
+                steps, and other generation settings via{' '}
                 <Text component="span" fw={600} inherit>
                   Add generation details
                 </Text>{' '}
@@ -1148,8 +1174,8 @@ export function PanelModal({
               {bulkGenerationCount > 0 && (
                 <span>
                   {' '}
-                  &middot; {bulkGenerationCount} generation{bulkGenerationCount !== 1 ? 's' : ''}{' '}
-                  = {costReady ? `${bulkTotalCost} Buzz` : 'Calculating...'}
+                  &middot; {bulkGenerationCount} generation{bulkGenerationCount !== 1 ? 's' : ''} ={' '}
+                  {costReady ? `${bulkTotalCost} Buzz` : 'Calculating...'}
                 </span>
               )}
               {bulkItems.length - bulkGenerationCount > 0 && (
@@ -1170,7 +1196,11 @@ export function PanelModal({
               <BuzzTransactionButton
                 buzzAmount={bulkTotalCost}
                 accountTypes={availableBuzzTypes}
-                label={!costReady ? 'Loading cost...' : `Add ${bulkItems.length} Panel${bulkItems.length !== 1 ? 's' : ''}`}
+                label={
+                  !costReady
+                    ? 'Loading cost...'
+                    : `Add ${bulkItems.length} Panel${bulkItems.length !== 1 ? 's' : ''}`
+                }
                 loading={isSubmitting || isBulkPending}
                 disabled={
                   bulkItems.length === 0 ||
@@ -1209,7 +1239,7 @@ export function PanelModal({
               chapter refuses to publish; the panel detail drawer already
               has the fix-it flow via "Add generation details". Skipped on
               green where NSFW publishing isn't possible to begin with. */}
-          {!isGreen && (
+          {!features.isGreen && (
             <Alert
               color="yellow"
               variant="light"
@@ -1218,9 +1248,9 @@ export function PanelModal({
             >
               <Text size="xs">
                 If an imported image is classified as NSFW and we can&apos;t verify it was
-                AI-generated from its metadata, it will be blocked from publishing until you
-                add the prompt, sampler, steps, and other generation settings. You can do
-                this later from the panel detail view by clicking{' '}
+                AI-generated from its metadata, it will be blocked from publishing until you add the
+                prompt, sampler, steps, and other generation settings. You can do this later from
+                the panel detail view by clicking{' '}
                 <Text component="span" fw={600} inherit>
                   Add generation details
                 </Text>

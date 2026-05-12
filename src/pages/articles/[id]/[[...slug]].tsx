@@ -139,7 +139,7 @@ function ArticleDetailsPage({ id }: InferGetServerSidePropsType<typeof getServer
   const colorScheme = useComputedColorScheme('dark');
   const currentUser = useCurrentUser();
   const mobile = useContainerSmallerThan('sm');
-  const { articles } = useFeatureFlags();
+  const features = useFeatureFlags();
 
   const { data: article, isLoading, isRefetching } = trpc.article.getById.useQuery({ id });
   const tippedAmount = useBuzzTippingStore({ entityType: 'Article', entityId: id });
@@ -167,7 +167,7 @@ function ArticleDetailsPage({ id }: InferGetServerSidePropsType<typeof getServer
   const isOwner = currentUser?.id === article?.user?.id || isModerator;
 
   // boolean value that allows us to disable articles via feature flags and still allow us to show articles created by moderators
-  const disableArticles = !articles && !article?.user.isModerator;
+  const disableArticles = !features.articles && !article?.user.isModerator;
 
   const queryUtils = trpc.useUtils();
   const upsertArticleMutation = trpc.article.upsert.useMutation();

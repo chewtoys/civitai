@@ -44,7 +44,7 @@ export function useApplyHiddenPreferences<
   const systemBrowsingLevel = useBrowsingLevelDebounced();
   const browsingLevel = browsingLevelOverride ?? systemBrowsingLevel;
   const browsingSettingsAddons = useBrowsingSettingsAddons();
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
 
   const hiddenPreferences = useHiddenPreferencesContext();
 
@@ -79,7 +79,7 @@ export function useApplyHiddenPreferences<
       hiddenPreferences: preferences,
       currentUser,
       allowLowerLevels,
-      canViewNsfw,
+      canViewNsfw: features.canViewNsfw,
       poiDisabled: browsingSettingsAddons.settings.disablePoi,
       minorDisabled: browsingSettingsAddons.settings.disableMinor,
     });

@@ -180,9 +180,7 @@ function ComicIteratePage() {
             }
           : {}),
         ...(params.selectedImageIds ? { selectedImageIds: params.selectedImageIds } : {}),
-        ...(params.referenceImages?.length
-          ? { userReferenceImages: params.referenceImages }
-          : {}),
+        ...(params.referenceImages?.length ? { userReferenceImages: params.referenceImages } : {}),
       });
     },
     [iterateGenerateMutation, projectId, chapterPosition]
@@ -313,7 +311,7 @@ function ComicIteratePage() {
     [mentions]
   );
 
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
 
   // Block iterative editing of NSFW panels on green domain. The shell query
   // doesn't carry panel data, so we look the source panel up in the chapter
@@ -321,20 +319,16 @@ function ComicIteratePage() {
   // fetch entirely when there's no panelId on the URL — that's the
   // "iterate from a free-form image" case, no source panel to gate on.
   const sourcePanelGateNeeded =
-    isGreen && numericPanelId != null && projectId > 0 && Number.isFinite(chapterPosition);
+    features.isGreen && numericPanelId != null && projectId > 0 && Number.isFinite(chapterPosition);
   const { data: sourceChapter, isLoading: isSourceChapterLoading } =
     trpc.comics.getChapter.useQuery(
       { projectId, chapterPosition },
       { enabled: sourcePanelGateNeeded }
     );
   const sourcePanel =
-    numericPanelId != null
-      ? sourceChapter?.panels.find((p) => p.id === numericPanelId)
-      : null;
+    numericPanelId != null ? sourceChapter?.panels.find((p) => p.id === numericPanelId) : null;
   const isNsfwBlocked =
-    isGreen &&
-    !!sourcePanel?.image &&
-    !hasSafeBrowsingLevel(sourcePanel.image.nsfwLevel);
+    features.isGreen && !!sourcePanel?.image && !hasSafeBrowsingLevel(sourcePanel.image.nsfwLevel);
 
   // Closes a brief leak window: on green, when a panelId is on the URL, we
   // need the chapter query to resolve before we can know whether the
@@ -390,11 +384,7 @@ function ComicIteratePage() {
         }}
       >
         <Tooltip label="Back to project">
-          <ActionIcon
-            variant="subtle"
-            component={Link}
-            href={`/comics/project/${projectId}`}
-          >
+          <ActionIcon variant="subtle" component={Link} href={`/comics/project/${projectId}`}>
             <IconArrowLeft size={18} />
           </ActionIcon>
         </Tooltip>

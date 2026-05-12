@@ -1,5 +1,11 @@
 import { Badge, Box, Button, Center, Container, Loader, Text } from '@mantine/core';
-import { IconAlertCircle, IconEyeOff, IconPhoto, IconPhotoOff, IconPlus } from '@tabler/icons-react';
+import {
+  IconAlertCircle,
+  IconEyeOff,
+  IconPhoto,
+  IconPhotoOff,
+  IconPlus,
+} from '@tabler/icons-react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 
@@ -189,11 +195,11 @@ function UserPublicComics({ username }: { username: string }) {
 type ProjectItem = RouterOutput['comics']['getMyProjects'][number];
 
 function ProjectCard({ project }: { project: ProjectItem }) {
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
   const imageUrl = project.coverImage?.url ?? project.thumbnailUrl;
   const hasNsfw =
     project.nsfwLevel !== 0 && Flags.intersects(project.nsfwLevel, nsfwBrowsingLevelsFlag);
-  const isBlocked = isGreen && hasNsfw;
+  const isBlocked = features.isGreen && hasNsfw;
   const nsfwInfo = hasNsfw ? getNsfwLabel(project.nsfwLevel) : null;
 
   return (

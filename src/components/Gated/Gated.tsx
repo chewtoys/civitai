@@ -77,7 +77,7 @@ export function useGated({
   bypassRating?: boolean;
 }): UseGatedResult {
   const currentUser = useCurrentUser();
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
   const { data, status } = useSession();
   const verifiedBot = useAppContext().verifiedBot;
 
@@ -88,7 +88,7 @@ export function useGated({
 
   // Unrated content — only block on the SFW site. Owners/mods bypass so
   // they can preview their own drafts before publishing.
-  if (!canViewNsfw && contentNsfwLevel === 0 && !bypassRating) {
+  if (!features.canViewNsfw && contentNsfwLevel === 0 && !bypassRating) {
     return { state: 'unrated', isPaywalled: false };
   }
 
@@ -99,7 +99,7 @@ export function useGated({
   // PG13 on the SFW site requires login. Verified bots aren't a special
   // case here — civitai.com is strictly SFW even for crawlers, so a bot
   // hitting a PG13 page sees the same login gate any anonymous user would.
-  if (!canViewNsfw && !currentUser && !nsfw && isPG13Only && !isUnratedOwnerPreview) {
+  if (!features.canViewNsfw && !currentUser && !nsfw && isPG13Only && !isUnratedOwnerPreview) {
     return { state: 'login', isPaywalled: false };
   }
 
@@ -108,7 +108,7 @@ export function useGated({
     : hasPublicBrowsingLevel(contentNsfwLevel);
 
   // SFW site, NSFW content — redirect to civitai.red.
-  if (!canViewNsfw && (nsfw || !meetsAllowedLevel) && !isUnratedOwnerPreview) {
+  if (!features.canViewNsfw && (nsfw || !meetsAllowedLevel) && !isUnratedOwnerPreview) {
     return { state: 'redirect', isPaywalled: false };
   }
 

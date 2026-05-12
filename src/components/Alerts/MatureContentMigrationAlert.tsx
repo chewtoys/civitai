@@ -12,7 +12,7 @@ import { trpc } from '~/utils/trpc';
 const ALERT_ID = 'mature-content-migration';
 
 export function MatureContentMigrationAlert() {
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
   const serverDomains = useServerDomains();
   const { data: session } = useSession();
   // `AppProvider` seeds `user.getSettings` with SSR `initialData` and the
@@ -64,7 +64,7 @@ export function MatureContentMigrationAlert() {
     if (el) el.style.opacity = '0';
   }, []);
 
-  if (!isGreen || !hasNsfwEnabled || !isFetched || isDismissed) return null;
+  if (!features.isGreen || !hasNsfwEnabled || !isFetched || isDismissed) return null;
 
   const redDomain = serverDomains.red;
   const redUrl = syncAccount(`//${redDomain}`);

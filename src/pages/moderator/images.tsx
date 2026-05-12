@@ -136,7 +136,7 @@ export default function Images() {
     include: [] as number[],
     exclude: [] as number[],
   });
-  const { csamReports, appealReports } = useFeatureFlags();
+  const features = useFeatureFlags();
   const browsingLevel = useBrowsingLevelDebounced();
 
   const viewingReported = type === ModReviewType.Reported;
@@ -172,8 +172,8 @@ export default function Images() {
   const segments = Object.entries(ModReviewType)
     // filter out csam and appeal if not enabled
     .filter(([, value]) => {
-      if (value === ModReviewType.CSAM) return csamReports;
-      if (value === ModReviewType.Appeals) return appealReports;
+      if (value === ModReviewType.CSAM) return features.csamReports;
+      if (value === ModReviewType.Appeals) return features.appealReports;
       return true;
     })
     .map(([key, value]) => ({

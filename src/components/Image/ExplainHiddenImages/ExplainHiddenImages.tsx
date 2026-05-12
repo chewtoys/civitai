@@ -108,7 +108,7 @@ export function useExplainHiddenImages<
 >(images?: T[]) {
   const browsingLevel = useBrowsingLevelDebounced();
   const hiddenPreferences = useHiddenPreferencesContext();
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
   const browsingSettingsAddons = useBrowsingSettingsAddons();
 
   return useMemo(() => {
@@ -163,7 +163,7 @@ export function useExplainHiddenImages<
       hiddenByBrowsingSettings,
       hiddenByTags,
       hiddenByPoi,
-      hasHidden: canViewNsfw
+      hasHidden: features.canViewNsfw
         ? !!hiddenBelowBrowsingLevel.length ||
           !!hiddenAboveBrowsingLevel.length ||
           !!hiddenByTags.length

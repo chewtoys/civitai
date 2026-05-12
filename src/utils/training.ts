@@ -493,7 +493,14 @@ export const isAiToolkitSupported = (baseType: TrainingBaseModelType): boolean =
 
 // Check if AI Toolkit is mandatory (cannot use other engines)
 export const isAiToolkitMandatory = (baseType: TrainingBaseModelType): boolean => {
-  const mandatoryTypes: TrainingBaseModelType[] = ['qwen', 'zimage', 'ernie', 'flux2klein', 'ltx2', 'ltx23'];
+  const mandatoryTypes: TrainingBaseModelType[] = [
+    'qwen',
+    'zimage',
+    'ernie',
+    'flux2klein',
+    'ltx2',
+    'ltx23',
+  ];
   return mandatoryTypes.includes(baseType);
 };
 
@@ -527,7 +534,7 @@ export const getDefaultEngine = (
     return 'ai-toolkit';
   }
   // When Kohya is disabled via Flipt, pick best available fallback
-  if (features && features.kohyaTraining === false) {
+  if (features && !features.kohyaTraining) {
     // Flux defaults to rapid (its primary non-Kohya engine)
     if (baseType === 'flux') return 'rapid';
     // For other models, use AI Toolkit if available
@@ -540,7 +547,7 @@ export const getDefaultEngine = (
 
 // Check if Kohya engine is enabled via feature flags
 export const isKohyaEnabled = (features: Record<string, boolean>): boolean => {
-  return features.kohyaTraining !== false;
+  return !!features.kohyaTraining;
 };
 
 // Check if AI Toolkit is valid for the model

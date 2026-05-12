@@ -143,7 +143,6 @@ const featureFlags = createFeatureFlags({
   impersonation: isDev ? ['mod'] : ['granted'],
   donationGoals: ['public'],
   creatorComp: ['public'],
-  imageIndex: ['public'],
   imageIndexFeed: { availability: ['public'], fliptKey: 'image-index-feed' },
   // #region [Domain Specific Features]
   isGreen: ['public', 'green'],

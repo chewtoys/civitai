@@ -23,7 +23,7 @@ const overviewPath = '[username]';
 
 export const ProfileNavigation = ({ username }: ProfileNavigationProps) => {
   const router = useRouter();
-  const { articles, comicCreator } = useFeatureFlags();
+  const features = useFeatureFlags();
 
   const {
     data: userOverview,
@@ -69,13 +69,13 @@ export const ProfileNavigation = ({ username }: ProfileNavigationProps) => {
       url: `${baseUrl}/articles`,
       icon: (props) => <IconPencilMinus {...props} />,
       count: userOverview?.articleCount ?? 0,
-      disabled: !articles || !!user?.bannedAt,
+      disabled: !features.articles || !!user?.bannedAt,
     },
     comics: {
       url: `${baseUrl}/comics`,
       icon: (props) => <IconBook {...props} />,
       count: userOverview?.comicCount ?? 0,
-      disabled: !comicCreator || !!user?.bannedAt,
+      disabled: !features.comicCreator || !!user?.bannedAt,
     },
     collections: {
       url: `${baseUrl}/collections`,

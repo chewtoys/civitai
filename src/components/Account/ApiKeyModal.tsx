@@ -51,7 +51,7 @@ const periodOptions = [
 ];
 
 export function ApiKeyModal({ ...props }: Props) {
-  const { apiKeyBuzzLimit } = useFeatureFlags();
+  const features = useFeatureFlags();
   const [tokenScope, setTokenScope] = useState<number>(TokenScope.Full);
   const [preset, setPreset] = useState<string | null>('Full');
   const [limitEnabled, setLimitEnabled] = useState(false);
@@ -243,7 +243,7 @@ export function ApiKeyModal({ ...props }: Props) {
                 </Table.Tbody>
               </Table>
             </Box>
-            {apiKeyBuzzLimit && (
+            {features.apiKeyBuzzLimit && (
               <Box>
                 <Group justify="space-between" align="center" mb={4}>
                   <Text size="sm" fw={500}>
