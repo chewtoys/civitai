@@ -11,6 +11,7 @@ import {
   IconHexagonPlus,
   IconList,
   IconPhotoAi,
+  IconRocket,
 } from '@tabler/icons-react';
 import type { BenefitItem } from '~/components/Subscriptions/PlanBenefitList';
 import { benefitIconSize } from '~/components/Subscriptions/PlanBenefitList';
@@ -24,24 +25,25 @@ import type { SubscriptionPlan } from '~/server/services/subscriptions.service';
 import { formatKBytes, numberWithCommas } from '~/utils/number-helpers';
 import { isDefined } from '~/utils/type-guards';
 
-/**
- * Boost copy: percent below 2x ("50% bonus..."), multiplier at or above 2x
- * ("2.5x bonus..."). Percent reads strongest for small boosts; multiplier
- * hits harder at scale.
- */
 function formatBoostCopy(
   multiplier: number | string | null | undefined,
-  kind: 'rewards' | 'purchases'
+  kind: 'rewards' | 'purchases',
+  isGreen?: boolean
 ): string {
-  const noun = kind === 'rewards' ? 'Buzz on daily rewards' : 'Buzz on purchases';
+  const noun =
+    kind === 'rewards'
+      ? isGreen
+        ? 'Blue Buzz on daily rewards'
+        : 'Buzz on daily rewards'
+      : 'Buzz on purchases';
   const num = Number(multiplier);
-  if (!Number.isFinite(num) || num <= 1) return `No bonus ${noun}`;
-  if (num < 2) {
+  if (!Number.isFinite(num) || num <= 1) return `No Bonus ${noun}`;
+  if (kind === 'purchases') {
     const pct = Math.round((num - 1) * 100);
-    return `${pct}% bonus ${noun}`;
+    return `${pct}% Bonus ${noun}`;
   }
   const rounded = Number(num.toFixed(2));
-  return `${rounded}x ${noun}`;
+  return `${rounded}x Bonus ${noun}`;
 }
 
 export const getPlanDetails: (
@@ -63,47 +65,104 @@ export const getPlanDetails: (
     benefits: [
       {
         icon: <IconBolt size={benefitIconSize} />,
-        iconColor: (metadata?.monthlyBuzz ?? 0) === 0 ? 'gray' : 'rgb(var(--buzz-color))',
+        iconColor:
+          (metadata?.monthlyBuzz ?? 0) === 0 ? 'gray' : features.isGreen ? 'green' : 'yellow',
         iconVariant: 'light' as ThemeIconVariant,
         content: (
           <Text>
-            <Text span>{numberWithCommas(metadata?.monthlyBuzz ?? 0)} Buzz per month</Text>
+            <Text span>
+              {numberWithCommas(metadata?.monthlyBuzz ?? 0)} {features.isGreen ? 'Green Buzz' : 'Buzz'}{' '}
+              per month
+            </Text>
           </Text>
         ),
       },
 
       features.membershipsV2
-        ? {
-            icon: <IconBolt size={benefitIconSize} />,
-            iconColor:
-              (metadata?.purchasesMultiplier ?? 1) === 1 ? 'gray' : `rgb(var(--buzz-color))`,
-            iconVariant: 'light' as ThemeIconVariant,
-            content:
-              (metadata?.purchasesMultiplier ?? 1) === 1 ? (
+        ? (() => {
+            const active = (metadata?.purchasesMultiplier ?? 1) !== 1;
+            const splitBolt = (
+              <div
+                style={{
+                  position: 'relative',
+                  width: benefitIconSize,
+                  height: benefitIconSize,
+                }}
+              >
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    clipPath: 'inset(0 0 50% 0)',
+                    color: 'var(--mantine-color-yellow-filled)',
+                  }}
+                >
+                  <IconBolt size={benefitIconSize} />
+                </div>
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    clipPath: 'inset(50% 0 0 0)',
+                    color: 'var(--mantine-color-green-filled)',
+                  }}
+                >
+                  <IconBolt size={benefitIconSize} />
+                </div>
+              </div>
+            );
+            return {
+              icon: active && features.isGreen ? splitBolt : <IconBolt size={benefitIconSize} />,
+              iconColor: !active
+                ? 'gray'
+                : features.isGreen
+                  ? 'yellow'
+                  : `rgb(var(--buzz-color))`,
+              iconVariant: 'light' as ThemeIconVariant,
+              iconStyle:
+                active && features.isGreen
+                  ? {
+                      background:
+                        'linear-gradient(180deg, var(--mantine-color-yellow-light) 50%, var(--mantine-color-green-light) 50%)',
+                    }
+                  : undefined,
+              content: !active ? (
                 <Text>
-                  <Text span>No bonus Buzz on purchases</Text>
+                  <Text span>No Bonus Buzz on purchases</Text>
                 </Text>
               ) : (
                 <Text>
-                  <Text span>{formatBoostCopy(metadata.purchasesMultiplier!, 'purchases')}</Text>
+                  <Text span>
+                    {formatBoostCopy(metadata.purchasesMultiplier!, 'purchases', features.isGreen)}
+                  </Text>
                 </Text>
               ),
-          }
+            };
+          })()
         : undefined,
       features.membershipsV2
         ? {
             key: 'rewardsMultiplier',
             icon: <IconBolt size={benefitIconSize} />,
-            iconColor: (metadata?.rewardsMultiplier ?? 1) === 1 ? 'gray' : `rgb(var(--buzz-color))`,
+            iconColor:
+              (metadata?.rewardsMultiplier ?? 1) === 1
+                ? 'gray'
+                : features.isGreen
+                  ? 'blue'
+                  : `rgb(var(--buzz-color))`,
             iconVariant: 'light' as ThemeIconVariant,
             content:
               (metadata?.rewardsMultiplier ?? 1) === 1 ? (
                 <Text>
-                  <Text span>No extra Buzz on rewards</Text>
+                  <Text span>
+                    No Bonus {features.isGreen ? 'Blue Buzz' : 'Buzz'} on daily rewards
+                  </Text>
                 </Text>
               ) : (
                 <Text>
-                  <Text span>{formatBoostCopy(metadata.rewardsMultiplier!, 'rewards')}</Text>
+                  <Text span>
+                    {formatBoostCopy(metadata.rewardsMultiplier!, 'rewards', features.isGreen)}
+                  </Text>
                 </Text>
               ),
           }
@@ -143,8 +202,8 @@ export const getPlanDetails: (
         content: <Text>{metadata.queueLimit ?? 4} Queued jobs</Text>,
       },
       {
-        icon: <IconBolt size={benefitIconSize} />,
-        iconColor: !!metadata.tier && metadata.tier !== 'free' ? 'blue' : 'gray',
+        icon: <IconRocket size={benefitIconSize} />,
+        iconColor: !!metadata.tier && metadata.tier !== 'free' ? 'grape' : 'gray',
         iconVariant: 'light' as ThemeIconVariant,
         content: (
           <Text>

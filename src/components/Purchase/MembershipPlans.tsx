@@ -307,17 +307,12 @@ export function MembershipPlans({
           )}
 
           {!isLoading && (
-            <Stack gap={0}>
-              <p className="mb-0 text-xs opacity-50">
-                By purchasing a membership, you agree to our{' '}
-                <Anchor href="/content/tos" inherit>
-                  Terms of Service
-                </Anchor>
-              </p>
-              <p className="text-xs opacity-50">
-                Transactions will appear as CIVIT AI INC on your billing statement
-              </p>
-            </Stack>
+            <p className="text-xs opacity-50">
+              By purchasing a membership, you agree to our{' '}
+              <Anchor href="/content/tos" inherit>
+                Terms of Service
+              </Anchor>
+            </p>
           )}
         </Stack>
       </Container>
