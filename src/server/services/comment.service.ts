@@ -1,6 +1,10 @@
 import { Prisma } from '@prisma/client';
 import { TRPCError } from '@trpc/server';
 import type { SessionUser } from 'next-auth';
+import { v4 as uuid } from 'uuid';
+import { NotificationCategory } from '~/server/common/enums';
+import { reportAcceptedReward } from '~/server/rewards';
+import { createNotification } from '~/server/services/notification.service';
 
 import { ReviewFilter, ReviewSort } from '~/server/common/enums';
 import { dbRead, dbWrite } from '~/server/db/client';
@@ -219,15 +223,92 @@ export const updateCommentReportStatusByReason = ({
   reason: ReportReason;
   status: ReportStatus;
 }) => {
+  // Skip reports that are already in the target status so re-running the
+  // bulk TOS handler does not double-fire reportAcceptedReward.
   return dbWrite.$queryRaw<{ id: number; userId: number }[]>`
     UPDATE "Report" r SET status = ${status}::"ReportStatus"
     FROM "CommentReport" c
     WHERE c."reportId" = r.id
       AND c."commentId" = ${id}
       AND r.reason = ${reason}::"ReportReason"
+      AND r.status <> ${status}::"ReportStatus"
     RETURNING id, "userId"
   `;
 };
+
+export async function bulkSetCommentTosViolation({
+  ids,
+  actor,
+}: {
+  ids: number[];
+  actor: { id: number; ip?: string; fingerprint?: string };
+}) {
+  if (ids.length === 0) return { count: 0, notified: 0, rewardedReports: 0 };
+
+  // Import enums lazily to avoid `Prisma` namespace collision in this file.
+  const ReportReason = (await import('~/shared/utils/prisma/enums')).ReportReason;
+  const ReportStatus = (await import('~/shared/utils/prisma/enums')).ReportStatus;
+
+  let rewardedReports = 0;
+  let notified = 0;
+
+  for (const id of ids) {
+    const comment = await updateCommentById({ id, data: { tosViolation: true } }).catch(() => null);
+    if (!comment) continue;
+
+    const reports = await updateCommentReportStatusByReason({
+      id,
+      reason: ReportReason.TOSViolation,
+      status: ReportStatus.Actioned,
+    });
+    rewardedReports += reports.length;
+
+    await Promise.allSettled(
+      reports.map((report) =>
+        reportAcceptedReward.apply(
+          { userId: report.userId, reportId: report.id },
+          { ip: actor.ip, fingerprint: actor.fingerprint as never }
+        )
+      )
+    );
+
+    await createNotification({
+      userId: comment.user.id,
+      type: 'tos-violation',
+      category: NotificationCategory.System,
+      key: `tos-violation:comment:${uuid()}`,
+      details: { modelName: comment.model?.name ?? '', entity: 'comment' },
+    })
+      .then(() => {
+        notified += 1;
+      })
+      .catch(() => {});
+  }
+
+  return { count: ids.length, notified, rewardedReports };
+}
+
+export async function bulkDeleteComments({ ids }: { ids: number[] }) {
+  if (ids.length === 0) return { count: 0 };
+  // Capture affected models/users before delete so we can queue metric updates.
+  const affected = await dbWrite.comment.findMany({
+    where: { id: { in: ids } },
+    select: { modelId: true, model: { select: { userId: true } } },
+  });
+  const result = await dbWrite.comment.deleteMany({ where: { id: { in: ids } } });
+
+  const modelIds = Array.from(new Set(affected.map((c) => c.modelId).filter((v): v is number => !!v)));
+  const userIds = Array.from(
+    new Set(affected.map((c) => c.model?.userId).filter((v): v is number => !!v))
+  );
+  await Promise.all([
+    ...modelIds.map((id) => preventReplicationLag('commentModel', id)),
+    ...modelIds.map((id) => modelMetrics.queueUpdate(id)),
+    ...userIds.map((id) => userMetrics.queueUpdate(id)),
+  ]);
+
+  return { count: result.count };
+}
 
 export const getCommentCountByModel = ({
   modelId,

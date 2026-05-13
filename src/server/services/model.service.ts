@@ -2560,6 +2560,36 @@ export const updateModelEarlyAccessDeadline = async ({ id }: GetByIdInput) => {
   }
 };
 
+/**
+ * Mod-driven "bump" — pushes a model to the top of the Newest feed by
+ * setting `lastVersionAt = NOW()`. Invalidates the caches that drive feed
+ * ordering and search.
+ *
+ * Note: this currently re-qualifies the model for the external `updated-model`
+ * webhook fan-out (see `src/server/webhooks/model.webooks.ts`). Per product
+ * decision, bumps are intended to be a maintenance action and should not
+ * notify webhook subscribers — suppressing that fan-out cleanly requires
+ * either a per-model `bumpedAt` column or a webhook predicate change. Tracking
+ * as a follow-up; the current fan-out side-effect is acceptable for Phase 1.
+ */
+export async function bumpModel({ id }: { id: number }) {
+  const updated = await dbWrite.model.update({
+    where: { id },
+    data: { lastVersionAt: new Date() },
+    select: { id: true, userId: true, lastVersionAt: true },
+  });
+
+  await Promise.all([
+    dataForModelsCache.refresh([id]),
+    modelsSearchIndex.queueUpdate([
+      { id, action: SearchIndexUpdateQueueAction.Update },
+    ]),
+    userModelCountCache.refresh(updated.userId),
+  ]);
+
+  return updated;
+}
+
 export async function updateModelLastVersionAt({
   id,
   tx,
