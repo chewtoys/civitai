@@ -193,7 +193,6 @@ export async function recordXGuardScan({
   entityType,
   entityId,
   results,
-  policyVersions,
   modelVersion,
   startedAt,
   completedAt,
@@ -203,7 +202,6 @@ export async function recordXGuardScan({
   entityType?: string;
   entityId?: string | number;
   results: XGuardLabelResult[];
-  policyVersions: Record<string, string>;
   modelVersion: string;
   /** Workflow timing from the orchestrator response. Replicated on every label
    * row to keep the schema single-table — for `DISTINCT`/`GROUP BY workflowId`
@@ -244,7 +242,7 @@ export async function recordXGuardScan({
       score: r.score,
       threshold: r.threshold,
       triggered,
-      policyVersion: policyVersions[r.label] ?? 'default',
+      policyVersion: r.policyHash ?? '',
       modelVersion,
       // Only persist the explanation fields when the label actually fired —
       // they're a wall of text per row otherwise, and untriggered rows have
@@ -300,7 +298,6 @@ export async function recordXGuardScanFromWorkflow(workflow: Workflow) {
     entityType: workflow.metadata.entityType as string | undefined,
     entityId: workflow.metadata.entityId as number | undefined,
     results: step.output.results,
-    policyVersions: (workflow.metadata.policyVersions as Record<string, string> | undefined) ?? {},
     modelVersion: (workflow.metadata.modelVersion as string | undefined) ?? '1',
     startedAt: workflow.startedAt,
     completedAt: workflow.completedAt,

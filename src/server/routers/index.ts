@@ -30,7 +30,6 @@ import { userReferralCodeRouter } from '~/server/routers/user-referral-code.rout
 import { referralRouter } from '~/server/routers/referral.router';
 import { vimeoRouter } from '~/server/routers/vimeo.router';
 import { scannerReviewRouter } from '~/server/routers/scanner-review.router';
-import { xguardPolicyRouter } from '~/server/routers/xguard-policy.router';
 import { router } from '~/server/trpc';
 import { accountRouter } from './account.router';
 import { announcementRouter } from './announcement.router';
@@ -179,7 +178,6 @@ export const appRouter = router({
   rewardsBonusEvent: rewardsBonusEventRouter,
   oauthClient: oauthClientRouter,
   oauthConsent: oauthConsentRouter,
-  xguardPolicy: xguardPolicyRouter,
   scannerReview: scannerReviewRouter,
 });
 

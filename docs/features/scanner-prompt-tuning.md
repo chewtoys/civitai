@@ -151,48 +151,13 @@ The current storage is optimized for **acting on** scanner results (block, hold,
 
 ---
 
-## XGuard policy management
+## XGuard policy ownership
 
-XGuard policies are owned by civitai and stored in Redis, not in the orchestrator. This gives the tuning team iteration speed — edit a policy in the moderator UI, the next scan call uses the new text — without redeploying the orchestrator. It also gives us an exact, civitai-side `policyVersion` to record in the audit log: the hash of the string we sent.
+XGuard policies (text + threshold + action per label) live orchestrator-side. Civitai just sends the workflow request specifying which `labels` to evaluate; the orchestrator runs them against its own configured policies and returns one result per label.
 
-**Redis schema** — one hash field per label:
+Per-label results now include a `policyHash` field — a stable identifier for the exact policy text the orchestrator used at evaluation time. The audit writer reads this directly from each result and stores it as the `policyVersion` column on `scanner_label_results`, so A/B comparisons across policy revisions work without any civitai-side bookkeeping.
 
-```text
-Key:    xguard:policies
-Field:  <labelName>            // e.g. 'csam', 'impersonation'
-Value:  JSON {
-  policy: string,              // the policy text sent to the model
-  threshold: number,           // score cutoff (0-1)
-  action: string,              // 'Block' | 'Hold' | etc.
-  policyHash: string,          // self-describing format: 'sha256-8:a3f5b2c8'
-  updatedAt: string,           // ISO timestamp
-  updatedBy: number,           // moderator userId
-}
-```
-
-`policyHash` uses a **self-describing format** (`<algo>-<length>:<hex>`) so if we ever change the algorithm or hash length later, old entries are still parseable and new entries are unambiguous — no backfill.
-
-**At XGuard request time** (inside `createXGuardModerationRequest`):
-
-1. `HMGET xguard:policies <labels...>` to fetch any configured entries.
-2. For each label with a Redis entry: include in `labelOverrides` (using all four fields: label, policy, threshold, action).
-3. **Labels without a Redis entry are dropped.** They are not passed in the `labels` filter either. Civitai is the source of truth for which XGuard labels run via this code path — if a label isn't configured, it isn't evaluated.
-4. Compute the `policyVersions` map: `{ [label]: policyHash }` for each overridden label. Stash in workflow metadata.
-5. Also stamp `modelVersion = '1'` in workflow metadata (hardcoded for now; will become configurable later when XGuard model versioning is needed).
-6. If no labels have Redis entries, short-circuit — don't submit a no-op workflow.
-
-**At webhook time** (audit writer):
-
-- For each label result in the response, read `workflow.metadata.policyVersions[label]` to populate the `policyVersion` column.
-- Read `workflow.metadata.modelVersion` for the `modelVersion` column.
-- These values come from what civitai actually sent, so the audit log is honest about the policy text used — even if a mod edits the policy between scan submit and webhook callback.
-
-**UI / tRPC layer** (`/moderator/xguard-policies`, admin-gated):
-
-- `list()` — paginated list of configured labels for browsing.
-- `get(label)` — fetch a single entry for editing.
-- `upsert(label, { policy, threshold, action })` — set/update; the route computes `policyHash` at write time and stamps `updatedAt`/`updatedBy`.
-- `delete(label)` — remove the override (effectively disables the label, since labels without Redis entries are dropped from scan requests).
+`modelVersion` is hardcoded to `'1'` in workflow metadata for now. It'll get bumped if/when XGuard switches model families and we want the audit log to differentiate.
 
 ---
 
@@ -235,7 +200,7 @@ CREATE TABLE scanner_label_results (
   score          Float32,                   -- confidence or first-token prob, 0-1
   threshold      Nullable(Float32),
   triggered      UInt8,                     -- did this signal fire
-  policyVersion        LowCardinality(String),  -- per-label policy hash (e.g. 'sha256-8:a3f5b2c8') or 'default' when no override
+  policyVersion        LowCardinality(String),  -- per-label policyHash returned by the orchestrator (empty string when unavailable)
   modelVersion         LowCardinality(String),  -- workflow-level model version; hardcoded '1' for now
   modelReason          String,                  -- only populated when triggered = 1; empty otherwise
   matchedText          Array(String),           -- text-mode: tokens that tripped the policy. Empty unless triggered = 1.
@@ -328,7 +293,6 @@ All writes to ClickHouse + Postgres go through a single `scanner-audit.service.t
 
 ## Open questions
 
-- **Policy versioning source of truth.** Where do XGuard label policies live today? In the orchestrator config, or are they sent from this repo? Need to know to record a meaningful `policyVersion`.
 - **Retention.** Raw scanner inputs (especially full image-gen prompts) can be sensitive. Do we PII-scrub before storing, or partition by retention class?
 - **Existing `EntityModeration` rows.** Do we backfill them into `scanner_label_results` or keep parallel histories?
 - **`AiRecognition` / `AnimeRecognition` TagSource enum values.** Add to the Prisma enum, or reuse `Computed` and accept lossy provenance?

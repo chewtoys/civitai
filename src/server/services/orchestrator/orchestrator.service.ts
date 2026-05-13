@@ -2,14 +2,9 @@ import type {
   Priority,
   WorkflowStepTemplate,
   WorkflowTemplate,
-  XGuardLabelConfiguration,
   XGuardModerationStepTemplate,
 } from '@civitai/client';
 import { submitWorkflow } from '@civitai/client';
-import {
-  getPolicies as getXGuardPolicies,
-  listPolicies as listXGuardPolicies,
-} from '~/server/services/xguard-policy.service';
 import { getEdgeUrl } from '~/client-utils/cf-images-utils';
 import { dbWrite } from '~/server/db/client';
 import { env } from '~/env/server';
@@ -228,66 +223,24 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
     recordForReview = false,
   } = args;
 
-  // Civitai owns XGuard policies (see /moderator/xguard-policies + Redis-backed
-  // xguard-policy.service). Build labelOverrides from whatever policies the
-  // caller's labels intersect with — labels without a Redis entry are dropped
-  // entirely, not evaluated against orchestrator defaults. If the caller didn't
-  // specify labels, we run every policy configured for this mode.
-  const targetLabels =
-    labels && labels.length > 0
-      ? labels
-      : (await listXGuardPolicies(args.mode)).map((p) => p.label);
-
-  const policiesByLabel = await getXGuardPolicies(args.mode, targetLabels);
-  const labelOverrides: XGuardLabelConfiguration[] = [];
-  const policyVersions: Record<string, string> = {};
-  for (const label of targetLabels) {
-    const policy = policiesByLabel[label];
-    if (!policy) continue;
-    labelOverrides.push({
-      label: policy.label,
-      policy: policy.policy,
-      threshold: policy.threshold,
-      action: policy.action,
-    });
-    policyVersions[policy.label] = policy.policyHash;
-  }
-
-  if (labelOverrides.length === 0) {
-    logToAxiom({
-      type: 'info',
-      name: 'xguard-moderation-skipped',
-      mode: args.mode,
-      entityType,
-      entityId,
-      reason: 'no-redis-policies',
-      requestedLabels: targetLabels,
-    });
-    return undefined;
-  }
-
-  const filteredLabels = labelOverrides.map((o) => o.label);
   const metadata: Record<string, unknown> = {
     mode: args.mode,
     recordForReview,
     modelVersion: '1',
-    policyVersions,
   };
   if (entityType) metadata.entityType = entityType;
   if (entityId !== undefined) metadata.entityId = entityId;
 
-  // `labels` restricts orchestrator evaluation to exactly the labels we
-  // configured in Redis; `labelOverrides` provides the policy text/threshold/
-  // action for each. Sending only labelOverrides leaks orchestrator defaults
-  // back in; sending only labels uses the orchestrator's default policy text.
-  // We need both, filtered to the same set.
+  // Pass `labels` through as a filter so the orchestrator only evaluates the
+  // ones we ask about. Policies + thresholds + actions are owned orchestrator-
+  // side; per-label policyHash comes back on each result and is what we record
+  // as policyVersion in the audit log.
   const input =
     args.mode === 'text'
       ? {
           mode: 'text' as const,
           text: args.content,
-          labels: filteredLabels,
-          // labelOverrides,
+          labels,
           storeFullResponse: true,
         }
       : {
@@ -295,8 +248,7 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
           positivePrompt: args.positivePrompt,
           negativePrompt: args.negativePrompt ?? null,
           instructions: args.instructions ?? null,
-          labels: filteredLabels,
-          // labelOverrides,
+          labels,
           storeFullResponse: true,
         };
 
