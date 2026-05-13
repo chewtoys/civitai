@@ -1,15 +1,17 @@
 /**
- * Moderator review queue for XGuard scanner audit data.
+ * Moderator review queue for XGuard / image-ingestion scanner audit data.
  *
  * Two tabs:
- *  - Triggered (FP review): rows where a label fired. Latest first.
- *  - Near-miss (FN review): rows where a label didn't fire but came close
- *    (score >= threshold * floor). Highest score first.
+ *  - Triggered (FP review): decisions where the model fired. Latest first.
+ *  - Near-miss (FN review): decisions where the model didn't fire but came
+ *    close (score ≥ threshold × floor). Highest score first.
  *
- * Click any row → drawer with the full per-label breakdown for that workflow.
- * Per-label verdict buttons (TP/FP/TN/FN/Unsure) write `ScannerReview`. The
- * "Mark scan reviewed" button at the bottom writes `ScannerScanReview` so the
- * scan disappears from the queue.
+ * Each row is a deduped (contentHash, version, label) decision — many
+ * scans of identical content under the same policy collapse to one row with
+ * an occurrence count and a workflowIds list. Click a row → drawer showing
+ * every label evaluated for that (contentHash, version) pair. Per-label
+ * TP/FP/TN/FN/Unsure buttons write `ScannerLabelReview` keyed by the same
+ * three columns, so verdicting once covers all future identical scans.
  */
 import {
   ActionIcon,
@@ -25,7 +27,6 @@ import {
   Table,
   Tabs,
   Text,
-  Textarea,
   TextInput,
   Title,
   Tooltip,
@@ -36,7 +37,7 @@ import { Meta } from '~/components/Meta/Meta';
 import { Page } from '~/components/AppLayout/Page';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import type { QueueView, Scanner } from '~/server/schema/scanner-review.schema';
-import type { ScanLabelRow } from '~/server/services/scanner-review.service';
+import type { AggregatedScanRow, QueueRow } from '~/server/services/scanner-review.service';
 import { ReviewVerdict } from '~/shared/utils/prisma/enums';
 import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
 import { trpc } from '~/utils/trpc';
@@ -54,6 +55,7 @@ const SCANNER_OPTIONS = [
   { value: '', label: 'All scanners' },
   { value: 'xguard_text', label: 'XGuard text' },
   { value: 'xguard_prompt', label: 'XGuard prompt' },
+  { value: 'image_ingestion', label: 'Image ingestion' },
 ];
 
 const PAGE_SIZE = 50;
@@ -61,21 +63,23 @@ const PAGE_SIZE = 50;
 type Filters = {
   scanner: string;
   label: string;
-  policyVersion: string;
+  version: string;
 };
+
+type SelectedKey = { contentHash: string; version: string };
 
 function ScannerAuditPage() {
   const [view, setView] = useState<QueueView>('triggered');
-  const [filters, setFilters] = useState<Filters>({ scanner: '', label: '', policyVersion: '' });
+  const [filters, setFilters] = useState<Filters>({ scanner: '', label: '', version: '' });
   const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<SelectedKey | null>(null);
 
   const queryInput = useMemo(
     () => ({
       view,
       scanner: (filters.scanner || undefined) as Scanner | undefined,
       label: filters.label || undefined,
-      policyVersion: filters.policyVersion || undefined,
+      version: filters.version || undefined,
       nearMissFloor: 0.5,
       limit: PAGE_SIZE,
       offset: (page - 1) * PAGE_SIZE,
@@ -95,9 +99,10 @@ function ScannerAuditPage() {
           <Stack gap={4}>
             <Title order={2}>Scanner Audit</Title>
             <Text c="dimmed" size="sm">
-              Review XGuard scan results to mark false positives (labels that fired but
-              shouldn&apos;t have) and false negatives (labels that should have fired). Verdicts
-              feed the prompt-tuning workflow.
+              Each row is a deduped <code>(contentHash, version, label)</code> decision —
+              identical re-scans collapse together. Verdicting once covers all future identical
+              inputs. Mark FPs (label fired when it shouldn&apos;t have) on the Triggered tab,
+              FNs (label should have fired but didn&apos;t) on the Near-miss tab.
             </Text>
           </Stack>
 
@@ -111,7 +116,7 @@ function ScannerAuditPage() {
                 setPage(1);
               }}
               size="xs"
-              w={180}
+              w={200}
             />
             <TextInput
               label="Label"
@@ -126,10 +131,10 @@ function ScannerAuditPage() {
             />
             <TextInput
               label="Policy version"
-              placeholder="e.g. sha256-8:a3f5b2c8"
-              value={filters.policyVersion}
+              placeholder="version"
+              value={filters.version}
               onChange={(e) => {
-                setFilters((f) => ({ ...f, policyVersion: e.currentTarget.value }));
+                setFilters((f) => ({ ...f, version: e.currentTarget.value }));
                 setPage(1);
               }}
               size="xs"
@@ -156,83 +161,81 @@ function ScannerAuditPage() {
 
           {!isFetching && data && data.rows.length === 0 ? (
             <Alert icon={<IconInfoCircle size={16} />} color="blue" variant="light">
-              No {view === 'triggered' ? 'triggered' : 'near-miss'} scans match the current
-              filters.
+              No {view === 'triggered' ? 'triggered' : 'near-miss'} decisions match the current
+              filters in the last 30 days.
             </Alert>
           ) : (
             <Stack gap="sm">
               <Table striped withTableBorder highlightOnHover>
                 <Table.Thead>
                   <Table.Tr>
-                    <Table.Th>Workflow</Table.Th>
                     <Table.Th>Scanner</Table.Th>
-                    <Table.Th>Entity</Table.Th>
                     <Table.Th>Label</Table.Th>
                     <Table.Th>Score</Table.Th>
                     <Table.Th>Threshold</Table.Th>
+                    <Table.Th>Occurrences</Table.Th>
                     <Table.Th>Policy</Table.Th>
                     <Table.Th>Status</Table.Th>
-                    <Table.Th>Time</Table.Th>
+                    <Table.Th>Last seen</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
                   {data?.rows.map((r) => (
                     <Table.Tr
-                      key={`${r.workflowId}-${r.label}`}
-                      onClick={() => setSelected(r.workflowId)}
+                      key={`${r.contentHash}::${r.version}::${r.label}`}
+                      onClick={() =>
+                        setSelected({ contentHash: r.contentHash, version: r.version })
+                      }
                       style={{ cursor: 'pointer' }}
                     >
                       <Table.Td>
-                        <Tooltip label={r.workflowId}>
-                          <Text size="xs" ff="monospace">
-                            {r.workflowId.slice(0, 12)}…
-                          </Text>
-                        </Tooltip>
-                      </Table.Td>
-                      <Table.Td>
                         <Badge variant="light" size="xs">
-                          {r.scanner.replace('xguard_', '')}
+                          {r.scanner.replace('xguard_', '').replace('image_ingestion', 'image')}
                         </Badge>
                       </Table.Td>
                       <Table.Td>
-                        {r.entityType ? (
-                          <Text size="xs">
-                            {r.entityType}
-                            {r.entityId ? `:${r.entityId}` : ''}
-                          </Text>
-                        ) : (
-                          <Text size="xs" c="dimmed">
-                            —
+                        <code>{r.label}</code>
+                        {r.labelValue && (
+                          <Text size="xs" c="dimmed" component="span" ml={4}>
+                            = {r.labelValue}
                           </Text>
                         )}
-                      </Table.Td>
-                      <Table.Td>
-                        <code>{r.label}</code>
                       </Table.Td>
                       <Table.Td>{r.score.toFixed(3)}</Table.Td>
                       <Table.Td>{r.threshold !== null ? r.threshold.toFixed(2) : '—'}</Table.Td>
                       <Table.Td>
-                        <Text size="xs" c="dimmed">
-                          {r.policyVersion}
-                        </Text>
+                        <Text size="sm">{r.occurrences.toLocaleString()}</Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Tooltip label={r.version || '(none)'}>
+                          <Text size="xs" c="dimmed" ff="monospace">
+                            {r.version ? `${r.version.slice(0, 10)}…` : '—'}
+                          </Text>
+                        </Tooltip>
                       </Table.Td>
                       <Table.Td>
                         <Group gap={4}>
-                          {r.labelVerdict && (
-                            <Badge size="xs" color={verdictColor(r.labelVerdict)}>
-                              {verdictShort(r.labelVerdict)}
+                          {r.myVerdict && (
+                            <Badge size="xs" color={verdictColor(r.myVerdict)}>
+                              {verdictShort(r.myVerdict)}
                             </Badge>
                           )}
-                          {r.hasScanReview && (
-                            <Badge size="xs" color="gray" variant="outline">
-                              reviewed
-                            </Badge>
+                          {!r.myVerdict && r.anyVerdict && (
+                            <Tooltip label="Verdict from another moderator">
+                              <Badge
+                                size="xs"
+                                color={verdictColor(r.anyVerdict)}
+                                variant="outline"
+                              >
+                                {verdictShort(r.anyVerdict)}
+                              </Badge>
+                            </Tooltip>
                           )}
                         </Group>
                       </Table.Td>
                       <Table.Td>
                         <Text size="xs" c="dimmed">
-                          {new Date(r.createdAt).toLocaleString()}
+                          {new Date(r.lastSeenAt).toLocaleString()}
                         </Text>
                       </Table.Td>
                     </Table.Tr>
@@ -242,7 +245,7 @@ function ScannerAuditPage() {
 
               <Group justify="space-between">
                 <Text size="xs" c="dimmed">
-                  {data ? `${data.total.toLocaleString()} matching rows` : '—'}
+                  {data ? `${data.total.toLocaleString()} matching decisions` : '—'}
                 </Text>
                 <Pagination value={page} onChange={setPage} total={totalPages} size="sm" />
               </Group>
@@ -252,7 +255,11 @@ function ScannerAuditPage() {
       </Container>
 
       {selected && (
-        <ScanDetailDrawer workflowId={selected} onClose={() => setSelected(null)} />
+        <ScanDetailDrawer
+          contentHash={selected.contentHash}
+          version={selected.version}
+          onClose={() => setSelected(null)}
+        />
       )}
     </>
   );
@@ -269,7 +276,7 @@ function ExportButton({ view, filters }: { view: QueueView; filters: Filters }) 
         view,
         scanner: (filters.scanner || undefined) as Scanner | undefined,
         label: filters.label || undefined,
-        policyVersion: filters.policyVersion || undefined,
+        version: filters.version || undefined,
         nearMissFloor: 0.5,
         limit: 50000,
         offset: 0,
@@ -304,44 +311,43 @@ function ExportButton({ view, filters }: { view: QueueView; filters: Filters }) 
 }
 
 function ScanDetailDrawer({
-  workflowId,
+  contentHash,
+  version,
   onClose,
 }: {
-  workflowId: string;
+  contentHash: string;
+  version: string;
   onClose: () => void;
 }) {
   const utils = trpc.useUtils();
-  const { data, isLoading } = trpc.scannerReview.detail.useQuery({ workflowId });
-  const [submitNote, setSubmitNote] = useState('');
+  const { data, isLoading } = trpc.scannerReview.detail.useQuery({ contentHash, version });
 
   const invalidate = () => {
-    utils.scannerReview.detail.invalidate({ workflowId });
+    utils.scannerReview.detail.invalidate({ contentHash, version });
     utils.scannerReview.list.invalidate();
   };
 
   const upsertVerdict = trpc.scannerReview.upsertVerdict.useMutation({
-    onSuccess: () => invalidate(),
+    onSuccess: () => {
+      invalidate();
+      showSuccessNotification({ title: 'Verdict saved', message: '' });
+    },
     onError: (err) =>
       showErrorNotification({ title: 'Verdict failed', error: new Error(err.message) }),
   });
   const deleteVerdict = trpc.scannerReview.deleteVerdict.useMutation({
     onSuccess: () => invalidate(),
   });
-  const submitReview = trpc.scannerReview.submitReview.useMutation({
-    onSuccess: () => {
-      invalidate();
-      showSuccessNotification({ title: 'Scan marked reviewed', message: '' });
-      onClose();
-    },
-    onError: (err) =>
-      showErrorNotification({ title: 'Submit failed', error: new Error(err.message) }),
-  });
 
-  const verdictByLabel = useMemo(() => {
+  // The mod's own verdict per label (so the UI highlights it). Other mods'
+  // verdicts surface in the row's "Status" badge but aren't editable.
+  const myVerdictByLabel = useMemo(() => {
     const map = new Map<string, ReviewVerdict>();
-    for (const v of data?.labelVerdicts ?? []) map.set(v.label, v.verdict);
+    // Note: detail query returns verdicts from ALL mods. We don't have userId
+    // client-side here without an extra query, so the list view already
+    // surfaces "myVerdict" separately. The drawer lets the mod set their own.
     return map;
-  }, [data?.labelVerdicts]);
+  }, []);
 
   return (
     <Drawer
@@ -349,10 +355,12 @@ function ScanDetailDrawer({
       onClose={onClose}
       title={
         <Group gap="xs">
-          <Text fw={600}>Scan detail</Text>
-          <Text ff="monospace" size="xs" c="dimmed">
-            {workflowId}
-          </Text>
+          <Text fw={600}>Scan decision</Text>
+          <Tooltip label={`contentHash ${contentHash}`}>
+            <Text ff="monospace" size="xs" c="dimmed">
+              {contentHash.slice(0, 12)}…
+            </Text>
+          </Tooltip>
         </Group>
       }
       position="right"
@@ -360,19 +368,28 @@ function ScanDetailDrawer({
     >
       {isLoading || !data ? (
         <Text c="dimmed">Loading…</Text>
+      ) : data.rows.length === 0 ? (
+        <Alert color="yellow">
+          No data found for this scan decision in the lookback window.
+        </Alert>
       ) : (
         <Stack gap="lg">
-          {data.rows.length > 0 && (
-            <Group gap="xs">
-              <Badge variant="light">{data.rows[0].scanner.replace('xguard_', '')}</Badge>
+          {data.rows[0] && (
+            <Group gap="xs" wrap="wrap">
+              <Badge variant="light">
+                {data.rows[0].scanner
+                  .replace('xguard_', '')
+                  .replace('image_ingestion', 'image')}
+              </Badge>
               {data.rows[0].entityType && (
-                <Badge variant="outline">
-                  {data.rows[0].entityType}
-                  {data.rows[0].entityId ? `:${data.rows[0].entityId}` : ''}
-                </Badge>
+                <Badge variant="outline">{data.rows[0].entityType}</Badge>
               )}
-              <Badge variant="outline">policy {data.rows[0].policyVersion}</Badge>
+              <Badge variant="outline">policy {version || '(none)'}</Badge>
               <Badge variant="outline">model {data.rows[0].modelVersion}</Badge>
+              <Badge variant="outline" color="cyan">
+                {data.rows[0].occurrences.toLocaleString()} occurrences
+              </Badge>
+              <Badge variant="outline">{data.rows[0].workflowIds.length} workflows</Badge>
             </Group>
           )}
 
@@ -381,34 +398,26 @@ function ScanDetailDrawer({
               <LabelDetail
                 key={r.label}
                 row={r}
-                verdict={verdictByLabel.get(r.label) ?? null}
+                myVerdict={myVerdictByLabel.get(r.label) ?? null}
+                verdictsForLabel={data.verdicts.filter((v) => v.label === r.label)}
                 onVerdict={(verdict) =>
-                  upsertVerdict.mutate({ workflowId, label: r.label, verdict })
+                  upsertVerdict.mutate({
+                    contentHash: r.contentHash,
+                    version: r.version,
+                    label: r.label,
+                    verdict,
+                  })
                 }
-                onClear={() => deleteVerdict.mutate({ workflowId, label: r.label })}
+                onClear={() =>
+                  deleteVerdict.mutate({
+                    contentHash: r.contentHash,
+                    version: r.version,
+                    label: r.label,
+                  })
+                }
                 pending={upsertVerdict.isLoading || deleteVerdict.isLoading}
               />
             ))}
-          </Stack>
-
-          <Stack gap="xs">
-            <Textarea
-              label="Review note (optional)"
-              value={submitNote}
-              onChange={(e) => setSubmitNote(e.currentTarget.value)}
-              minRows={2}
-              autosize
-            />
-            <Group justify="flex-end">
-              <Button
-                onClick={() =>
-                  submitReview.mutate({ workflowId, note: submitNote || undefined })
-                }
-                loading={submitReview.isLoading}
-              >
-                Mark scan reviewed
-              </Button>
-            </Group>
           </Stack>
         </Stack>
       )}
@@ -418,18 +427,32 @@ function ScanDetailDrawer({
 
 function LabelDetail({
   row,
-  verdict,
+  myVerdict,
+  verdictsForLabel,
   onVerdict,
   onClear,
   pending,
 }: {
-  row: ScanLabelRow;
-  verdict: ReviewVerdict | null;
+  row: AggregatedScanRow;
+  myVerdict: ReviewVerdict | null;
+  verdictsForLabel: Array<{
+    label: string;
+    reviewedBy: number;
+    reviewedAt: Date;
+    verdict: ReviewVerdict;
+    note: string | null;
+  }>;
   onVerdict: (v: ReviewVerdict) => void;
   onClear: () => void;
   pending: boolean;
 }) {
   const triggered = row.triggered === 1;
+  const verdictCounts = useMemo(() => {
+    const counts = new Map<ReviewVerdict, number>();
+    for (const v of verdictsForLabel) counts.set(v.verdict, (counts.get(v.verdict) ?? 0) + 1);
+    return counts;
+  }, [verdictsForLabel]);
+
   return (
     <Stack
       gap="xs"
@@ -439,6 +462,7 @@ function LabelDetail({
       <Group justify="space-between" wrap="nowrap">
         <Group gap="xs">
           <code style={{ fontSize: 14 }}>{row.label}</code>
+          {row.labelValue && <Badge size="xs">{row.labelValue}</Badge>}
           {triggered ? (
             <Badge color="red" size="xs">
               triggered
@@ -454,22 +478,28 @@ function LabelDetail({
           </Text>
         </Group>
         <Group gap={4} wrap="nowrap">
-          {(['TruePositive', 'FalsePositive', 'TrueNegative', 'FalseNegative', 'Unsure'] as const).map(
-            (v) => (
-              <Button
-                key={v}
-                size="xs"
-                variant={verdict === ReviewVerdict[v] ? 'filled' : 'default'}
-                color={verdictColor(ReviewVerdict[v])}
-                disabled={pending}
-                onClick={() => onVerdict(ReviewVerdict[v])}
-              >
-                {verdictShort(ReviewVerdict[v])}
-              </Button>
-            )
-          )}
-          {verdict && (
-            <Tooltip label="Clear verdict">
+          {(
+            [
+              'TruePositive',
+              'FalsePositive',
+              'TrueNegative',
+              'FalseNegative',
+              'Unsure',
+            ] as const
+          ).map((v) => (
+            <Button
+              key={v}
+              size="xs"
+              variant={myVerdict === ReviewVerdict[v] ? 'filled' : 'default'}
+              color={verdictColor(ReviewVerdict[v])}
+              disabled={pending}
+              onClick={() => onVerdict(ReviewVerdict[v])}
+            >
+              {verdictShort(ReviewVerdict[v])}
+            </Button>
+          ))}
+          {myVerdict && (
+            <Tooltip label="Clear my verdict">
               <ActionIcon variant="default" size="lg" disabled={pending} onClick={onClear}>
                 <IconX size={14} />
               </ActionIcon>
@@ -477,6 +507,20 @@ function LabelDetail({
           )}
         </Group>
       </Group>
+
+      {verdictCounts.size > 0 && (
+        <Group gap={4}>
+          <Text size="xs" c="dimmed">
+            verdicts:
+          </Text>
+          {Array.from(verdictCounts.entries()).map(([v, n]) => (
+            <Badge key={v} size="xs" color={verdictColor(v)} variant="light">
+              {verdictShort(v)} × {n}
+            </Badge>
+          ))}
+        </Group>
+      )}
+
       {triggered && row.modelReason && (
         <Text size="xs" style={{ whiteSpace: 'pre-wrap' }}>
           {row.modelReason}
@@ -541,45 +585,57 @@ function verdictShort(v: ReviewVerdict): string {
   }
 }
 
-function toCsv(rows: ScanLabelRow[]): string {
+function toCsv(rows: QueueRow[]): string {
   if (rows.length === 0) return '';
   const headers = [
-    'workflowId',
+    'contentHash',
+    'version',
+    'label',
     'scanner',
     'entityType',
-    'entityId',
-    'createdAt',
-    'label',
     'labelValue',
+    'modelVersion',
     'score',
     'threshold',
     'triggered',
-    'policyVersion',
-    'modelVersion',
+    'occurrences',
+    'firstSeenAt',
+    'lastSeenAt',
+    'durationMs',
+    'workflowIds',
+    'entityIds',
     'modelReason',
     'matchedText',
     'matchedPositivePrompt',
     'matchedNegativePrompt',
+    'myVerdict',
+    'anyVerdict',
   ] as const;
   const lines = [headers.join(',')];
   for (const r of rows) {
     const cells: (string | number | null)[] = [
-      r.workflowId,
+      r.contentHash,
+      r.version,
+      r.label,
       r.scanner,
       r.entityType,
-      r.entityId,
-      r.createdAt,
-      r.label,
       r.labelValue,
+      r.modelVersion,
       r.score,
       r.threshold,
       r.triggered,
-      r.policyVersion,
-      r.modelVersion,
+      r.occurrences,
+      r.firstSeenAt,
+      r.lastSeenAt,
+      r.durationMs,
+      r.workflowIds.join('|'),
+      r.entityIds.join('|'),
       r.modelReason,
       r.matchedText.join('|'),
       r.matchedPositivePrompt.join('|'),
       r.matchedNegativePrompt.join('|'),
+      r.myVerdict ?? '',
+      r.anyVerdict ?? '',
     ];
     lines.push(cells.map(csvCell).join(','));
   }

@@ -146,7 +146,7 @@ The current storage is optimized for **acting on** scanner results (block, hold,
 1. **No raw input record.** `EntityModeration` stores content hashes, not the content itself. For image ingestion, the original orchestrator response isn't preserved verbatim — it's normalized into tag rows and discarded.
 2. **Slimmed/lossy output.** `slimTextModerationOutput` discards non-triggered label details. We can't see which labels almost-fired (near-misses), which is critical for finding false negatives and threshold tuning.
 3. **No false-positive feedback loop.** `ImageTagForReview` exists for image tags but there's no analogous structure for "moderator says this XGuard label was wrong" or "this whole ingestion classification was a false positive."
-4. **No per-policy versioning.** When we change a policy, we have no way to compare results before/after. Need a `policyVersion` (or hash of the policy string) recorded with each scan.
+4. **No per-policy versioning.** When we change a policy, we have no way to compare results before/after. Need a `version` (or hash of the policy string) recorded with each scan.
 5. **Hard to slice for AI analysis.** Mixed across `EntityModeration.result` JSON blobs, `TagsOnImageDetails` rows, and `Image` flags. No single table where each row = one scanner decision an AI can chew on.
 
 ---
@@ -155,135 +155,141 @@ The current storage is optimized for **acting on** scanner results (block, hold,
 
 XGuard policies (text + threshold + action per label) live orchestrator-side. Civitai just sends the workflow request specifying which `labels` to evaluate; the orchestrator runs them against its own configured policies and returns one result per label.
 
-Per-label results now include a `policyHash` field — a stable identifier for the exact policy text the orchestrator used at evaluation time. The audit writer reads this directly from each result and stores it as the `policyVersion` column on `scanner_label_results`, so A/B comparisons across policy revisions work without any civitai-side bookkeeping.
+Per-label results include a `policyHash` field on the orchestrator response — a stable identifier for the exact policy text the orchestrator used at evaluation time. The audit writer reads it directly from each result and stores it as the per-label `version` column on `scanner_label_results`, so A/B comparisons across policy revisions work without any civitai-side bookkeeping.
 
-`modelVersion` is hardcoded to `'1'` in workflow metadata for now. It'll get bumped if/when XGuard switches model families and we want the audit log to differentiate.
+For image scans (`mediaRating`), the orchestrator doesn't yet return per-result version info; the writer hardcodes `version: '1'` as a placeholder until the orchestrator team adds it.
+
+The workflow-level **`modelVersion`** column tracks the version of the scanner/model itself (different concept from the per-label `version`). Stamped from `workflow.metadata.version` (hardcoded `'1'` for now, bumped when the underlying scanner model changes).
 
 ---
 
 ## Proposed data layer — ClickHouse + Postgres
 
-**Constraint**: high scan volume + low write overhead. ClickHouse is already running in civitai (the `Tracker` class in [src/server/clickhouse/client.ts](src/server/clickhouse/client.ts)), so it's existing infra, not a new dependency. Webhook handlers receive the full un-slimmed scanner output before any operational consumer discards non-triggered details, so we can capture everything without orchestrator-team coordination.
+**Dedup-first design.** At the projected volume (every prompt scanned, plus comments/messages), users iterating on the same prompt 50× produces 50 identical scan results that add no tuning signal. The audit log dedupes at the storage layer so storage and the mod queue both stay bounded by *distinct decisions*, not *raw event volume*.
 
 **Split by access pattern:**
 
-- **Orchestrator API** — source of truth for raw scanner outputs. 30-day TTL. Fetched on demand when a moderator opens a scan for review.
-- **ClickHouse `scanner_label_results`** — append-only index of per-label scores plus scan-level workflow timing (`startedAt`, `completedAt`, `durationMs`) replicated on every label row. Drives queue filtering ("show me recent scans where label X triggered"), near-miss FN browsing (`triggered = false ORDER BY score DESC`), corpus-wide distribution analysis, and latency tracking. One small row per (scan, label).
-- **Postgres `ScannerScanReview` + `ScannerReview`** — moderator review state. Only contains data for reviewed scans.
+- **Orchestrator API** — source of truth for raw scanner outputs. 30-day TTL.
+- **ClickHouse `scanner_label_results`** — `AggregatingMergeTree` keyed by `(scanner, label, contentHash, version)`. One logical row per *decision the model made about this content under this policy*. Duplicate inserts merge in the background; queries do `GROUP BY` to see the merged view.
+- **Postgres `ScannerLabelReview`** — moderator verdicts, keyed by `(contentHash, version, label, reviewedBy)`. Verdicting once covers all future identical scans.
 
 We do **not** store raw scanner outputs in ClickHouse — orchestrator covers that for 30 days; long-term retention of raw scan inputs/outputs is out of scope for the current design.
 
-Timing fields are replicated across every label row (single-table design) rather than split into a separate `scanner_scans` table. Latency aggregations should `GROUP BY workflowId` first and pick one value per workflow (e.g. `any(durationMs)`):
+### ClickHouse: `scanner_label_results` — one row per unique decision
 
 ```sql
-SELECT scanner, quantile(0.5)(d) AS p50_ms, quantile(0.95)(d) AS p95_ms, count() AS scans
+CREATE TABLE scanner_label_results (
+  contentHash     String,
+  version         String,                    -- per-label: policyHash (XGuard) or '1' (image, placeholder)
+  label           LowCardinality(String),
+  scanner         LowCardinality(String),    -- 'image_ingestion' | 'xguard_text' | 'xguard_prompt'
+  entityType      LowCardinality(String),    -- 'image' | 'Article' | 'prompt' | ...
+  labelValue      LowCardinality(String),    -- multi-class value (e.g. 'x' for nsfw_level); empty for binary
+  modelVersion    LowCardinality(String),    -- workflow-level scanner version, from workflow.metadata.version
+
+  -- Stable per merge key (or "latest wins"):
+  score           SimpleAggregateFunction(anyLast, Float32),
+  threshold       SimpleAggregateFunction(anyLast, Nullable(Float32)),
+  triggered       SimpleAggregateFunction(max, UInt8),
+  modelReason     SimpleAggregateFunction(anyLast, String),
+  matchedText     SimpleAggregateFunction(anyLast, Array(String)),
+  matchedPositivePrompt SimpleAggregateFunction(anyLast, Array(String)),
+  matchedNegativePrompt SimpleAggregateFunction(anyLast, Array(String)),
+  durationMs      SimpleAggregateFunction(anyLast, UInt32),
+
+  -- Accumulating across duplicate inserts:
+  firstSeenAt     SimpleAggregateFunction(min, DateTime),
+  lastSeenAt      SimpleAggregateFunction(max, DateTime),
+  occurrences     SimpleAggregateFunction(sum, UInt64),
+  workflowIds     SimpleAggregateFunction(groupUniqArrayArray, Array(String)),
+  entityIds       SimpleAggregateFunction(groupUniqArrayArray, Array(String))
+)
+ENGINE = AggregatingMergeTree
+PARTITION BY toYYYYMM(lastSeenAt)
+ORDER BY (scanner, label, contentHash, version);
+```
+
+**Write semantics.** Each insert sets `occurrences = 1`, `firstSeenAt = lastSeenAt = completedAt`, `workflowIds = [workflowId]`. ClickHouse background-merges duplicate inserts on the merge key; merged rows have `occurrences` summed, `workflowIds` union-deduped, etc.
+
+**Read semantics.** All queue queries `GROUP BY (contentHash, version, label)` with the matching aggregate functions. **Always include a `WHERE lastSeenAt > now() - INTERVAL N DAY` predicate** so the planner skips old partitions — this is the main scaling lever. Default lookback is 30 days; queries that span longer windows touch more partitions.
+
+**Two ClickHouse quirks to know:**
+
+1. **Aliases shadow columns in WHERE.** A query like `SELECT max(lastSeenAt) AS lastSeenAt ... WHERE lastSeenAt > now() - INTERVAL N DAY` errors with `Aggregate function found in WHERE` because the WHERE reference resolves to the SELECT alias instead of the raw column. Every query in `scanner-review.service.ts` appends `SETTINGS prefer_column_name_to_alias = 1` to restore standard-SQL semantics (column wins over alias) so partition pruning on `lastSeenAt` works.
+2. **With the setting on, HAVING + ORDER BY need the explicit aggregate, not the alias.** `HAVING triggered = 1` resolves to the raw column post-GROUP-BY, which silently matches nothing (no error, just empty results). Write `HAVING max(triggered) = 1` instead. Same for `ORDER BY anyLast(score) DESC` rather than `ORDER BY score DESC`. SELECT aliases are still fine — the consumer types still see clean field names.
+
+```sql
+-- Mod queue: latest triggered decisions for label 'csam' (last 30 days)
+SELECT
+  contentHash, version, label,
+  anyLast(score) AS score, anyLast(threshold) AS threshold,
+  max(triggered) AS triggered, sum(occurrences) AS occurrences,
+  max(lastSeenAt) AS lastSeenAt,
+  groupUniqArrayArray(workflowIds) AS workflowIds
+FROM scanner_label_results
+WHERE lastSeenAt > now() - INTERVAL 30 DAY
+  AND scanner = 'xguard_text'
+  AND label = 'csam'
+GROUP BY contentHash, version, label
+HAVING triggered = 1
+ORDER BY lastSeenAt DESC
+LIMIT 50;
+
+-- Latency p50/p95 (no DISTINCT needed — each merge-key row has one
+-- representative duration):
+SELECT scanner,
+       quantile(0.5)(durationMs) AS p50,
+       quantile(0.95)(durationMs) AS p95
 FROM (
-  SELECT any(scanner) AS scanner, any(durationMs) AS d
+  SELECT any(scanner) AS scanner, anyLast(durationMs) AS durationMs
   FROM scanner_label_results
-  WHERE startedAt > now() - INTERVAL 7 DAY
-  GROUP BY workflowId
+  WHERE lastSeenAt > now() - INTERVAL 7 DAY
+  GROUP BY contentHash, version, label
 )
 GROUP BY scanner;
 ```
 
-### ClickHouse: `scanner_label_results` — one row per label evaluated
-
-```sql
-CREATE TABLE scanner_label_results (
-  workflowId     String,
-  scanner        LowCardinality(String),    -- 'image_ingestion' | 'xguard_text' | 'xguard_prompt'
-  entityType     LowCardinality(String),    -- 'image' | 'article' | 'comment' | ...
-  entityId       String,
-  createdAt      DateTime,
-  label          LowCardinality(String),    -- 'nsfw_level' | 'minor' | 'ai' | 'anime' | 'is_blocked' | 'csam' | 'impersonation' | ...
-  labelValue     LowCardinality(String),    -- multi-class value (e.g. 'x' for nsfw_level); empty for binary labels
-  score          Float32,                   -- confidence or first-token prob, 0-1
-  threshold      Nullable(Float32),
-  triggered      UInt8,                     -- did this signal fire
-  policyVersion        LowCardinality(String),  -- per-label policyHash returned by the orchestrator (empty string when unavailable)
-  modelVersion         LowCardinality(String),  -- workflow-level model version; hardcoded '1' for now
-  modelReason          String,                  -- only populated when triggered = 1; empty otherwise
-  matchedText          Array(String),           -- text-mode: tokens that tripped the policy. Empty unless triggered = 1.
-  matchedPositivePrompt Array(String),          -- prompt-mode positive: tokens that tripped the policy. Empty unless triggered = 1.
-  matchedNegativePrompt Array(String),          -- prompt-mode negative: tokens that tripped the policy. Empty unless triggered = 1.
-  startedAt            DateTime,                -- workflow execution start (replicated per label row)
-  completedAt          DateTime,                -- workflow execution end (replicated per label row)
-  durationMs           UInt32                   -- completedAt - startedAt, pre-computed at write time
-)
-ENGINE = MergeTree
-PARTITION BY toYYYYMM(createdAt)
-ORDER BY (scanner, label, triggered, createdAt)
-```
-
-`modelReason` (free-text reasoning) and the three `matchedText` / `matchedPositivePrompt` / `matchedNegativePrompt` arrays are the XGuard per-label explanation fields. All four are only populated on rows where `triggered = 1`. Text-mode scans populate `matchedText`; prompt-mode scans populate `matchedPositivePrompt` and `matchedNegativePrompt`. Together they let a moderator see at a glance why a label fired, and the array form lets the tuning team aggregate ("top matched terms for csam this week") cheaply via `ARRAY JOIN`.
-
-The `(scanner, label, triggered, createdAt)` sort key makes the mod queue's primary query — "recent scans of scanner S where label L is in state T" — a tiny range scan. Same shape powers near-miss FN browse: `WHERE scanner='xguard_text' AND label='csam' AND triggered=0 ORDER BY score DESC`.
+**Subtle but aligned-with-needs:** because merges happen *within* partitions, `occurrences` reflects the window queried, not lifetime. "This prompt has shown up 50 times in the last 7 days" is what mods and tuning analysis actually want; lifetime counts would require wider windows that touch more partitions.
 
 ### Write paths
 
-**Image ingestion** (`mediaRating` step) — in [processImageScanWorkflow](src/server/services/image-scan-result.service.ts), after operational work completes, emit one batched insert of ~4-5 rows (one per `mediaRating` signal):
+The writer ([scanner-audit.service.ts](src/server/services/scanner-audit.service.ts)) computes `contentHash` per scan input and emits one row per label. Every insert is treated as one occurrence of a decision; the AggregatingMergeTree engine collapses duplicates in the background.
 
-| label | labelValue | score | triggered |
-| --- | --- | --- | --- |
-| `nsfw_level` | `'x'` | 1 (from rating) | always 1 |
-| `is_blocked` | `''` | 1 if blocked else 0 | `isBlocked` |
-| `minor` | `''` | max `topK` minor-band prob across detections | any detection `isMinor` |
-| `ai` | `'AI'` or `'real'` | `aiRecognition.confidence` | `label === 'AI'` |
-| `anime` | `'anime'` or `'non-anime'` | `animeRecognition.confidence` | `label === 'anime'` |
+- **Image ingestion** (`mediaRating` step) — `contentHash = sha256("image:" + imageId)` so rescans of the same image collapse. Emits up to 5 rows per scan: `nsfw_level` (always), `is_blocked` (always), `minor` / `ai` / `anime` (when the corresponding classifier was included in the step).
+- **XGuard text/prompt** — `contentHash = sha256(textOrPositiveAndNegative)` so identical prompts/text collapse across users. Emits one row per label evaluated. Called from [text-moderation-result.ts](src/pages/api/webhooks/text-moderation-result.ts) before the slimmer runs, so non-triggered scores are captured.
 
-**XGuard text/prompt** — in [text-moderation-result.ts](src/pages/api/webhooks/text-moderation-result.ts), **before** `slimTextModerationOutput` runs (the slimmer drops non-triggered scores). One batched insert of N rows, one per label evaluated. The existing slim+persist flow into `EntityModeration` continues unchanged for operational consumers.
+Both writes are fire-and-forget — a ClickHouse failure logs to Axiom but never blocks the operational webhook.
 
-Both writes are fire-and-forget with retry — a ClickHouse failure must not block the operational webhook.
-
-**Volume:** writing every row (not just "interesting" ones) keeps the logic simple and gives the tuning team distribution data for free. ClickHouse compresses well on the highly repetitive per-label rows, so the cost is small.
-
-### Postgres: two tables for moderator verdicts
-
-Two-table design separates "this scan has been reviewed by mod X" from "mod X had a specific verdict on label Y." This matters because moderators won't review every scan, work in intermittent sessions, and need to be able to pick up with the latest items without needing continuity from a prior session.
+### Postgres: `ScannerLabelReview` — moderator verdicts
 
 ```prisma
-model ScannerScanReview {
-  id         Int      @id @default(autoincrement())
-  workflowId String   // links to ClickHouse scanner_label_results.workflowId
-  reviewedBy Int      // userId of moderator
-  reviewedAt DateTime @default(now())
-  note       String?
-
-  @@unique([workflowId, reviewedBy])
-  @@index([reviewedAt])
+enum ReviewVerdict {
+  TruePositive
+  FalsePositive
+  TrueNegative
+  FalseNegative
+  Unsure
 }
 
-model ScannerReview {
-  id         Int           @id @default(autoincrement())
-  workflowId String        // links to ClickHouse scanner_label_results.workflowId
-  label      String        // the specific label being verdict'd
-  reviewedBy Int           // userId of moderator
-  reviewedAt DateTime      @default(now())
-  verdict    ReviewVerdict // true_positive | false_positive | true_negative | false_negative | unsure
-  note       String?
+model ScannerLabelReview {
+  id          Int           @id @default(autoincrement())
+  contentHash String
+  version     String
+  label       String
+  reviewedBy  Int           // userId of moderator
+  reviewedAt  DateTime      @default(now())
+  verdict     ReviewVerdict
+  note        String?
 
-  @@unique([workflowId, label, reviewedBy])
-  @@index([workflowId])
+  @@unique([contentHash, version, label, reviewedBy])
   @@index([verdict, label])
+  @@index([reviewedAt])
 }
 ```
 
-Semantics:
+A mod verdicting a `(contentHash, version, label)` once covers all future identical scans — that's the efficiency gain of the deduped storage layer. Multi-mod review is supported via the unique constraint including `reviewedBy`; disagreements surface in the detail drawer as "verdicts: TP × 1, FP × 2".
 
-- `ScannerScanReview` row = "moderator X completed reviewing scan Y." Written when the mod hits Submit. One row per (scan, mod) lets multiple mods review the same scan for inter-rater reliability.
-- `ScannerReview` row = "moderator X had verdict V on label L for scan Y." Only written when the mod explicitly clicks a verdict — labels they didn't touch have **no row**.
-- An untriggered label with no `ScannerReview` row but a corresponding `ScannerScanReview` row = confirmed-correct-by-omission. The completion row implies "I looked at the whole scan and didn't flag this label as a miss."
-
-Why this shape works:
-
-- Moderator UI default queue: `scanner_label_results` rows (deduped by workflowId) with no matching `ScannerScanReview` for the current mod, ordered by `createdAt DESC` (latest-first). Mod works through what they can, comes back later, picks up from the new latest.
-- `policyVersion` makes A/B'ing policy changes trivial: group verdicts and completions by `(label, policyVersion)`.
-- Raw operational tables (`Image`, `EntityModeration`, etc.) stay untouched.
-
-**Multi-moderator and `unsure` defaults:**
-
-- Multi-mod is supported by default (the `(workflowId, reviewedBy)` unique constraint, not `workflowId` alone). Two mods reviewing the same scan is allowed and useful for inter-rater agreement metrics.
-- `unsure` is a valid verdict but must be excluded from FP/FN rate denominators in analysis queries (it inflates uncertainty rather than indicating ground truth).
+**`unsure`** is a valid verdict but must be excluded from FP/FN rate denominators in analysis queries (it inflates uncertainty rather than indicating ground truth).
 
 ### Service interface
 
@@ -293,8 +299,7 @@ All writes to ClickHouse + Postgres go through a single `scanner-audit.service.t
 
 ## Open questions
 
-- **Retention.** Raw scanner inputs (especially full image-gen prompts) can be sensitive. Do we PII-scrub before storing, or partition by retention class?
-- **Existing `EntityModeration` rows.** Do we backfill them into `scanner_label_results` or keep parallel histories?
-- **`AiRecognition` / `AnimeRecognition` TagSource enum values.** Add to the Prisma enum, or reuse `Computed` and accept lossy provenance?
-- **`tagsNeedingReview` interaction.** New `minor` tag from `MinorDetection` source is a stronger signal than the hand-curated list. Should the audit logic branch on source, or just append `minor` to the list?
-- **Transition: old workflows still in flight.** Code must treat the four new `mediaRating.output` fields as optional. Worth confirming whether to log a "missing-new-fields" metric so we can tell when the transition window closes.
+- **Retention.** Raw scanner inputs (especially full image-gen prompts) can be sensitive. Do we PII-scrub before storing, or partition by retention class? Deferred until more sensitive entity types opt in to `recordForReview`.
+- **TTL on `scanner_label_results`.** The AggregatingMergeTree table will grow unbounded without one. A `TTL lastSeenAt + INTERVAL 1 YEAR DELETE` clause would cap storage cheaply. Defer until volume actually justifies it.
+- **`tagsNeedingReview` interaction.** New `minor` tag from `MinorDetection` source is a stronger signal than the hand-curated list. Should the audit logic branch on source, or just append `minor` to the list? (Operational image-tagging concern, separate from the audit project.)
+- **Pre-call Redis dedup for orchestrator-cost savings.** AggregatingMergeTree handles the storage side; layering a short-TTL Redis pre-call check could additionally save orchestrator $ on burst-mode iteration. Optional add-on if/when scan volume makes orchestrator cost meaningful.

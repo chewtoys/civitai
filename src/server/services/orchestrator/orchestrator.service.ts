@@ -226,7 +226,7 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
   const metadata: Record<string, unknown> = {
     mode: args.mode,
     recordForReview,
-    modelVersion: '1',
+    version: '1',
   };
   if (entityType) metadata.entityType = entityType;
   if (entityId !== undefined) metadata.entityId = entityId;
@@ -234,7 +234,7 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
   // Pass `labels` through as a filter so the orchestrator only evaluates the
   // ones we ask about. Policies + thresholds + actions are owned orchestrator-
   // side; per-label policyHash comes back on each result and is what we record
-  // as policyVersion in the audit log.
+  // as the per-label `version` column in the audit log.
   const input =
     args.mode === 'text'
       ? {
