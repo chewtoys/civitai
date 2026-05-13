@@ -229,7 +229,6 @@ export type TrackRequest = {
   userId: number;
   ip: string;
   userAgent: string;
-  fingerprint?: string;
 };
 
 /** Track a webhook event to ClickHouse (fire and forget) */
@@ -252,7 +251,6 @@ export class Tracker {
     userId: 0,
     ip: 'unknown',
     userAgent: 'unknown',
-    fingerprint: 'unknown',
   };
   private session: Session | null = null;
   private req: NextApiRequest | undefined;
@@ -288,7 +286,6 @@ export class Tracker {
       this.res = res;
       this.actor.ip = requestIp.getClientIp(req) ?? this.actor.ip;
       this.actor.userAgent = req.headers['user-agent'] ?? this.actor.userAgent;
-      this.actor.fingerprint = (req.headers['x-fingerprint'] as string) ?? this.actor.fingerprint;
     }
   }
 

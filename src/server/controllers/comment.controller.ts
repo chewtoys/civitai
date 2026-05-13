@@ -312,7 +312,7 @@ export const setTosViolationHandler = async ({
   ctx: ProtectedContext;
 }) => {
   try {
-    const { user, ip, fingerprint } = ctx;
+    const { user, ip } = ctx;
     const { id } = input;
     if (!user.isModerator) throw throwAuthorizationError('Only moderators can set TOS violation');
 
@@ -328,10 +328,7 @@ export const setTosViolationHandler = async ({
     // Reward users for accepted reports
     await Promise.allSettled(
       affectedReports.map((report) =>
-        reportAcceptedReward.apply(
-          { userId: report.userId, reportId: report.id },
-          { ip, fingerprint }
-        )
+        reportAcceptedReward.apply({ userId: report.userId, reportId: report.id }, { ip })
       )
     );
 

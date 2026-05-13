@@ -281,7 +281,7 @@ export const orchestratorRouter = router({
       //     });
       //   }
       // }
-      const { ip, fingerprint, user } = ctx;
+      const { ip, user } = ctx;
 
       if (!!workflows?.length) await patchWorkflows({ input: workflows, token: ctx.token });
 
@@ -310,7 +310,7 @@ export const orchestratorRouter = router({
                       userId: user.id,
                       jobId,
                     },
-                    { ip, fingerprint }
+                    { ip }
                   );
                 }
               })

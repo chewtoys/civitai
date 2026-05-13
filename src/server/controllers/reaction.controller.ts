@@ -262,7 +262,7 @@ export const toggleReactionHandler = async ({
               entityId: input.entityId,
               ownerId: trackerEvent?.ownerId,
             },
-            { ip: ctx.ip, fingerprint: ctx.fingerprint }
+            { ip: ctx.ip }
           )
           .catch(handleLogError),
         goodContentReward
@@ -273,7 +273,7 @@ export const toggleReactionHandler = async ({
               entityId: input.entityId,
               ownerId: trackerEvent?.ownerId,
             },
-            { ip: ctx.ip, fingerprint: ctx.fingerprint }
+            { ip: ctx.ip }
           )
           .catch(handleLogError),
       ]).catch(handleLogError);
