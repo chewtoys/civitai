@@ -24,6 +24,7 @@ import {
   setUserModerator,
   setUserMuted,
 } from '~/server/services/user.service';
+import { throwBadRequestError } from '~/server/utils/errorHandling';
 import { defineRetoolEndpoint, retoolAction, retoolBoolean } from '~/server/utils/retool-endpoint';
 
 const userId = z.coerce.number().int().positive();
@@ -60,20 +61,27 @@ export default defineRetoolEndpoint('user', {
     },
   }),
   updateIdentity: retoolAction({
-    input: z
-      .object({
-        userId,
-        username: z.string().trim().min(1).max(64).optional(),
-        email: z.string().email().optional(),
-        name: z.string().trim().max(128).optional(),
-      })
-      .refine(
-        (d) => d.username !== undefined || d.email !== undefined || d.name !== undefined,
-        { message: 'At least one of username, email, name must be provided' }
-      ),
+    // Kept as a plain ZodObject — the wrapper .extends() every action input,
+    // and .refine() would return a ZodEffects with no .extend. The
+    // at-least-one-field check is enforced in the handler.
+    input: z.object({
+      userId,
+      username: z.string().trim().min(1).max(64).optional(),
+      email: z.string().email().optional(),
+      name: z.string().trim().max(128).optional(),
+    }),
     privileged: 'retoolUpdateIdentity',
     rateLimit: { max: 20, windowSeconds: 60 },
     async handler(input) {
+      if (
+        input.username === undefined &&
+        input.email === undefined &&
+        input.name === undefined
+      ) {
+        throw throwBadRequestError(
+          'At least one of username, email, name must be provided'
+        );
+      }
       const result = await forceUpdateUserIdentity({
         userId: input.userId,
         username: input.username,
