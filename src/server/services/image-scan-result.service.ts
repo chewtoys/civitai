@@ -7,11 +7,7 @@ import { clickhouse } from '~/server/clickhouse/client';
 import { env } from '~/env/server';
 import type { TagType } from '~/shared/utils/prisma/enums';
 import { ImageIngestionStatus, NewOrderRankType, TagSource } from '~/shared/utils/prisma/enums';
-import {
-  NsfwLevel,
-  SearchIndexUpdateQueueAction,
-  SignalMessages,
-} from '~/server/common/enums';
+import { NsfwLevel, SearchIndexUpdateQueueAction, SignalMessages } from '~/server/common/enums';
 import {
   auditMetaData,
   getTagsFromPrompt,
@@ -45,6 +41,7 @@ import { addImageToQueue } from '~/server/services/games/new-order.service';
 import { getFeatureFlagsLazy } from '~/server/services/feature-flags.service';
 import { fanOutArticleImageUpdates } from '~/server/utils/webhook-debounce';
 import { logToAxiom } from '~/server/logging/client';
+import { recordImageScan } from '~/server/services/scanner-audit.service';
 
 export async function isExemptFromAiVerification(
   imageId: number,
@@ -144,6 +141,8 @@ export async function processImageScanResult(req: NextApiRequest) {
     steps: (data.steps ?? []) as unknown as ScanResultStep[],
     imageId,
     articleImageScanning: featureFlags.articleImageScanning,
+    startedAt: data.startedAt,
+    completedAt: data.completedAt,
   });
 }
 
@@ -158,6 +157,8 @@ export async function processImageScanWorkflow({
   steps,
   imageId,
   articleImageScanning = false,
+  startedAt,
+  completedAt,
 }: {
   workflowId: string;
   status: string;
@@ -165,6 +166,11 @@ export async function processImageScanWorkflow({
   imageId: number;
   /** Enable debounced article ingestion updates (webhook path with feature flag) */
   articleImageScanning?: boolean;
+  /** Workflow timing from the orchestrator response. Used by recordImageScan
+   * for the scanner_label_results audit log. Optional so migration scripts
+   * can still call this without supplying them. */
+  startedAt?: Date | string | null;
+  completedAt?: Date | string | null;
 }) {
   if (status !== 'succeeded') {
     await dbWrite.$executeRaw`
@@ -345,6 +351,16 @@ export async function processImageScanWorkflow({
       )}::jsonb)
     WHERE id = ${image.id}
   `;
+
+  // Audit-log to scanner_label_results. Fire-and-forget — failures log but
+  // can't block ingestion. Runs for every successful mediaRating output.
+  await recordImageScan({
+    workflowId,
+    imageId: image.id,
+    mediaRating: mediaRating!,
+    startedAt,
+    completedAt,
+  });
 
   // Fan out to articles for every terminal state (Scanned and Blocked).
   // Article ingestion must advance on Blocked too, otherwise articles whose last

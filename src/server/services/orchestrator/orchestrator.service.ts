@@ -188,8 +188,14 @@ export async function createImageIngestionRequest({
 }
 
 type XGuardModerationArgs = {
-  entityType: string;
-  entityId: number;
+  /**
+   * Optional entity reference. When present, the webhook updates
+   * `EntityModeration` and dispatches the entity-type handler. When omitted
+   * (e.g. ad-hoc generator-prompt scans with no persistent entity), only the
+   * audit-write path runs.
+   */
+  entityType?: string;
+  entityId?: number;
   labels?: string[];
   callbackUrl?: string;
   wait?: number;
@@ -261,21 +267,27 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
   }
 
   const filteredLabels = labelOverrides.map((o) => o.label);
-  const metadata = {
-    entityType,
-    entityId,
+  const metadata: Record<string, unknown> = {
+    mode: args.mode,
     recordForReview,
     modelVersion: '1',
     policyVersions,
   };
+  if (entityType) metadata.entityType = entityType;
+  if (entityId !== undefined) metadata.entityId = entityId;
 
+  // `labels` restricts orchestrator evaluation to exactly the labels we
+  // configured in Redis; `labelOverrides` provides the policy text/threshold/
+  // action for each. Sending only labelOverrides leaks orchestrator defaults
+  // back in; sending only labels uses the orchestrator's default policy text.
+  // We need both, filtered to the same set.
   const input =
     args.mode === 'text'
       ? {
           mode: 'text' as const,
           text: args.content,
           labels: filteredLabels,
-          labelOverrides,
+          // labelOverrides,
           storeFullResponse: true,
         }
       : {
@@ -284,7 +296,7 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
           negativePrompt: args.negativePrompt ?? null,
           instructions: args.instructions ?? null,
           labels: filteredLabels,
-          labelOverrides,
+          // labelOverrides,
           storeFullResponse: true,
         };
 
