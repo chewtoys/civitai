@@ -81,12 +81,14 @@ export function PanelDetailDrawer({
   onIterativeEdit,
 }: PanelDetailDrawerProps) {
   const utils = trpc.useUtils();
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
 
   const isNsfwBlocked =
-    isGreen &&
+    features.isGreen &&
     detailPanel?.status === 'Ready' &&
-    (detailPanel?.image ? !hasSafeBrowsingLevel(detailPanel.image.nsfwLevel) : !!detailPanel?.imageUrl);
+    (detailPanel?.image
+      ? !hasSafeBrowsingLevel(detailPanel.image.nsfwLevel)
+      : !!detailPanel?.imageUrl);
 
   // Opens the standard ImageMetaModal against the panel's underlying Image
   // record. Used both for the "AI verification failed" banner CTA and for
@@ -203,8 +205,8 @@ export function PanelDetailDrawer({
                     </div>
                     <Text size="xs" c="dimmed">
                       This panel was blocked because we couldn&apos;t verify it was AI-generated
-                      from its metadata. Add the prompt, sampler, steps and other settings used
-                      to generate it, and we&apos;ll re-scan it automatically.
+                      from its metadata. Add the prompt, sampler, steps and other settings used to
+                      generate it, and we&apos;ll re-scan it automatically.
                     </Text>
                     <Button
                       size="compact-sm"
@@ -331,21 +333,20 @@ export function PanelDetailDrawer({
               {/* Source Image (for enhanced panels, not for plain imports) */}
               {(detailPanel.metadata as Record<string, any> | null)?.sourceImageUrl &&
                 detailPanel.prompt && (
-                <div>
-                  <div className={styles.detailSectionTitle}>Source Image</div>
-                  <div className={styles.enhanceImagePreview}>
-                    <img
-                      src={
-                        getEdgeUrl(
-                          (detailPanel.metadata as Record<string, any>).sourceImageUrl,
-                          { width: 400 }
-                        ) ?? (detailPanel.metadata as Record<string, any>).sourceImageUrl
-                      }
-                      alt="Source"
-                    />
+                  <div>
+                    <div className={styles.detailSectionTitle}>Source Image</div>
+                    <div className={styles.enhanceImagePreview}>
+                      <img
+                        src={
+                          getEdgeUrl((detailPanel.metadata as Record<string, any>).sourceImageUrl, {
+                            width: 400,
+                          }) ?? (detailPanel.metadata as Record<string, any>).sourceImageUrl
+                        }
+                        alt="Source"
+                      />
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
               {/* Generation settings */}
               {(() => {
@@ -375,9 +376,7 @@ export function PanelDetailDrawer({
                     <div className={styles.detailSectionTitle}>Settings</div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className={styles.detailCharacterPill}>
-                        {meta.enhanceEnabled !== false
-                          ? 'Prompt enhanced'
-                          : 'Prompt not enhanced'}
+                        {meta.enhanceEnabled !== false ? 'Prompt enhanced' : 'Prompt not enhanced'}
                       </span>
                       {meta.enhanceEnabled !== false && (
                         <span className={styles.detailCharacterPill}>
@@ -414,10 +413,7 @@ export function PanelDetailDrawer({
                   </button>
                 )}
                 {(detailPanel.status === 'Ready' || detailPanel.status === 'Failed') && (
-                  <button
-                    className={styles.gradientBtn}
-                    onClick={() => onRegenerate(detailPanel)}
-                  >
+                  <button className={styles.gradientBtn} onClick={() => onRegenerate(detailPanel)}>
                     <IconRefreshDot size={16} />
                     Regenerate
                   </button>
@@ -441,10 +437,7 @@ export function PanelDetailDrawer({
                     Edit metadata
                   </button>
                 )}
-                <button
-                  className={styles.subtleBtn}
-                  onClick={() => onDuplicate(detailPanel.id)}
-                >
+                <button className={styles.subtleBtn} onClick={() => onDuplicate(detailPanel.id)}>
                   <IconCopy size={14} />
                   Duplicate
                 </button>
@@ -453,9 +446,7 @@ export function PanelDetailDrawer({
                   onClick={() => {
                     openConfirmModal({
                       title: 'Delete Panel',
-                      children: (
-                        <Text size="sm">Are you sure you want to delete this panel?</Text>
-                      ),
+                      children: <Text size="sm">Are you sure you want to delete this panel?</Text>,
                       labels: { confirm: 'Delete', cancel: 'Cancel' },
                       confirmProps: { color: 'red' },
                       onConfirm: () => onDelete(detailPanel.id),

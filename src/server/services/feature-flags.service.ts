@@ -144,7 +144,6 @@ const featureFlags = createFeatureFlags({
   impersonation: isDev ? ['mod'] : ['granted'],
   donationGoals: ['public'],
   creatorComp: ['public'],
-  imageIndex: ['public'],
   imageIndexFeed: { availability: ['public'], fliptKey: 'image-index-feed' },
   // #region [Domain Specific Features]
   isGreen: ['public', 'green'],
@@ -192,6 +191,12 @@ const featureFlags = createFeatureFlags({
   },
   articleImageScanning: ['public'],
   generationPresets: { availability: ['public'], fliptKey: 'generation-presets' },
+  // Retool privileged endpoints — `granted` means the moderator must carry the
+  // matching permission key in user.permissions. Endpoints lookup the key
+  // directly from `RetoolAction.privileged`, so the permission name MUST stay
+  // in sync with the camelCase flag key here.
+  retoolUpdateIdentity: ['granted'],
+  retoolToggleModerator: ['granted'],
 });
 
 export const featureFlagKeys = Object.keys(featureFlags) as FeatureFlagKey[];
@@ -410,12 +415,17 @@ const hasFeature = (
   return true;
 };
 
+// Sparse payload at runtime: only `true` flags are actually present, absent keys
+// are `undefined`. Type stays as `Record<FeatureFlagKey, boolean>` so consumers
+// read `features.X` as `boolean` without coercion. Truthy checks work the same
+// way against `false` and `undefined`. Removing a flag from the registry shrinks
+// `FeatureFlagKey`, which surfaces a type error at every consumer.
 export type FeatureAccess = Record<FeatureFlagKey, boolean>;
 export const getFeatureFlags = (ctx: FeatureAccessContext) => {
   const keys = Object.keys(featureFlags) as FeatureFlagKey[];
 
   return keys.reduce<FeatureAccess>((acc, key) => {
-    acc[key] = hasFeature(key, ctx);
+    if (hasFeature(key, ctx)) acc[key] = true;
     return acc;
   }, {} as FeatureAccess);
 };

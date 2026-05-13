@@ -397,7 +397,7 @@ export async function deleteModelFileObjects(urls: string[]) {
 
 const DOWNLOAD_EXPIRATION = 60 * 60 * 24; // 24 hours
 const UPLOAD_EXPIRATION = 60 * 60 * 12; // 12 hours
-const FILE_CHUNK_SIZE = 100 * 1024 * 1024; // 100 MB
+const FILE_CHUNK_SIZE = 25 * 1024 * 1024; // 25 MB
 export async function getMultipartPutUrl(
   key: string,
   size: number,

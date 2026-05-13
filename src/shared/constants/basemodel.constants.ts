@@ -129,7 +129,7 @@ export const ECO = {
   HyDit1: 12,
   AuraFlow: 13,
   HiDream: 14,
-  HiDreamO1: 69,
+  HiDreamO1: 29,
   Kolors: 15,
   Lumina: 16,
   Mochi: 17,
@@ -577,6 +577,22 @@ export const ecosystems: EcosystemRecord[] = [
     sortOrder: 130,
   },
 
+  // HiDream Family (familyId: 19)
+  {
+    id: ECO.HiDream,
+    key: 'HiDream',
+    displayName: 'HiDream',
+    familyId: 19,
+    sortOrder: 140,
+  },
+  {
+    id: ECO.HiDreamO1,
+    key: 'HiDream-O1',
+    displayName: 'HiDream-O1',
+    familyId: 19,
+    sortOrder: 141,
+  },
+
   // Standalone ecosystems (no family)
   { id: ECO.Anima, key: 'Anima', displayName: 'Anima', sortOrder: 199 },
   { id: ECO.AuraFlow, key: 'AuraFlow', displayName: 'AuraFlow', sortOrder: 200 },
@@ -587,18 +603,6 @@ export const ecosystems: EcosystemRecord[] = [
     displayName: 'CogVideoX',
     sortOrder: 202,
     // No generation support - training only
-  },
-  {
-    id: ECO.HiDream,
-    key: 'HiDream',
-    displayName: 'HiDream',
-    sortOrder: 203,
-  },
-  {
-    id: ECO.HiDreamO1,
-    key: 'HiDreamO1',
-    displayName: 'HiDream O1',
-    sortOrder: 203,
   },
   { id: ECO.Kolors, key: 'Kolors', displayName: 'Kolors', sortOrder: 204 },
   {
@@ -814,7 +818,8 @@ export const ecosystemSupport: EcosystemSupport[] = [
   { ecosystemId: ECO.HiDream, supportType: 'generation', modelTypes: checkpointAndLora },
   { ecosystemId: ECO.HiDream, supportType: 'training', modelTypes: [ModelType.LORA] },
 
-  // HiDream O1 - training only (preview)
+  // HiDream-O1 - checkpoint and LORA
+  { ecosystemId: ECO.HiDreamO1, supportType: 'generation', modelTypes: checkpointAndLora },
   { ecosystemId: ECO.HiDreamO1, supportType: 'training', modelTypes: [ModelType.LORA] },
 
   // NanoBanana - checkpoint only
@@ -995,6 +1000,13 @@ export const ecosystemSettings: EcosystemSettings[] = [
     ecosystemId: ECO.HiDream,
     defaults: {
       model: { id: 1771369 },
+      modelLocked: true,
+    },
+  },
+  {
+    ecosystemId: ECO.HiDreamO1,
+    defaults: {
+      model: { id: 2939964 },
       modelLocked: true,
     },
   },
@@ -2008,6 +2020,11 @@ export const ecosystemFamilies: BaseModelFamilyRecord[] = [
     name: 'Alibaba - Taotian',
     description: "Alibaba Taotian Future Life Lab's video generation models",
   },
+  {
+    id: 19,
+    name: 'HiDream',
+    description: "HiDream.ai's image generation models",
+  },
 ];
 
 export const ecosystemFamilyById = new Map(ecosystemFamilies.map((f) => [f.id, f]));
@@ -2175,13 +2192,11 @@ export const baseModelRecords: BaseModelRecord[] = [
   },
   {
     id: BM.HiDreamO1,
-    name: 'HiDream O1',
-    description:
-      '8B text-to-image foundation model from HiDream.ai using a pixel-level unified transformer architecture',
+    name: 'HiDream-O1',
+    description: "HiDream.ai's unified pixel-level transformer for text-to-image generation",
     type: 'image',
     ecosystemId: ECO.HiDreamO1,
     licenseId: 19,
-    experimental: true,
   },
 
   // Hunyuan

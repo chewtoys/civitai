@@ -97,8 +97,8 @@ function renderOwnerPanel(
             Mature panel
           </Text>
           <Text size="xs" c="gray.3" maw={360}>
-            This panel is mature content and can&apos;t be viewed on this site. Open the
-            chapter on civitai.red to read it.
+            This panel is mature content and can&apos;t be viewed on this site. Open the chapter on
+            civitai.red to read it.
           </Text>
           {redHandoffUrl && (
             <Button
@@ -157,7 +157,7 @@ function ComicReader() {
   // the safe browsing levels (PG / PG-13). Mirrors PanelCard's `isNsfwBlocked`
   // rule so the reader and the editor agree on what shows up. Panels missing
   // an Image relation default to "blocked" — the safe assumption.
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
   const redDomain = useServerDomains().red;
 
   // Active chapter is driven by `?chapter={position}` so refresh / share /
@@ -210,11 +210,10 @@ function ComicReader() {
       if (!target) return;
       setPageIndex(startPage);
       const nextQuery = { ...router.query, chapter: String(target.position) };
-      void router.replace(
-        { pathname: router.pathname, query: nextQuery },
-        undefined,
-        { shallow: true, scroll: false }
-      );
+      void router.replace({ pathname: router.pathname, query: nextQuery }, undefined, {
+        shallow: true,
+        scroll: false,
+      });
       window.scrollTo({ top: 0 });
     },
     [router, chapters]
@@ -238,7 +237,15 @@ function ComicReader() {
         goToChapter(activeChapterIdx - 1, lastPage);
       }
     },
-    [safePageIdx, totalPages, hasNextChapter, hasPrevChapter, activeChapterIdx, chapters, goToChapter]
+    [
+      safePageIdx,
+      totalPages,
+      hasNextChapter,
+      hasPrevChapter,
+      activeChapterIdx,
+      chapters,
+      goToChapter,
+    ]
   );
 
   // Keyboard nav — arrow keys flip pages within a chapter and wrap into
@@ -263,9 +270,7 @@ function ComicReader() {
   const redHandoffUrl = useMemo(() => {
     if (!redDomain) return null;
     if (!Number.isFinite(projectId) || projectId <= 0) return null;
-    const params = activeChapter
-      ? `?chapter=${activeChapter.position}`
-      : '';
+    const params = activeChapter ? `?chapter=${activeChapter.position}` : '';
     return syncAccount(`//${redDomain}/comics/project/${projectId}/read${params}`);
   }, [redDomain, projectId, activeChapter]);
 
@@ -383,7 +388,7 @@ function ComicReader() {
           // in the header.
           <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
             <Stack gap={0} p="xs">
-              {panels.map((panel) => renderOwnerPanel(panel, isGreen, redHandoffUrl))}
+              {panels.map((panel) => renderOwnerPanel(panel, features.isGreen, redHandoffUrl))}
             </Stack>
           </div>
         ) : (
@@ -450,11 +455,10 @@ function ComicReader() {
 
             {/* Spread layout — uses the shared Comics SCSS so this matches */}
             {/* the public reader's pages mode. */}
-            <div
-              className={sharedStyles.readerPagesSpread}
-              style={{ height: '100%' }}
-            >
-              {visiblePanels.map((panel) => renderOwnerPanel(panel, isGreen, redHandoffUrl))}
+            <div className={sharedStyles.readerPagesSpread} style={{ height: '100%' }}>
+              {visiblePanels.map((panel) =>
+                renderOwnerPanel(panel, features.isGreen, redHandoffUrl)
+              )}
             </div>
           </div>
         )}

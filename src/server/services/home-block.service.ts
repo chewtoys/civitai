@@ -692,6 +692,117 @@ export const acknowledgeFeaturedCollection = async ({ collectionId }: { collecti
   });
 };
 
+/**
+ * Mod-driven HomeBlock writes (Retool / future on-site Manager UI). Scoped to
+ * the system user (userId = -1) — these endpoints must never mutate a regular
+ * user's personalized home blocks. The system user owns the editorial homepage
+ * configuration that everyone sees by default.
+ */
+const SYSTEM_HOMEBLOCK_USER_ID = -1;
+
+async function assertSystemHomeBlock(id: number) {
+  const row = await dbRead.homeBlock.findUnique({
+    where: { id },
+    select: { userId: true },
+  });
+  if (!row) throw throwNotFoundError(`No HomeBlock with id ${id}`);
+  if (row.userId !== SYSTEM_HOMEBLOCK_USER_ID) {
+    throw throwAuthorizationError(
+      `HomeBlock ${id} is owned by user ${row.userId}; admin endpoints only operate on system blocks (userId=${SYSTEM_HOMEBLOCK_USER_ID}).`
+    );
+  }
+}
+
+export async function createHomeBlockAdmin({
+  type,
+  metadata,
+  sourceId,
+  index,
+  permanent,
+}: {
+  type: HomeBlockType;
+  metadata: Prisma.InputJsonValue;
+  sourceId?: number;
+  index?: number;
+  permanent?: boolean;
+}) {
+  return dbWrite.homeBlock.create({
+    data: {
+      userId: SYSTEM_HOMEBLOCK_USER_ID,
+      type,
+      metadata,
+      sourceId,
+      index,
+      permanent: permanent ?? false,
+    },
+  });
+}
+
+export async function updateHomeBlockAdmin({
+  id,
+  metadata,
+  index,
+  permanent,
+  type,
+  sourceId,
+}: {
+  id: number;
+  metadata?: Prisma.InputJsonValue;
+  index?: number | null;
+  permanent?: boolean;
+  type?: HomeBlockType;
+  sourceId?: number | null;
+}) {
+  await assertSystemHomeBlock(id);
+  const data: Prisma.HomeBlockUncheckedUpdateInput = {};
+  if (metadata !== undefined) data.metadata = metadata;
+  if (index !== undefined) data.index = index;
+  if (permanent !== undefined) data.permanent = permanent;
+  if (type !== undefined) data.type = type;
+  if (sourceId !== undefined) data.sourceId = sourceId;
+  return dbWrite.homeBlock.update({ where: { id }, data });
+}
+
+export async function deleteHomeBlockAdmin({ id }: { id: number }) {
+  await assertSystemHomeBlock(id);
+  await dbWrite.homeBlock.delete({ where: { id } });
+  return { deleted: true };
+}
+
+export async function reorderHomeBlocksAdmin({
+  orderedIds,
+}: {
+  orderedIds: number[];
+}) {
+  const unique = new Set(orderedIds);
+  if (unique.size !== orderedIds.length) {
+    throw throwBadRequestError('orderedIds must not contain duplicates');
+  }
+  // Verify every block belongs to the system user before touching anything.
+  const rows = await dbRead.homeBlock.findMany({
+    where: { id: { in: orderedIds } },
+    select: { id: true, userId: true },
+  });
+  const foreign = rows.filter((r) => r.userId !== SYSTEM_HOMEBLOCK_USER_ID);
+  if (foreign.length) {
+    throw throwAuthorizationError(
+      `HomeBlocks [${foreign.map((r) => r.id).join(',')}] are not system-owned; reorder rejected.`
+    );
+  }
+  if (rows.length !== orderedIds.length) {
+    const found = new Set(rows.map((r) => r.id));
+    const missing = orderedIds.filter((id) => !found.has(id));
+    throw throwBadRequestError(`HomeBlocks not found: [${missing.join(',')}]`);
+  }
+
+  await dbWrite.$transaction(
+    orderedIds.map((id, index) =>
+      dbWrite.homeBlock.update({ where: { id }, data: { index } })
+    )
+  );
+  return { count: orderedIds.length };
+}
+
 export const setHomeBlocksOrder = async ({
   input,
 }: {

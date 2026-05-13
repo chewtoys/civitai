@@ -60,7 +60,7 @@ function getScopeBadgeColor(label: string): string {
 
 export function ApiKeysCard() {
   const utils = trpc.useUtils();
-  const { apiKeyBuzzLimit } = useFeatureFlags();
+  const features = useFeatureFlags();
 
   const [opened, { toggle }] = useDisclosure(false);
   const [editLimitFor, setEditLimitFor] = useState<{
@@ -71,7 +71,7 @@ export function ApiKeysCard() {
 
   const { data: apiKeys = [], isLoading } = trpc.apiKey.getAllUserKeys.useQuery({});
   const { data: spendEntries = [] } = trpc.apiKey.getSpend.useQuery(undefined, {
-    enabled: apiKeyBuzzLimit && apiKeys.some((k) => !!k.buzzLimit),
+    enabled: features.apiKeyBuzzLimit && apiKeys.some((k) => !!k.buzzLimit),
     staleTime: 30_000,
   });
 
@@ -174,7 +174,7 @@ export function ApiKeysCard() {
                             {apiKey.lastUsedAt ? formatDate(apiKey.lastUsedAt) : 'Never used'}
                           </Text>
                         </Group>
-                        {apiKeyBuzzLimit &&
+                        {features.apiKeyBuzzLimit &&
                           (hasLimit && simpleLimit ? (
                             (() => {
                               const pct = Math.min(100, (spend / simpleLimit.limit) * 100);
@@ -245,7 +245,7 @@ export function ApiKeysCard() {
         </Box>
       </Card>
       <ApiKeyModal title="Create API Key" opened={opened} onClose={toggle} />
-      {apiKeyBuzzLimit && editLimitFor && (
+      {features.apiKeyBuzzLimit && editLimitFor && (
         <EditBuzzLimitModal
           opened={!!editLimitFor}
           onClose={() => setEditLimitFor(null)}

@@ -41,13 +41,12 @@ export const getAllTagsHandler = async ({ input, ctx }: { input?: GetTagsInput; 
   try {
     const { limit = DEFAULT_PAGE_SIZE, page } = input || {};
     const { take, skip } = getPagination(limit, page);
-    const { adminTags } = ctx.features;
 
     const results = await getTags({
       ...input,
       take,
       skip,
-      includeAdminTags: adminTags,
+      includeAdminTags: ctx.features.adminTags,
     });
 
     return getPagingData(results, take, page);

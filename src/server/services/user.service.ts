@@ -1,7 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { uniq } from 'lodash-es';
 import dayjs from '~/shared/utils/dayjs';
-import { env } from '~/env/server';
 import { CacheTTL, constants, USERS_SEARCH_INDEX } from '~/server/common/constants';
 import {
   BanReasonCode,
@@ -39,7 +38,6 @@ import {
 import { redis, REDIS_KEYS } from '~/server/redis/client';
 import type { GetByIdInput } from '~/server/schema/base.schema';
 import type {
-  ComputeDeviceFingerprintInput,
   DeleteUserInput,
   GetAllUsersInput,
   GetByUsernameSchema,
@@ -81,13 +79,14 @@ import {
   HiddenModels,
 } from '~/server/services/user-preferences.service';
 import { createCachedObject } from '~/server/utils/cache-helpers';
+import { bustRatingTotalsCache } from '~/server/services/resourceReview.cache';
 import {
   handleLogError,
   throwBadRequestError,
   throwConflictError,
   throwNotFoundError,
 } from '~/server/utils/errorHandling';
-import { encryptText, generateKey, generateSecretHash } from '~/server/utils/key-generator';
+import { generateKey, generateSecretHash } from '~/server/utils/key-generator';
 import { DEFAULT_PAGE_SIZE, getPagination, getPagingData } from '~/server/utils/pagination-helpers';
 import { invalidateSession, refreshSession } from '~/server/auth/session-invalidation';
 import { getNsfwLevelDeprecatedReverseMapping } from '~/shared/constants/browsingLevel.constants';
@@ -371,6 +370,143 @@ export const isUsernamePermitted = async (username: string): Promise<boolean> =>
 
   return !(dynamicExact.some((x) => lower === x) || dynamicPartial.some((x) => lower.includes(x)));
 };
+
+/**
+ * Mod-driven: clear public profile fields (location/bio/message) on UserProfile.
+ * No-op if no UserProfile row exists yet.
+ */
+export async function clearUserProfileFields({
+  userId,
+  fields = ['location', 'bio', 'message'],
+}: {
+  userId: number;
+  fields?: Array<'location' | 'bio' | 'message'>;
+}) {
+  if (fields.length === 0) return { updated: false };
+  const data: Prisma.UserProfileUpdateInput = {};
+  if (fields.includes('location')) data.location = null;
+  if (fields.includes('bio')) data.bio = null;
+  if (fields.includes('message')) data.message = null;
+  const result = await dbWrite.userProfile.updateMany({ where: { userId }, data });
+  return { updated: result.count > 0 };
+}
+
+/**
+ * Mod-driven: explicit mute/unmute (vs. legacy toggle).
+ */
+export async function setUserMuted({
+  userId,
+  muted,
+}: {
+  userId: number;
+  muted: boolean;
+}) {
+  const date = new Date();
+  const user = await updateUserById({
+    id: userId,
+    data: {
+      muted,
+      mutedAt: muted ? date : null,
+      muteConfirmedAt: muted ? date : null,
+    },
+    updateSource: muted ? 'retool:mute' : 'retool:unmute',
+  });
+  const { invalidateSession } = await import('~/server/auth/session-invalidation');
+  await invalidateSession(userId);
+  return user;
+}
+
+/**
+ * Privileged: set the moderator flag on a user. Caller is responsible for
+ * super-admin allowlist gating (handled by RetoolEndpoint).
+ *
+ * Rejects self-action: a moderator cannot demote (or escalate) themselves —
+ * stops mid-flow session strandings and forces the change to go through a
+ * second operator with audit trail intact.
+ */
+export async function setUserModerator({
+  userId,
+  isModerator,
+  actorId,
+}: {
+  userId: number;
+  isModerator: boolean;
+  actorId: number;
+}) {
+  if (userId === actorId) {
+    throw new Error('Cannot modify your own moderator status — ask another operator.');
+  }
+  const user = await updateUserById({
+    id: userId,
+    data: { isModerator },
+    updateSource: 'retool:setModerator',
+  });
+  const { invalidateSession } = await import('~/server/auth/session-invalidation');
+  await invalidateSession(userId);
+  return user;
+}
+
+/**
+ * Privileged: forcibly update username / email / display name. Bypasses the
+ * "don't overwrite existing email" guard on `updateUserById` because the whole
+ * point of this endpoint is letting mods correct identity fields.
+ *
+ * Uniqueness enforcement is delegated to the DB constraints on User (username
+ * + email) — Prisma will throw a P2002 which surfaces as a 500 with the
+ * conflicting target.
+ */
+export async function forceUpdateUserIdentity({
+  userId,
+  username,
+  email,
+  name,
+}: {
+  userId: number;
+  username?: string;
+  email?: string;
+  name?: string;
+}) {
+  const data: Prisma.UserUpdateInput = {};
+  if (username !== undefined) data.username = username;
+  if (email !== undefined) data.email = email;
+  if (name !== undefined) data.name = name;
+  if (Object.keys(data).length === 0) return { updated: false };
+
+  let user;
+  try {
+    user = await dbWrite.user.update({ where: { id: userId }, data });
+  } catch (error) {
+    // Translate Prisma unique-constraint violations into a 4xx for callers.
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: string }).code === 'P2002'
+    ) {
+      const target = ((error as { meta?: { target?: string[] } }).meta?.target ?? []).join(', ');
+      throw throwBadRequestError(`Unique constraint failed${target ? ` on ${target}` : ''}`);
+    }
+    throw error;
+  }
+  userUpdateCounter?.inc({ location: 'user.service:forceUpdateUserIdentity' });
+
+  // Cache-invalidate for any field on User that downstream caches key off of.
+  // (Username changes drop basic data; name/email touch profile + paddle.)
+  if (data.username !== undefined || data.name !== undefined) {
+    await deleteBasicDataForUser(userId);
+  }
+  if (data.email && user.paddleCustomerId) {
+    await updatePaddleCustomerEmail({
+      customerId: user.paddleCustomerId,
+      email: data.email as string,
+    });
+  }
+
+  const { invalidateSession } = await import('~/server/auth/session-invalidation');
+  await invalidateSession(userId);
+
+  return { updated: true, user };
+}
 
 export const updateUserById = async ({
   id,
@@ -1350,6 +1486,16 @@ export const toggleBan = async ({
         });
       }),
 
+      // Wipe public-profile UserLink rows so banned users' off-site links
+      // disappear immediately (replaces a manual Retool DELETE step).
+      dbWrite.userLink.deleteMany({ where: { userId: id } }).catch((error) =>
+        logToAxiom({
+          type: 'error',
+          name: 'ban-user-delete-user-links',
+          message: (error as Error).message,
+        })
+      ),
+
       // Group B: External operations (subscription + search indexes)
       Promise.all([
         // Cancel their subscription
@@ -1540,13 +1686,21 @@ export async function toggleReview({
 }) {
   const review = await dbRead.resourceReview.findFirst({
     where: { modelId, modelVersionId, userId },
-    select: { id: true, recommended: true },
+    select: { id: true, recommended: true, modelVersionId: true },
   });
   setTo ??= review ? false : true;
 
   if (setTo === false) {
     await dbWrite.resourceReview.deleteMany({ where: { modelId, modelVersionId, userId } });
     modelMetrics.queueUpdate(modelId);
+    // Use the actual modelVersionId from the existing review row when input was
+    // undefined. If the user had reviews on multiple versions (rare — typically
+    // 1 review per user per model), only the first row's version tag gets busted
+    // and the rest fall back to the 1h TTL.
+    await bustRatingTotalsCache({
+      modelId,
+      modelVersionId: modelVersionId ?? review?.modelVersionId,
+    }).catch(() => undefined);
   } else {
     if (review) {
       if (setTo !== review.recommended) {
@@ -1554,6 +1708,10 @@ export async function toggleReview({
           where: { id: review.id },
           data: { recommended: setTo },
         });
+        await bustRatingTotalsCache({
+          modelId,
+          modelVersionId: review.modelVersionId,
+        }).catch(() => undefined);
       }
     } else {
       if (!modelVersionId) {
@@ -1575,6 +1733,7 @@ export async function toggleReview({
           rating: setTo ? 5 : 1,
         },
       });
+      await bustRatingTotalsCache({ modelId, modelVersionId }).catch(() => undefined);
     }
   }
 
@@ -1910,18 +2069,6 @@ export async function amIBlockedByUser({
   });
 
   return !!engagement;
-}
-
-export function computeFingerprint({
-  fingerprint,
-  userId,
-}: ComputeDeviceFingerprintInput & { userId?: number }) {
-  if (!env.FINGERPRINT_SECRET || !env.FINGERPRINT_IV) return fingerprint;
-  return encryptText({
-    text: `${fingerprint}:${userId ?? 0}:${Date.now()}`,
-    key: env.FINGERPRINT_SECRET,
-    iv: env.FINGERPRINT_IV,
-  });
 }
 
 export async function requestAdToken({ userId }: { userId: number }) {

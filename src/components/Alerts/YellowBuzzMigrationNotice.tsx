@@ -16,10 +16,10 @@ const ALERT_ID = 'yellow-buzz-migration';
  */
 export function YellowBuzzMigrationNotice({ children }: { children: React.ReactNode }) {
   const currentUser = useCurrentUser();
-  const { isGreen, buzz } = useFeatureFlags();
+  const features = useFeatureFlags();
   const serverDomains = useServerDomains();
 
-  const enabled = !!currentUser && isGreen && buzz;
+  const enabled = !!currentUser && features.isGreen && features.buzz;
   const { data: buzzAccounts, isLoading: buzzLoading } = trpc.buzz.getBuzzAccount.useQuery(
     undefined,
     { enabled }

@@ -7,7 +7,6 @@ import { isProd } from '~/env/other';
 import { getFeatureFlagsLazy } from '~/server/services/feature-flags.service';
 import { createCallerFactory } from '@trpc/server';
 import { appRouter } from '~/server/routers';
-import { Fingerprint } from '~/server/utils/fingerprint';
 import { getAllServerHosts, getRequestDomainColor } from '~/server/utils/server-domain';
 import { TokenScope } from '~/shared/constants/token-scope.constants';
 
@@ -44,7 +43,6 @@ export const createContext = async ({
     canCache: true,
     skip: false,
   };
-  const fingerprint = new Fingerprint((req.headers['x-fingerprint'] as string) ?? '');
   const domain = getRequestDomainColor(req) ?? 'blue';
 
   // Abort downstream work (Meili, DB calls that plumb signal) when the client
@@ -84,7 +82,6 @@ export const createContext = async ({
     track,
     ip,
     cache,
-    fingerprint,
     res,
     req,
     domain,
@@ -103,7 +100,6 @@ export const publicApiContext2 = async (req: NextApiRequest, res: NextApiRespons
     user: undefined,
     acceptableOrigin: true,
     features: getFeatureFlagsLazy({ req }),
-    fingerprint: new Fingerprint((req.headers['x-fingerprint'] as string) ?? ''),
     track: new Tracker(req, res),
     ip: requestIp.getClientIp(req) ?? '',
     cache: {
@@ -139,7 +135,6 @@ export const publicApiContext = async (req: NextApiRequest, res: NextApiResponse
       canCache: true,
       skip: false,
     },
-    fingerprint: new Fingerprint((req.headers['x-fingerprint'] as string) ?? ''),
     res,
     req,
   };

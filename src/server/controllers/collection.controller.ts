@@ -218,7 +218,7 @@ export const saveItemHandler = async ({
   ctx: ProtectedContext;
   input: AddCollectionItemInput;
 }) => {
-  const { user, ip, fingerprint } = ctx;
+  const { user, ip } = ctx;
   try {
     const status = await saveItemInCollections({
       input: { ...input, userId: user.id, isModerator: user.isModerator },
@@ -232,7 +232,7 @@ export const saveItemHandler = async ({
       if (entityId) {
         await collectedContentReward.apply(
           { collectorId: user.id, entityType: input.type, entityId },
-          { ip, fingerprint }
+          { ip }
         );
       }
     }

@@ -9,7 +9,6 @@ import { redis, REDIS_KEYS } from '~/server/redis/client';
 import type { BuzzAccountType, BuzzSpendType } from '~/shared/constants/buzz.constants';
 import { TransactionType } from '~/shared/constants/buzz.constants';
 import { createBuzzTransactionMany, getMultipliersForUser } from '~/server/services/buzz.service';
-import type { Fingerprint } from '~/server/utils/fingerprint';
 import { hashifyObject } from '~/utils/string-helpers';
 import { withRetries } from '../utils/errorHandling';
 
@@ -200,12 +199,12 @@ export function createBuzzEvent<T>({
     return result; // 0 (capped) or effectiveAward
   };
 
-  const apply = async (input: T, tracking?: { ip?: string; fingerprint?: Fingerprint }) => {
+  const apply = async (input: T, tracking?: { ip?: string }) => {
     if (!clickhouse) return;
     const definedKey = await getKey(input, { ch: clickhouse, db: dbWrite });
     if (!definedKey) return;
 
-    const { ip, fingerprint } = tracking ?? {};
+    const { ip } = tracking ?? {};
     const { rewardsMultiplier } = await getMultipliersForUser(definedKey.toUserId);
 
     const transactionDetails = buzzEvent.getTransactionDetails
@@ -219,7 +218,6 @@ export function createBuzzEvent<T>({
       multiplier: rewardsMultiplier,
       status: 'pending',
       ip: ['::1', ''].includes(ip ?? '') ? undefined : ip,
-      fingerprint: fingerprint?.value,
       transactionDetails: JSON.stringify(transactionDetails ?? {}),
     };
 
@@ -427,7 +425,6 @@ export type BuzzEventLog = BuzzEventKey & {
   multiplier?: number;
   status?: 'pending' | 'awarded' | 'capped' | 'unqualified';
   ip?: string;
-  fingerprint?: string | null; // TODO - rename to deviceId
   version?: number;
   transactionDetails?: string;
 };

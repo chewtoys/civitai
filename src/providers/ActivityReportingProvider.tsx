@@ -1,10 +1,4 @@
-import { useLocalStorage } from '@mantine/hooks';
-import { getCurrentBrowserFingerPrint } from '@rajesh896/broprint.js';
 import type { ReactNode } from 'react';
-import { createContext, useContext, useEffect } from 'react';
-import { useCurrentUser } from '~/hooks/useCurrentUser';
-import { useIsTabActive } from '~/hooks/useIsTabActive';
-import { trpc } from '~/utils/trpc';
 
 const SEND_INTERVAL = 10000;
 const activities: string[] = [];
@@ -49,47 +43,7 @@ function init() {
   initialized = true;
 }
 
-const ActivityReportingContext = createContext<{ fingerprint?: string; anotherTabOpen?: boolean }>(
-  {}
-);
-export const useDeviceFingerprint = () => {
-  const context = useContext(ActivityReportingContext);
-  if (!context)
-    throw new Error('useDeviceFingerprint must be used within a ActivityReportingProvider');
-
-  return context;
-};
-
 export function ActivityReportingProvider({ children }: { children: ReactNode }) {
-  const currentUser = useCurrentUser();
-  // To keep the fingerprint in sync with the local storage
-  const [fingerprint, setFingerprint] = useLocalStorage<string | undefined>({
-    key: 'fingerprint',
-    defaultValue: undefined,
-  });
-  const anotherTabOpen = useIsTabActive();
-
-  const computeFingerprintMutation = trpc.user.ingestFingerprint.useMutation({
-    onSuccess(result) {
-      setFingerprint(result);
-    },
-  });
-
-  useEffect(() => {
-    // Use window to get the current stored value of fingerprint without delay
-    const localFingerprint = window.localStorage.getItem('fingerprint');
-    if (localFingerprint || !currentUser?.id || computeFingerprintMutation.isLoading) return;
-
-    getCurrentBrowserFingerPrint().then((fingerprint) => {
-      computeFingerprintMutation.mutate({ fingerprint: fingerprint.toString() });
-    });
-  }, [currentUser?.id, computeFingerprintMutation.isLoading, fingerprint]);
-
   init();
-
-  return (
-    <ActivityReportingContext.Provider value={{ fingerprint, anotherTabOpen }}>
-      {children}
-    </ActivityReportingContext.Provider>
-  );
+  return <>{children}</>;
 }

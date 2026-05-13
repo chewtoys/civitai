@@ -533,7 +533,13 @@ export async function completeStripeBuzzTransaction({
 
     stage = 'getMultipliersForUser';
     const { purchasesMultiplier } = await getMultipliersForUser(userId);
-    const buzzAmount = Math.ceil(amount * (purchasesMultiplier ?? 1));
+
+    stage = 'getBuzzBulkMultiplier';
+    const { totalCustomBuzz, blueBuzzAdded, bulkBuzzMultiplier } = getBuzzBulkMultiplier({
+      buzzAmount: amount,
+      purchasesMultiplier,
+    });
+    const buzzAmount = totalCustomBuzz;
 
     const body = JSON.stringify({
       amount: buzzAmount,
@@ -545,7 +551,9 @@ export async function completeStripeBuzzTransaction({
         purchasesMultiplier && purchasesMultiplier > 1
           ? 'Multiplier applied due to membership. '
           : ''
-      }A total of ${buzzAmount} Buzz was added to your account.`,
+      }${
+        bulkBuzzMultiplier > 1 ? 'Bulk purchase bonus applied. ' : ''
+      }A total of ${numberWithCommas(buzzAmount)} Buzz was added to your account.`,
       details: { ...(details ?? {}), stripePaymentIntentId },
       externalTransactionId: paymentIntent.id,
     });
@@ -557,9 +565,9 @@ export async function completeStripeBuzzTransaction({
       body,
     });
 
-    // Update the payment intent with the transaction id
-    // A payment intent without a transaction ID can be tied to a DB failure delivering buzz.
-    stage = 'stripe.paymentIntents.update';
+    // Write transactionId immediately so any subsequent failure lets the retry
+    // path skip the main grant via the early-return above.
+    stage = 'stripe.paymentIntents.update:transactionId';
     await stripe.paymentIntents.update(stripePaymentIntentId, {
       metadata: {
         transactionId: data.transactionId,
@@ -567,6 +575,40 @@ export async function completeStripeBuzzTransaction({
         multiplier: purchasesMultiplier,
       },
     });
+
+    // Sub-grants use per-grant metadata flags so retries skip already-completed
+    // steps. Each flag is written immediately after its grant succeeds.
+    if (blueBuzzAdded > 0 && !metadata.blueBuzzGranted) {
+      stage = 'buzzApi.blueBuzzReward';
+      await createBuzzTransaction({
+        amount: blueBuzzAdded,
+        fromAccountId: 0,
+        toAccountId: userId,
+        toAccountType: 'blue',
+        externalTransactionId: `${paymentIntent.id}-bulk-reward`,
+        type: TransactionType.Purchase,
+        description: `A total of ${numberWithCommas(
+          blueBuzzAdded
+        )} Blue Buzz was added to your account for Bulk purchase.`,
+        details: { ...(details ?? {}), stripePaymentIntentId },
+      });
+      stage = 'stripe.paymentIntents.update:blueBuzzGranted';
+      await stripe.paymentIntents.update(stripePaymentIntentId, {
+        metadata: { blueBuzzGranted: 'true' },
+      });
+    }
+
+    if (bulkBuzzMultiplier > 1 && !metadata.cosmeticsGranted) {
+      stage = 'cosmetic.grant';
+      await grantCosmetics({
+        userId,
+        cosmeticIds: specialCosmeticRewards.bulkBuzzRewards,
+      });
+      stage = 'stripe.paymentIntents.update:cosmeticsGranted';
+      await stripe.paymentIntents.update(stripePaymentIntentId, {
+        metadata: { cosmeticsGranted: 'true' },
+      });
+    }
 
     // 2024-12-12: Deprecated
     // await eventEngine.processPurchase({

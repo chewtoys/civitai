@@ -100,7 +100,7 @@ export function UserAvatar({
 }: Props) {
   const theme = useMantineTheme();
   const colorScheme = useComputedColorScheme('dark');
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
   const currentUser = useCurrentUser();
   const browsingLevel = useBrowsingLevelDebounced();
 
@@ -143,7 +143,8 @@ export function UserAvatar({
     avatarUser.profilePicture?.ingestion === 'Pending';
   const blockedProfilePicture =
     avatarUser.profilePicture?.ingestion === 'Blocked' ||
-    (!isPendingOwnerPreview && (!canViewNsfw ? !passesSfwGate : nsfwLevel > browsingLevel));
+    (!isPendingOwnerPreview &&
+      (!features.canViewNsfw ? !passesSfwGate : nsfwLevel > browsingLevel));
   const avatarBgColor = colorScheme === 'dark' ? 'rgba(255,255,255,0.31)' : 'rgba(0,0,0,0.31)';
 
   const image = avatarUser.profilePicture;

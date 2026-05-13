@@ -42,7 +42,7 @@ export function BrowsingLevelProvider({
 }) {
   const ctx = useBrowsingLevelContext();
   const currentUser = useCurrentUser();
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
   const userBrowsingLevel = useBrowsingSettings((state) =>
     state.showNsfw ? state.browsingLevel : publicBrowsingLevelsFlag
   );
@@ -57,7 +57,7 @@ export function BrowsingLevelProvider({
   // Verified bots aren't a special case here — on green they're treated as
   // any public user (PG only); on blue/red their session settings express
   // allBrowsingLevelsFlag and pass through unchecked.
-  const domainForcedLevel = !canViewNsfw
+  const domainForcedLevel = !features.canViewNsfw
     ? currentUser
       ? sfwBrowsingLevelsFlag
       : publicBrowsingLevelsFlag

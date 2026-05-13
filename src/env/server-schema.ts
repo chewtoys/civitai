@@ -183,8 +183,6 @@ export const serverSchema = z.object({
   UPLOAD_PROHIBITED_EXTENSIONS: commaDelimitedStringArray().optional(),
   POST_INTENT_DETAILS_HOSTS: z.preprocess(stringToArray, z.array(z.url()).optional()),
   CHOPPED_TOKEN: z.string().optional(),
-  FINGERPRINT_SECRET: z.string().length(64).optional(),
-  FINGERPRINT_IV: z.string().length(32).optional(),
   TIER_METADATA_KEY: z.string().default('tier'),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
@@ -287,6 +285,11 @@ export const serverSchema = z.object({
   // Storage resolver internal API (for registering B2 uploads)
   STORAGE_RESOLVER_INTERNAL_URL: z.string().optional(),
   STORAGE_RESOLVER_INTERNAL_TOKEN: z.string().optional(),
+
+  // Image-cacher invalidation endpoint (cluster-internal). Used to clear
+  // image-cacher's Redis L2 cache + Cloudflare cache after we delete an
+  // image from B2. Optional — if unset, invalidation is skipped.
+  IMAGE_CACHER_URL: z.url().optional(),
 
   // BitDex
   BITDEX_URL: z.string().optional().default(''),

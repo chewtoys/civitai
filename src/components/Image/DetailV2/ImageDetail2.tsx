@@ -258,6 +258,13 @@ export function ImageDetail2() {
               : undefined,
           }
         : undefined,
+    creditText:
+      image.user.username && !image.user.deletedAt ? image.user.username : undefined,
+    copyrightNotice:
+      image.user.username && !image.user.deletedAt ? `© ${image.user.username}` : undefined,
+    acquireLicensePage: env.NEXT_PUBLIC_BASE_URL
+      ? `${env.NEXT_PUBLIC_BASE_URL}/images/${image.id}`
+      : undefined,
     uploadDate: image.createdAt,
     datePublished: image.createdAt,
   };

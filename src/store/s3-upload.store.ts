@@ -228,25 +228,26 @@ export const useS3UploadStore = create<StoreProps>()(
             else state.items.push(trackedFile);
           });
 
-          // Upload tracking
+          // Upload tracking - track per-part bytes so concurrent uploads aggregate correctly
           const uploadStart = Date.now();
-          let totalUploaded = 0;
-          const updateProgress = ({ loaded }: ProgressEvent) => {
-            const uploaded = totalUploaded + (loaded ?? 0);
-            if (uploaded) {
-              const secondsElapsed = (Date.now() - uploadStart) / 1000;
-              const speed = uploaded / secondsElapsed;
-              const timeRemaining = (size - uploaded) / speed;
-              const progress = size ? (uploaded / size) * 100 : 0;
-              updateFile(pendingItem.uuid, {
-                progress,
-                uploaded,
-                size,
-                speed,
-                timeRemaining,
-                status: 'uploading',
-              });
-            }
+          const partProgress = new Map<number, number>();
+          const activeXhrs = new Set<XMLHttpRequest>();
+          const updateProgress = () => {
+            let uploaded = 0;
+            for (const v of partProgress.values()) uploaded += v;
+            if (!uploaded) return;
+            const secondsElapsed = (Date.now() - uploadStart) / 1000;
+            const speed = uploaded / secondsElapsed;
+            const timeRemaining = (size - uploaded) / speed;
+            const progress = size ? (uploaded / size) * 100 : 0;
+            updateFile(pendingItem.uuid, {
+              progress,
+              uploaded,
+              size,
+              speed,
+              timeRemaining,
+              status: 'uploading',
+            });
           };
 
           // Prepare abort
@@ -279,6 +280,7 @@ export const useS3UploadStore = create<StoreProps>()(
 
           // Prepare part upload
           const partsCount = urls.length;
+          const parts: { ETag: string; PartNumber: number }[] = [];
           const uploadPart = (url: string, i: number) =>
             new Promise<UploadStatus>((resolve, reject) => {
               let eTag: string;
@@ -286,11 +288,16 @@ export const useS3UploadStore = create<StoreProps>()(
               const end = i * FILE_CHUNK_SIZE;
               const part = i === partsCount ? file.slice(start) : file.slice(start, end);
               const xhr = new XMLHttpRequest();
-              xhr.upload.addEventListener('progress', updateProgress);
+              activeXhrs.add(xhr);
+              xhr.upload.addEventListener('progress', ({ loaded }) => {
+                partProgress.set(i, loaded);
+                updateProgress();
+              });
               xhr.upload.addEventListener('loadend', ({ loaded }) => {
-                totalUploaded += loaded;
+                partProgress.set(i, loaded);
               });
               xhr.addEventListener('loadend', () => {
+                activeXhrs.delete(xhr);
                 const success = xhr.readyState === 4 && xhr.status === 200;
                 if (success) {
                   parts.push({ ETag: eTag, PartNumber: i });
@@ -300,57 +307,101 @@ export const useS3UploadStore = create<StoreProps>()(
               xhr.addEventListener('load', () => {
                 eTag = xhr.getResponseHeader('ETag') ?? '';
               });
-              xhr.addEventListener('error', () => reject('error'));
-              xhr.addEventListener('abort', () => reject('aborted'));
+              xhr.addEventListener('error', () => {
+                activeXhrs.delete(xhr);
+                reject('error');
+              });
+              xhr.addEventListener('abort', () => {
+                activeXhrs.delete(xhr);
+                reject('aborted');
+              });
               xhr.open('PUT', url);
               xhr.setRequestHeader('Content-Type', 'application/octet-stream');
               xhr.send(part);
-              // currentXhr = xhr;
-              try {
-                updateFile(pendingItem.uuid, {
-                  abort: () => {
-                    if (xhr) xhr.abort();
-                  },
-                });
-              } catch (e) {
-                resolve('error');
-              }
             });
 
-          // Make part requests
-          const parts: { ETag: string; PartNumber: number }[] = [];
-          for (const { url, partNumber } of urls as { url: string; partNumber: number }[]) {
-            let uploadStatus: UploadStatus = 'pending';
+          // Shared cancellation: trips on user abort or first fatal failure so sleeping
+          // retry workers don't fire zombie PUTs after the upload has been torn down.
+          const cancelController = new AbortController();
+          const cancellableSleep = (ms: number) =>
+            new Promise<void>((resolve) => {
+              if (cancelController.signal.aborted) return resolve();
+              const onDone = () => {
+                cancelController.signal.removeEventListener('abort', onDone);
+                clearTimeout(t);
+                resolve();
+              };
+              const t = setTimeout(onDone, ms);
+              cancelController.signal.addEventListener('abort', onDone);
+            });
 
-            // Retry up to 3 times
-            let retryCount = 0;
-            while (retryCount < 3) {
-              uploadStatus = await uploadPart(url, partNumber);
-              if (uploadStatus !== 'error') break;
-              retryCount++;
-              await new Promise((resolve) => setTimeout(resolve, 5000 * retryCount));
-            }
-
-            // If we failed to upload, abort the whole thing
-            if (uploadStatus !== 'success') {
-              try {
-                updateFile(pendingItem.uuid, {
-                  status: uploadStatus,
-                  progress: 0,
-                  speed: 0,
-                  timeRemaining: 0,
-                  uploaded: 0,
-                });
-
-                await abortUpload();
-              } catch (err) {
-                console.error('Failed to abort upload');
-                console.error(err);
-              }
-
-              return;
-            }
+          // Register abort that trips the signal and cancels every in-flight part xhr
+          try {
+            updateFile(pendingItem.uuid, {
+              abort: () => {
+                cancelController.abort();
+                for (const x of activeXhrs) x.abort();
+              },
+            });
+          } catch (e) {
+            // ignore - upload will surface the failure
           }
+
+          // Worker pool over remaining parts
+          const queue = [...(urls as { url: string; partNumber: number }[])];
+          let failureStatus: UploadStatus | null = null;
+
+          const runWorker = async () => {
+            while (queue.length > 0 && !failureStatus) {
+              if (cancelController.signal.aborted) return;
+              const item = queue.shift();
+              if (!item) return;
+              let status: UploadStatus = 'pending';
+              let retryCount = 0;
+              while (retryCount < 3) {
+                if (cancelController.signal.aborted) return;
+                try {
+                  status = await uploadPart(item.url, item.partNumber);
+                } catch (e) {
+                  status = e === 'aborted' ? 'aborted' : 'error';
+                }
+                if (status !== 'error') break;
+                retryCount++;
+                await cancellableSleep(5000 * retryCount);
+              }
+              if (status !== 'success') {
+                // First failure wins so a real error doesn't get masked by a later abort
+                if (!failureStatus) failureStatus = status;
+                cancelController.abort();
+                for (const x of activeXhrs) x.abort();
+                return;
+              }
+            }
+          };
+
+          await Promise.all(
+            Array.from({ length: Math.min(CONCURRENT_PARTS, urls.length) }, () => runWorker())
+          );
+
+          if (failureStatus) {
+            try {
+              updateFile(pendingItem.uuid, {
+                status: failureStatus,
+                progress: 0,
+                speed: 0,
+                timeRemaining: 0,
+                uploaded: 0,
+              });
+              await abortUpload();
+            } catch (err) {
+              console.error('Failed to abort upload');
+              console.error(err);
+            }
+            return;
+          }
+
+          // S3 requires parts ordered by PartNumber in CompleteMultipartUpload
+          parts.sort((a, b) => a.PartNumber - b.PartNumber);
 
           // Complete the multipart upload
           const completeResult = await completeUpload().catch((err) => {
@@ -381,7 +432,8 @@ export const useS3UploadStore = create<StoreProps>()(
   })
 );
 
-const FILE_CHUNK_SIZE = 100 * 1024 * 1024; // 100 MB
+const FILE_CHUNK_SIZE = 25 * 1024 * 1024; // 25 MB
+const CONCURRENT_PARTS = 4;
 const pendingTrackedFile: Omit<TrackedFile, 'uuid' | 'file' | 'name'> = {
   progress: 0,
   uploaded: 0,
