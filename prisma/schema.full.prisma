@@ -1955,6 +1955,8 @@ enum TagSource {
   HiveDemographics
   Clavata
   SpineRating
+  AiRecognition
+  AnimeRecognition
 }
 
 model TagsOnImageNew {
@@ -5508,4 +5510,27 @@ model GenerationPreset {
   @@unique([userId, ecosystem, name])
   @@index([userId])
   @@index([userId, ecosystem])
+}
+
+enum ReviewVerdict {
+  TruePositive
+  FalsePositive
+  TrueNegative
+  FalseNegative
+  Unsure
+}
+
+model ScannerLabelReview {
+  id          Int           @id @default(autoincrement())
+  contentHash String
+  version     String
+  label       String
+  reviewedBy  Int
+  reviewedAt  DateTime      @default(now())
+  verdict     ReviewVerdict
+  note        String?
+
+  @@unique([contentHash, version, label, reviewedBy])
+  @@index([verdict, label])
+  @@index([reviewedAt])
 }
