@@ -129,6 +129,7 @@ export const ECO = {
   HyDit1: 12,
   AuraFlow: 13,
   HiDream: 14,
+  HiDreamO1: 69,
   Kolors: 15,
   Lumina: 16,
   Mochi: 17,
@@ -593,6 +594,12 @@ export const ecosystems: EcosystemRecord[] = [
     displayName: 'HiDream',
     sortOrder: 203,
   },
+  {
+    id: ECO.HiDreamO1,
+    key: 'HiDreamO1',
+    displayName: 'HiDream O1',
+    sortOrder: 203,
+  },
   { id: ECO.Kolors, key: 'Kolors', displayName: 'Kolors', sortOrder: 204 },
   {
     id: ECO.LTXV,
@@ -806,6 +813,9 @@ export const ecosystemSupport: EcosystemSupport[] = [
   // HiDream - checkpoint and LORA
   { ecosystemId: ECO.HiDream, supportType: 'generation', modelTypes: checkpointAndLora },
   { ecosystemId: ECO.HiDream, supportType: 'training', modelTypes: [ModelType.LORA] },
+
+  // HiDream O1 - training only (preview)
+  { ecosystemId: ECO.HiDreamO1, supportType: 'training', modelTypes: [ModelType.LORA] },
 
   // NanoBanana - checkpoint only
   { ecosystemId: ECO.NanoBanana, supportType: 'generation', modelTypes: checkpointOnly },
@@ -1641,6 +1651,7 @@ export const BM = {
   Flux2Klein_4B: 75,
   Flux2Klein_4B_base: 76,
   HiDream: 9,
+  HiDreamO1: 87,
   Hunyuan1: 10,
   HunyuanVideo: 11,
   Illustrious: 12,
@@ -2161,6 +2172,16 @@ export const baseModelRecords: BaseModelRecord[] = [
     type: 'image',
     ecosystemId: ECO.HiDream,
     licenseId: 19,
+  },
+  {
+    id: BM.HiDreamO1,
+    name: 'HiDream O1',
+    description:
+      '8B text-to-image foundation model from HiDream.ai using a pixel-level unified transformer architecture',
+    type: 'image',
+    ecosystemId: ECO.HiDreamO1,
+    licenseId: 19,
+    experimental: true,
   },
 
   // Hunyuan
