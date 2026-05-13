@@ -201,3 +201,89 @@ export const grantCosmetics = async ({
     ON CONFLICT DO NOTHING;
   `;
 };
+
+/**
+ * Resolve a target descriptor (collection of approved items, or explicit
+ * userIds) to the set of users that should receive a cosmetic, then grant it.
+ *
+ * - `target.type === 'collection'`: every user whose CollectionItem in that
+ *   collection has status ACCEPTED (the moderator-approved state). When
+ *   `requireApproved` is false, includes REVIEW + REJECTED too — rare, but
+ *   supported for completeness.
+ * - `target.type === 'userIds'`: exactly the listed users.
+ *
+ * `dryRun: true` resolves and returns the user list without granting.
+ */
+export async function assignCosmeticByTarget({
+  cosmeticId,
+  target,
+  dryRun = false,
+}: {
+  cosmeticId: number;
+  target:
+    | { type: 'collection'; collectionId: number; requireApproved?: boolean }
+    | { type: 'userIds'; userIds: number[] };
+  dryRun?: boolean;
+}) {
+  let userIds: number[];
+  if (target.type === 'userIds') {
+    userIds = Array.from(new Set(target.userIds));
+  } else {
+    const requireApproved = target.requireApproved ?? true;
+    const rows = await dbRead.$queryRaw<{ userId: number }[]>`
+      SELECT DISTINCT ci."addedById" AS "userId"
+      FROM "CollectionItem" ci
+      WHERE ci."collectionId" = ${target.collectionId}
+        AND ci."addedById" IS NOT NULL
+        ${requireApproved ? Prisma.sql`AND ci."status" = 'ACCEPTED'::"CollectionItemStatus"` : Prisma.empty}
+    `;
+    userIds = rows.map((r) => r.userId);
+  }
+
+  if (dryRun) {
+    return { granted: 0, userIds, dryRun: true };
+  }
+
+  for (const userId of userIds) {
+    await grantCosmetics({ userId, cosmeticIds: [cosmeticId] });
+  }
+
+  return { granted: userIds.length, userIds, dryRun: false };
+}
+
+export async function unassignCosmetic({
+  cosmeticId,
+  userIds,
+}: {
+  cosmeticId: number;
+  userIds: number[];
+}) {
+  if (userIds.length === 0) return { count: 0 };
+  const result = await dbWrite.userCosmetic.deleteMany({
+    where: { cosmeticId, userId: { in: userIds } },
+  });
+  return { count: result.count };
+}
+
+export async function createCosmetic(
+  data: Prisma.CosmeticUncheckedCreateInput
+) {
+  const cosmetic = await dbWrite.cosmetic.create({ data });
+  return cosmetic;
+}
+
+export async function updateCosmetic({
+  id,
+  data,
+}: {
+  id: number;
+  data: Prisma.CosmeticUncheckedUpdateInput;
+}) {
+  const cosmetic = await dbWrite.cosmetic.update({ where: { id }, data });
+  return cosmetic;
+}
+
+export async function deleteCosmetic({ id }: { id: number }) {
+  await dbWrite.cosmetic.delete({ where: { id } });
+  return { deleted: true };
+}

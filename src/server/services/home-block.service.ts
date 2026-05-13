@@ -692,6 +692,73 @@ export const acknowledgeFeaturedCollection = async ({ collectionId }: { collecti
   });
 };
 
+/**
+ * Mod-driven HomeBlock writes (Retool / future on-site Manager UI). Bypass the
+ * per-user ownership checks in `upsertHomeBlock`/`deleteHomeBlockById` since
+ * mods are operating on system-owned home blocks.
+ */
+export async function createHomeBlockAdmin({
+  userId,
+  type,
+  metadata,
+  sourceId,
+  index,
+  permanent,
+}: {
+  userId: number;
+  type: HomeBlockType;
+  metadata: Prisma.InputJsonValue;
+  sourceId?: number;
+  index?: number;
+  permanent?: boolean;
+}) {
+  return dbWrite.homeBlock.create({
+    data: { userId, type, metadata, sourceId, index, permanent: permanent ?? false },
+  });
+}
+
+export async function updateHomeBlockAdmin({
+  id,
+  metadata,
+  index,
+  permanent,
+  type,
+  sourceId,
+}: {
+  id: number;
+  metadata?: Prisma.InputJsonValue;
+  index?: number | null;
+  permanent?: boolean;
+  type?: HomeBlockType;
+  sourceId?: number | null;
+}) {
+  const data: Prisma.HomeBlockUncheckedUpdateInput = {};
+  if (metadata !== undefined) data.metadata = metadata;
+  if (index !== undefined) data.index = index;
+  if (permanent !== undefined) data.permanent = permanent;
+  if (type !== undefined) data.type = type;
+  if (sourceId !== undefined) data.sourceId = sourceId;
+  return dbWrite.homeBlock.update({ where: { id }, data });
+}
+
+export async function deleteHomeBlockAdmin({ id }: { id: number }) {
+  await dbWrite.homeBlock.delete({ where: { id } });
+  return { deleted: true };
+}
+
+export async function reorderHomeBlocksAdmin({
+  orderedIds,
+}: {
+  orderedIds: number[];
+}) {
+  await dbWrite.$transaction(
+    orderedIds.map((id, index) =>
+      dbWrite.homeBlock.update({ where: { id }, data: { index } })
+    )
+  );
+  return { count: orderedIds.length };
+}
+
 export const setHomeBlocksOrder = async ({
   input,
 }: {

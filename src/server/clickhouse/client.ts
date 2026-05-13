@@ -649,4 +649,22 @@ export class Tracker {
   }) {
     return this.track('moderationRequest', { ...values }, { skipActorMeta: true });
   }
+
+  public retoolAudit(values: {
+    action: string;
+    privileged: boolean;
+    outcome: 'ok' | 'error';
+    errorMsg?: string;
+    payload: Record<string, unknown>;
+    affected?: Record<string, unknown>;
+  }) {
+    return this.track('retoolAuditLog', {
+      action: values.action,
+      privileged: values.privileged ? 1 : 0,
+      outcome: values.outcome,
+      errorMsg: values.errorMsg ?? '',
+      payload: JSON.stringify(values.payload),
+      affected: values.affected ? JSON.stringify(values.affected) : '',
+    });
+  }
 }

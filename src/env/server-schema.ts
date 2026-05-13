@@ -87,6 +87,18 @@ export const serverSchema = z.object({
   JOB_TOKEN: z.string(),
   WEBHOOK_URL: z.url().optional(),
   WEBHOOK_TOKEN: z.string(),
+  SUPER_ADMIN_USER_IDS: z
+    .preprocess(
+      (val) =>
+        typeof val === 'string'
+          ? val
+              .split(',')
+              .map((s) => Number(s.trim()))
+              .filter((n) => Number.isFinite(n))
+          : [],
+      z.array(z.number().int().positive())
+    )
+    .default([]),
   UNAUTHENTICATED_DOWNLOAD: zc.booleanString,
   UNAUTHENTICATED_LIST_NSFW: zc.booleanString,
   LOGGING: commaDelimitedStringArray(),

@@ -372,6 +372,117 @@ export const isUsernamePermitted = async (username: string): Promise<boolean> =>
   return !(dynamicExact.some((x) => lower === x) || dynamicPartial.some((x) => lower.includes(x)));
 };
 
+/**
+ * Mod-driven: clear public profile fields (location/bio/message) on UserProfile.
+ * No-op if no UserProfile row exists yet.
+ */
+export async function clearUserProfileFields({
+  userId,
+  fields = ['location', 'bio', 'message'],
+}: {
+  userId: number;
+  fields?: Array<'location' | 'bio' | 'message'>;
+}) {
+  if (fields.length === 0) return { updated: false };
+  const data: Prisma.UserProfileUpdateInput = {};
+  if (fields.includes('location')) data.location = null;
+  if (fields.includes('bio')) data.bio = null;
+  if (fields.includes('message')) data.message = null;
+  const result = await dbWrite.userProfile.updateMany({ where: { userId }, data });
+  return { updated: result.count > 0 };
+}
+
+/**
+ * Mod-driven: explicit mute/unmute (vs. legacy toggle).
+ */
+export async function setUserMuted({
+  userId,
+  muted,
+}: {
+  userId: number;
+  muted: boolean;
+}) {
+  const date = new Date();
+  const user = await updateUserById({
+    id: userId,
+    data: {
+      muted,
+      mutedAt: muted ? date : null,
+      muteConfirmedAt: muted ? date : null,
+    },
+    updateSource: muted ? 'retool:mute' : 'retool:unmute',
+  });
+  const { invalidateSession } = await import('~/server/auth/session-invalidation');
+  await invalidateSession(userId);
+  return user;
+}
+
+/**
+ * Privileged: set the moderator flag on a user. Caller is responsible for
+ * super-admin allowlist gating (handled by RetoolEndpoint).
+ */
+export async function setUserModerator({
+  userId,
+  isModerator,
+}: {
+  userId: number;
+  isModerator: boolean;
+}) {
+  const user = await updateUserById({
+    id: userId,
+    data: { isModerator },
+    updateSource: 'retool:setModerator',
+  });
+  const { invalidateSession } = await import('~/server/auth/session-invalidation');
+  await invalidateSession(userId);
+  return user;
+}
+
+/**
+ * Privileged: forcibly update username / email / display name. Bypasses the
+ * "don't overwrite existing email" guard on `updateUserById` because the whole
+ * point of this endpoint is letting mods correct identity fields.
+ *
+ * Uniqueness enforcement is delegated to the DB constraints on User (username
+ * + email) — Prisma will throw a P2002 which surfaces as a 500 with the
+ * conflicting target.
+ */
+export async function forceUpdateUserIdentity({
+  userId,
+  username,
+  email,
+  name,
+}: {
+  userId: number;
+  username?: string;
+  email?: string;
+  name?: string;
+}) {
+  const data: Prisma.UserUpdateInput = {};
+  if (username !== undefined) data.username = username;
+  if (email !== undefined) data.email = email;
+  if (name !== undefined) data.name = name;
+  if (Object.keys(data).length === 0) return { updated: false };
+
+  const user = await dbWrite.user.update({ where: { id: userId }, data });
+  userUpdateCounter?.inc({ location: 'user.service:forceUpdateUserIdentity' });
+
+  if (data.username !== undefined || data.image !== undefined) {
+    await deleteBasicDataForUser(userId);
+  }
+  if (data.email && user.paddleCustomerId) {
+    await updatePaddleCustomerEmail({
+      customerId: user.paddleCustomerId,
+      email: data.email as string,
+    });
+  }
+
+  const { invalidateSession } = await import('~/server/auth/session-invalidation');
+  await invalidateSession(userId);
+
+  return { updated: true, user };
+}
+
 export const updateUserById = async ({
   id,
   data,
@@ -1349,6 +1460,16 @@ export const toggleBan = async ({
           error,
         });
       }),
+
+      // Wipe public-profile UserLink rows so banned users' off-site links
+      // disappear immediately (replaces a manual Retool DELETE step).
+      dbWrite.userLink.deleteMany({ where: { userId: id } }).catch((error) =>
+        logToAxiom({
+          type: 'error',
+          name: 'ban-user-delete-user-links',
+          message: (error as Error).message,
+        })
+      ),
 
       // Group B: External operations (subscription + search indexes)
       Promise.all([

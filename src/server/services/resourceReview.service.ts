@@ -326,6 +326,29 @@ export const deleteResourceReview = ({ id }: GetByIdInput) => {
   return dbWrite.resourceReview.delete({ where: { id } });
 };
 
+export async function setExcludeResourceReviews({
+  ids,
+  exclude,
+}: {
+  ids: number[];
+  exclude: boolean;
+}) {
+  if (ids.length === 0) return { count: 0 };
+  const result = await dbWrite.resourceReview.updateMany({
+    where: { id: { in: ids } },
+    data: { exclude },
+  });
+  return { count: result.count };
+}
+
+export async function deleteResourceReviews({ ids }: { ids: number[] }) {
+  if (ids.length === 0) return { count: 0 };
+  const result = await dbWrite.resourceReview.deleteMany({
+    where: { id: { in: ids } },
+  });
+  return { count: result.count };
+}
+
 export const createResourceReview = async (
   data: CreateResourceReviewInput & { userId: number }
 ) => {

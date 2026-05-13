@@ -781,6 +781,9 @@ export const REDIS_SYS_KEYS = {
   WEBHOOKS: {
     MODEL_FILE_SCAN_PROCESSED: 'webhooks:model-file-scan:processed',
   },
+  RETOOL_ENDPOINT: {
+    RATE_LIMIT: 'retool-endpoint:rate-limit',
+  },
 } as const;
 
 // Cached data
