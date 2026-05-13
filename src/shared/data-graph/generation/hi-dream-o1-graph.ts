@@ -55,19 +55,25 @@ const stepsByVariant: Record<HiDreamO1Variant, number> = {
   dev: 28,
 };
 
+/** CFG defaults per variant — dev is a distilled (CFG=1) model. */
+const cfgByVariant: Record<HiDreamO1Variant, number> = {
+  full: 4.5,
+  dev: 1,
+};
+
 // =============================================================================
 // Aspect Ratios
 // =============================================================================
 
-/** HiDream-O1 aspect ratios — 1024 base, dimensions divisible by 64 */
+/** HiDream-O1 aspect ratios — 2K native, dimensions divisible by 64 */
 const hiDreamO1AspectRatios = [
-  { label: '16:9', value: '16:9', width: 1408, height: 768 },
-  { label: '3:2', value: '3:2', width: 1216, height: 832 },
-  { label: '4:3', value: '4:3', width: 1152, height: 896 },
-  { label: '1:1', value: '1:1', width: 1024, height: 1024 },
-  { label: '3:4', value: '3:4', width: 896, height: 1152 },
-  { label: '2:3', value: '2:3', width: 832, height: 1216 },
-  { label: '9:16', value: '9:16', width: 768, height: 1408 },
+  { label: '16:9', value: '16:9', width: 2816, height: 1536 },
+  { label: '3:2', value: '3:2', width: 2432, height: 1664 },
+  { label: '4:3', value: '4:3', width: 2304, height: 1792 },
+  { label: '1:1', value: '1:1', width: 2048, height: 2048 },
+  { label: '3:4', value: '3:4', width: 1792, height: 2304 },
+  { label: '2:3', value: '2:3', width: 1664, height: 2432 },
+  { label: '9:16', value: '9:16', width: 1536, height: 2816 },
 ];
 
 // =============================================================================
@@ -105,13 +111,15 @@ export const hiDreamO1Graph = new DataGraph<
   // LoRA resources — both variants support LoRAs
   .merge(createResourcesGraph())
   .node('aspectRatio', aspectRatioNode({ options: hiDreamO1AspectRatios, defaultValue: '1:1' }))
-  .node('cfgScale', sliderNode({ min: 1, max: 20, defaultValue: 4.5, step: 0.5 }))
+  .node('cfgScale', sliderNode({ min: 1, max: 20, defaultValue: cfgByVariant.dev, step: 0.5 }))
   .node('steps', sliderNode({ min: 1, max: 100, defaultValue: stepsByVariant.dev }))
-  // Reset steps when switching variants — the form's persisted value remains
-  // valid in the new branch's range, so we explicitly reset to the variant default.
+  // Reset steps + cfgScale when switching variants — the form's persisted value
+  // remains valid in the new branch's range, so we explicitly reset to the
+  // variant defaults (dev is distilled and needs cfg=1).
   .effect(
     (ctx, _ext, set) => {
       set('steps', stepsByVariant[ctx.hiDreamO1Variant]);
+      set('cfgScale', cfgByVariant[ctx.hiDreamO1Variant]);
     },
     ['hiDreamO1Variant']
   )
