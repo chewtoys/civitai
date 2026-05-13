@@ -40,18 +40,16 @@ function createMocks({
 }
 
 // --- Hoisted mocks ---
-const { mockGetSession, mockRedis, mockEnv, mockRetoolAudit } = vi.hoisted(() => ({
+const { mockGetSession, mockRedis, mockRetoolAudit } = vi.hoisted(() => ({
   mockGetSession: vi.fn(),
   mockRedis: {
     incr: vi.fn().mockResolvedValue(1),
     expire: vi.fn().mockResolvedValue(1),
     ttl: vi.fn().mockResolvedValue(60),
   },
-  mockEnv: { SUPER_ADMIN_USER_IDS: [42] as number[] },
   mockRetoolAudit: vi.fn(),
 }));
 
-vi.mock('~/env/server', () => ({ env: mockEnv }));
 vi.mock('~/server/auth/bearer-token', () => ({
   getSessionFromBearerToken: mockGetSession,
 }));
@@ -91,7 +89,7 @@ function buildHandler(handlerSpy = vi.fn().mockResolvedValue({ ok: true })) {
       }),
       privilegedPing: retoolAction({
         input: z.object({ value: z.coerce.number().int() }),
-        privileged: true,
+        privileged: 'retoolPrivilegedPing',
         rateLimit: { max: 5, windowSeconds: 60 },
         async handler(input, ctx) {
           return handlerSpy(input, ctx);
@@ -106,7 +104,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockRedis.incr.mockResolvedValue(1);
   mockRedis.ttl.mockResolvedValue(60);
-  mockEnv.SUPER_ADMIN_USER_IDS = [42];
 });
 
 describe('defineRetoolEndpoint', () => {
@@ -178,7 +175,22 @@ describe('defineRetoolEndpoint', () => {
     expect(res._getStatusCode()).toBe(400);
   });
 
-  it('rejects privileged actions when the actor is not super-admin', async () => {
+  it('rejects privileged actions when the actor lacks the granted permission', async () => {
+    mockGetSession.mockResolvedValueOnce({
+      user: { id: 7, isModerator: true, permissions: ['otherFlag'] },
+    });
+    const { handler, handlerSpy } = buildHandler();
+    const { req, res } = createMocks({
+      method: 'POST',
+      headers: { authorization: 'Bearer key' },
+      body: { action: 'privilegedPing', value: 1 },
+    });
+    await handler(req as never, res as never);
+    expect(res._getStatusCode()).toBe(403);
+    expect(handlerSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects privileged actions when the actor has no permissions array', async () => {
     mockGetSession.mockResolvedValueOnce({
       user: { id: 7, isModerator: true },
     });
@@ -193,9 +205,9 @@ describe('defineRetoolEndpoint', () => {
     expect(handlerSpy).not.toHaveBeenCalled();
   });
 
-  it('allows privileged actions for super-admin actors and emits an audit row', async () => {
+  it('allows privileged actions when the actor has the granted permission and emits an audit row', async () => {
     mockGetSession.mockResolvedValueOnce({
-      user: { id: 42, isModerator: true },
+      user: { id: 42, isModerator: true, permissions: ['retoolPrivilegedPing'] },
     });
     const { handler, handlerSpy } = buildHandler(
       vi.fn().mockResolvedValue({ affected: { userIds: [1] }, value: 7 })

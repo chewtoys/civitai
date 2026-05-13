@@ -3,7 +3,6 @@ import { withAxiom } from '@civitai/next-axiom';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import type { SessionUser } from 'next-auth';
 import * as z from 'zod';
-import { env } from '~/env/server';
 import { Tracker } from '~/server/clickhouse/client';
 import { getSessionFromBearerToken } from '~/server/auth/bearer-token';
 import { sysRedis, REDIS_SYS_KEYS } from '~/server/redis/client';
@@ -20,7 +19,13 @@ export type RetoolCtx = {
 
 export interface RetoolAction<TInput extends z.ZodObject<z.ZodRawShape>, TOutput> {
   input: TInput;
-  privileged?: boolean;
+  /**
+   * Permission key required to invoke the action. Maps to a `granted`-availability
+   * feature flag in `feature-flags.service.ts`. The calling moderator must have
+   * the matching entry in `user.permissions`. Absent = no extra gate beyond the
+   * baseline `isModerator` check.
+   */
+  privileged?: string;
   rateLimit?: { max: number; windowSeconds: number };
   // Method syntax (intentional) — bivariant params let us store concrete
   // action types in a `Record<string, RetoolAction<ZodObject<any>, any>>`
@@ -57,8 +62,9 @@ const DEFAULT_RATE_LIMIT = { max: 60, windowSeconds: 60 } as const;
  * limit + audit logging, and dispatches to the matching handler.
  *
  * Auth: `Authorization: Bearer <user API key>` resolves to a Civitai user. The user
- * must be a moderator. Privileged actions additionally require the user be in the
- * `SUPER_ADMIN_USER_IDS` env allowlist.
+ * must be a moderator. Privileged actions additionally require the matching
+ * permission key in `user.permissions` (granted via the standard `granted`
+ * feature-flag system).
  *
  * Audit: every call (success and error) emits a `retoolAuditLog` event to ClickHouse
  * via the Tracker client.
@@ -123,11 +129,11 @@ export function defineRetoolEndpoint<TRegistry extends RetoolRegistry>(
     const action = actions[input.action as string];
     const actionKey = `${domain}.${String(input.action)}`;
 
-    // 3. Privileged gate
-    if (action.privileged && !env.SUPER_ADMIN_USER_IDS.includes(actor.id)) {
+    // 3. Privileged gate — granted permission required.
+    if (action.privileged && !actor.permissions?.includes(action.privileged)) {
       return res
         .status(403)
-        .json({ error: 'Super-admin allowlist required for this action' });
+        .json({ error: `Permission "${action.privileged}" required for this action` });
     }
 
     // 4. Rate limit (per action, per actor)
@@ -161,7 +167,7 @@ export function defineRetoolEndpoint<TRegistry extends RetoolRegistry>(
       const { affected, ...response } = extractAffected(result);
       void tracker.retoolAudit({
         action: actionKey,
-        privileged: action.privileged ?? false,
+        privileged: Boolean(action.privileged),
         outcome: 'ok',
         payload,
         affected,
@@ -171,7 +177,7 @@ export function defineRetoolEndpoint<TRegistry extends RetoolRegistry>(
       const err = e as Error;
       void tracker.retoolAudit({
         action: actionKey,
-        privileged: action.privileged ?? false,
+        privileged: Boolean(action.privileged),
         outcome: 'error',
         errorMsg: err.message ?? String(e),
         payload,

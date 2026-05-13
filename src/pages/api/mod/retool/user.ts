@@ -3,7 +3,9 @@
  * =============================================================================
  *
  * Auth: Bearer <user API key> (mod role required). Privileged actions
- * additionally require the actor be in SUPER_ADMIN_USER_IDS.
+ * additionally require the matching granted permission in user.permissions:
+ *   - updateIdentity   → `retoolUpdateIdentity`
+ *   - toggleModerator  → `retoolToggleModerator`
  *
  * POST /api/mod/retool/user
  * Body: { "action": "<action>", ...params }
@@ -69,7 +71,7 @@ export default defineRetoolEndpoint('user', {
         (d) => d.username !== undefined || d.email !== undefined || d.name !== undefined,
         { message: 'At least one of username, email, name must be provided' }
       ),
-    privileged: true,
+    privileged: 'retoolUpdateIdentity',
     rateLimit: { max: 20, windowSeconds: 60 },
     async handler(input) {
       const result = await forceUpdateUserIdentity({
@@ -89,7 +91,7 @@ export default defineRetoolEndpoint('user', {
       userId,
       isModerator: z.coerce.boolean(),
     }),
-    privileged: true,
+    privileged: 'retoolToggleModerator',
     rateLimit: { max: 10, windowSeconds: 60 },
     async handler(input) {
       await setUserModerator({ userId: input.userId, isModerator: input.isModerator });

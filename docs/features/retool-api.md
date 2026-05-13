@@ -10,7 +10,14 @@ You're building a Retool workflow (or any external automation) that needs to per
 
 `Authorization: Bearer <USER_API_KEY>` — the key must belong to a user with `isModerator: true`.
 
-Privileged actions (`user.updateIdentity`, `user.toggleModerator`) additionally require the calling user to be in the `SUPER_ADMIN_USER_IDS` env allowlist.
+Privileged actions additionally require the matching `granted` permission in `user.permissions`. Each privileged action names the permission key it needs (declared on the action's `privileged` field, which maps to a `granted`-availability flag in `feature-flags.service.ts`). Today:
+
+| Action | Permission key |
+|---|---|
+| `user.updateIdentity` | `retoolUpdateIdentity` |
+| `user.toggleModerator` | `retoolToggleModerator` |
+
+Grant these through the normal feature-flag grant flow (the same one that backs `paddleAdjustments`, `announcements`, `blocklists`, etc.).
 
 ## Request shape
 
@@ -29,7 +36,7 @@ Params are validated by the action's Zod schema. Validation errors return `400` 
 200 OK   → { ...handler return value }
 400      → { error, issues: [...] } (schema mismatch)
 401      → { error: 'Missing or malformed Bearer token' | 'Invalid API key' }
-403      → { error: 'Moderator role required' | 'Super-admin allowlist required for this action' }
+403      → { error: 'Moderator role required' | 'Permission "<key>" required for this action' }
 405      → { error: 'Method not allowed' }
 429      → { error: 'Rate limit exceeded', retryAfterSeconds, limit, windowSeconds }
 500      → { error: 'An unexpected error occurred', message }
@@ -64,9 +71,9 @@ curl -X POST https://civitai.com/api/mod/retool/comment \
   -H "Content-Type: application/json" \
   -d '{ "action": "bulkDelete", "commentIds": [1,2,3], "commentV2Ids": [10,11] }'
 
-# Privileged: rename a user
+# Privileged: rename a user (caller must hold the `retoolUpdateIdentity` granted permission)
 curl -X POST https://civitai.com/api/mod/retool/user \
-  -H "Authorization: Bearer $CIVITAI_SUPER_ADMIN_KEY" \
+  -H "Authorization: Bearer $CIVITAI_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "action": "updateIdentity", "userId": 999, "username": "new-handle" }'
 
@@ -129,7 +136,7 @@ export default defineRetoolEndpoint('<domain>', {
   myNewAction: retoolAction({
     input: z.object({ /* ... */ }),
     rateLimit: { max: 30, windowSeconds: 60 }, // optional, defaults to 60/60
-    privileged: false,                          // optional, defaults to false
+    privileged: 'retoolMyAction',              // optional permission key (add to feature-flags.service.ts as ['granted'])
     async handler(input, ctx) {
       // ctx: { actor, tracker, req, res }
       const result = await someService(input);
@@ -145,7 +152,7 @@ export default defineRetoolEndpoint('<domain>', {
 Conventions:
 1. The handler MUST call a service function — never `dbWrite.x.update` directly. If the service doesn't exist, add one.
 2. Bulk-friendly actions cap their list size in the schema (`.max(500)` is the default).
-3. Set `privileged: true` for any action that grants role escalation, bypasses validation, or has a "very high" sensitivity rating in the parent ticket.
+3. For any action that grants role escalation, bypasses validation, or has a "very high" sensitivity rating in the parent ticket: pick a permission key (e.g. `retoolFooBar`), set `privileged: '<key>'` on the action, and add the matching flag to `feature-flags.service.ts` with `['granted']` availability. Grant the permission to the moderators who should be able to invoke it.
 4. Return an `affected` object so the audit row captures the entities the call touched.
 
 ## Rate limits

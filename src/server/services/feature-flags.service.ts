@@ -190,6 +190,12 @@ const featureFlags = createFeatureFlags({
   },
   articleImageScanning: ['public'],
   generationPresets: { availability: ['public'], fliptKey: 'generation-presets' },
+  // Retool privileged endpoints — `granted` means the moderator must carry the
+  // matching permission key in user.permissions. Endpoints lookup the key
+  // directly from `RetoolAction.privileged`, so the permission name MUST stay
+  // in sync with the camelCase flag key here.
+  retoolUpdateIdentity: ['granted'],
+  retoolToggleModerator: ['granted'],
 });
 
 export const featureFlagKeys = Object.keys(featureFlags) as FeatureFlagKey[];

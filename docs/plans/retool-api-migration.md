@@ -92,7 +92,7 @@ Each file leads with a doc comment block (per `CLAUDE.md` Debug Endpoints sectio
 
 New helper in `src/server/utils/retool-endpoint.ts`. Type sketch + usage example in the registry reply above. Wrapper responsibilities:
 
-1. **Auth.** API key in `Authorization: Bearer …` header resolves to a user with `isModerator: true`. Privileged actions additionally require the user be in the super-admin allowlist (env `SUPER_ADMIN_USER_IDS`).
+1. **Auth.** API key in `Authorization: Bearer …` header resolves to a user with `isModerator: true`. Privileged actions additionally require the user be in the super-admin allowlist (env `granted-permission keys (`retoolUpdateIdentity`, `retoolToggleModerator`)`).
    - Token-only `?token=$WEBHOOK_TOKEN` fallback acceptable for non-privileged actions where Retool's shared resource carries the token. Privileged actions are user-API-key only.
 2. **Schema build + parse.** Builds `z.discriminatedUnion('action', …)` from the action registry. Baseline fields (`action`, `actorId` resolved from auth) injected per variant. Zod `safeParse` on `{ ...query, ...body }`. 400 on failure.
 3. **Rate limit.** Redis-backed, keyed on `(action, actorId)`. Per-action config — bulk endpoints get generous limits, single-target endpoints get tight ones to prevent abuse.
@@ -227,7 +227,7 @@ Group 2 (UserLink cleanup) is **not a new endpoint** — fold into the existing 
 | `mute` | no | no | `{ userId, until?: ISO, reason? }` — call existing mod-actions service |
 | `unmute` | no | no | `{ userId }` |
 | `updateIdentity` | **yes** | no | `{ userId, username?, email?, name? }` — enforce uniqueness in service, send change notification |
-| `toggleModerator` | **yes** | no | `{ userId, isModerator: bool }` — extra check: actor must be in super-admin allowlist (env `SUPER_ADMIN_USER_IDS`) |
+| `toggleModerator` | **yes** | no | `{ userId, isModerator: bool }` — extra check: actor must be in super-admin allowlist (env `granted-permission keys (`retoolUpdateIdentity`, `retoolToggleModerator`)`) |
 
 @dev: — For Group 7, you said SARA uses this. Confirm: should `actorId` carry SARA's bot user ID, or do we add a `behalfOf` field for the human moderator SARA is acting on behalf of? Lean toward `behalfOf` so audit trail shows the human who asked.
 @justin: There's always a person that drives SARA. She'd be using their user API key.
@@ -358,7 +358,7 @@ Backend ships in Phase 1. **On-site HomeBlock Manager UI is Phase 4** (separate 
 ### Phase 1 — Single big PR (this plan)
 
 1. ClickHouse: `default.retoolAuditLog` table + `Tracker.retoolAudit()` method in `src/server/clickhouse/client.ts`
-2. Env vars: `SUPER_ADMIN_USER_IDS` (allowlist for privileged actions)
+2. Env vars: `granted-permission keys (`retoolUpdateIdentity`, `retoolToggleModerator`)` (allowlist for privileged actions)
 3. `defineRetoolEndpoint` helper in `src/server/utils/retool-endpoint.ts` (registry pattern)
 4. Seven endpoint files in `src/pages/api/mod/retool/`
 5. New / extended service functions:
