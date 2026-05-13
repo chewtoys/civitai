@@ -203,10 +203,23 @@ Value:  JSON {
 **Split by access pattern:**
 
 - **Orchestrator API** — source of truth for raw scanner outputs. 30-day TTL. Fetched on demand when a moderator opens a scan for review.
-- **ClickHouse `scanner_label_results`** — append-only index of per-label scores. Drives queue filtering ("show me recent scans where label X triggered"), near-miss FN browsing (`triggered = false ORDER BY score DESC`), and corpus-wide distribution analysis. One small row per (scan, label).
-- **Postgres `ScannerScanReview` + `ScannerReview`** — moderator review state. Only contains data for reviewed scans. `ScannerScanReview.rawOutput` snapshots the orchestrator output on submit, so reviewed scans are durable past the 30-day orchestrator window.
+- **ClickHouse `scanner_label_results`** — append-only index of per-label scores plus scan-level workflow timing (`startedAt`, `completedAt`, `durationMs`) replicated on every label row. Drives queue filtering ("show me recent scans where label X triggered"), near-miss FN browsing (`triggered = false ORDER BY score DESC`), corpus-wide distribution analysis, and latency tracking. One small row per (scan, label).
+- **Postgres `ScannerScanReview` + `ScannerReview`** — moderator review state. Only contains data for reviewed scans.
 
-We do **not** store raw scanner outputs in ClickHouse. Orchestrator + on-review Postgres snapshot covers that need; ClickHouse is the index, not the corpus.
+We do **not** store raw scanner outputs in ClickHouse — orchestrator covers that for 30 days; long-term retention of raw scan inputs/outputs is out of scope for the current design.
+
+Timing fields are replicated across every label row (single-table design) rather than split into a separate `scanner_scans` table. Latency aggregations should `GROUP BY workflowId` first and pick one value per workflow (e.g. `any(durationMs)`):
+
+```sql
+SELECT scanner, quantile(0.5)(d) AS p50_ms, quantile(0.95)(d) AS p95_ms, count() AS scans
+FROM (
+  SELECT any(scanner) AS scanner, any(durationMs) AS d
+  FROM scanner_label_results
+  WHERE startedAt > now() - INTERVAL 7 DAY
+  GROUP BY workflowId
+)
+GROUP BY scanner;
+```
 
 ### ClickHouse: `scanner_label_results` — one row per label evaluated
 
@@ -227,7 +240,10 @@ CREATE TABLE scanner_label_results (
   modelReason          String,                  -- only populated when triggered = 1; empty otherwise
   matchedText          Array(String),           -- text-mode: tokens that tripped the policy. Empty unless triggered = 1.
   matchedPositivePrompt Array(String),          -- prompt-mode positive: tokens that tripped the policy. Empty unless triggered = 1.
-  matchedNegativePrompt Array(String)           -- prompt-mode negative: tokens that tripped the policy. Empty unless triggered = 1.
+  matchedNegativePrompt Array(String),          -- prompt-mode negative: tokens that tripped the policy. Empty unless triggered = 1.
+  startedAt            DateTime,                -- workflow execution start (replicated per label row)
+  completedAt          DateTime,                -- workflow execution end (replicated per label row)
+  durationMs           UInt32                   -- completedAt - startedAt, pre-computed at write time
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(createdAt)
