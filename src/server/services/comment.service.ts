@@ -223,12 +223,15 @@ export const updateCommentReportStatusByReason = ({
   reason: ReportReason;
   status: ReportStatus;
 }) => {
+  // Skip reports that are already in the target status so re-running the
+  // bulk TOS handler does not double-fire reportAcceptedReward.
   return dbWrite.$queryRaw<{ id: number; userId: number }[]>`
     UPDATE "Report" r SET status = ${status}::"ReportStatus"
     FROM "CommentReport" c
     WHERE c."reportId" = r.id
       AND c."commentId" = ${id}
       AND r.reason = ${reason}::"ReportReason"
+      AND r.status <> ${status}::"ReportStatus"
     RETURNING id, "userId"
   `;
 };

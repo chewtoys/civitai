@@ -23,7 +23,7 @@ import {
   reorderHomeBlocksAdmin,
   updateHomeBlockAdmin,
 } from '~/server/services/home-block.service';
-import { defineRetoolEndpoint, retoolAction } from '~/server/utils/retool-endpoint';
+import { defineRetoolEndpoint, retoolAction, retoolBoolean } from '~/server/utils/retool-endpoint';
 import { HomeBlockType } from '~/shared/utils/prisma/enums';
 
 const homeBlockId = z.coerce.number().int().positive();
@@ -36,12 +36,11 @@ export default defineRetoolEndpoint('homeblock', {
       metadata: jsonObject.optional(),
       sourceId: z.coerce.number().int().positive().optional(),
       index: z.coerce.number().int().optional(),
-      permanent: z.coerce.boolean().optional(),
+      permanent: retoolBoolean.optional(),
     }),
     rateLimit: { max: 30, windowSeconds: 60 },
-    async handler(input, ctx) {
+    async handler(input) {
       const homeBlock = await createHomeBlockAdmin({
-        userId: ctx.actor.id,
         type: input.type,
         metadata: (input.metadata ?? {}) as never,
         sourceId: input.sourceId,
@@ -56,7 +55,7 @@ export default defineRetoolEndpoint('homeblock', {
       homeBlockId,
       metadata: jsonObject.optional(),
       index: z.coerce.number().int().nullable().optional(),
-      permanent: z.coerce.boolean().optional(),
+      permanent: retoolBoolean.optional(),
       type: z.nativeEnum(HomeBlockType).optional(),
       sourceId: z.coerce.number().int().positive().nullable().optional(),
     }),

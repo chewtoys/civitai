@@ -154,6 +154,7 @@ export async function bulkSetCommentV2TosViolation({
       WHERE c."reportId" = r.id
         AND c."commentV2Id" = ${id}
         AND r.reason = ${enums.ReportReason.TOSViolation}::"ReportReason"
+        AND r.status <> ${enums.ReportStatus.Actioned}::"ReportStatus"
       RETURNING id, "userId"
     `;
     rewardedReports += reports.length;

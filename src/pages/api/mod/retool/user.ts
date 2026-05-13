@@ -24,7 +24,7 @@ import {
   setUserModerator,
   setUserMuted,
 } from '~/server/services/user.service';
-import { defineRetoolEndpoint, retoolAction } from '~/server/utils/retool-endpoint';
+import { defineRetoolEndpoint, retoolAction, retoolBoolean } from '~/server/utils/retool-endpoint';
 
 const userId = z.coerce.number().int().positive();
 
@@ -89,12 +89,16 @@ export default defineRetoolEndpoint('user', {
   toggleModerator: retoolAction({
     input: z.object({
       userId,
-      isModerator: z.coerce.boolean(),
+      isModerator: retoolBoolean,
     }),
     privileged: 'retoolToggleModerator',
     rateLimit: { max: 10, windowSeconds: 60 },
-    async handler(input) {
-      await setUserModerator({ userId: input.userId, isModerator: input.isModerator });
+    async handler(input, ctx) {
+      await setUserModerator({
+        userId: input.userId,
+        isModerator: input.isModerator,
+        actorId: ctx.actor.id,
+      });
       return {
         isModerator: input.isModerator,
         affected: { userIds: [input.userId] },

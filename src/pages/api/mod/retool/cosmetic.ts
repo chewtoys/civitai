@@ -24,7 +24,7 @@ import {
   unassignCosmetic,
   updateCosmetic,
 } from '~/server/services/cosmetic.service';
-import { defineRetoolEndpoint, retoolAction } from '~/server/utils/retool-endpoint';
+import { defineRetoolEndpoint, retoolAction, retoolBoolean } from '~/server/utils/retool-endpoint';
 import { CosmeticSource, CosmeticType } from '~/shared/utils/prisma/enums';
 
 const cosmeticId = z.coerce.number().int().positive();
@@ -36,7 +36,7 @@ const cosmeticShape = z.object({
   videoUrl: z.string().url().nullish(),
   type: z.nativeEnum(CosmeticType),
   source: z.nativeEnum(CosmeticSource),
-  permanentUnlock: z.coerce.boolean(),
+  permanentUnlock: retoolBoolean,
   data: z.record(z.string(), z.unknown()),
   availableStart: z.coerce.date().nullish(),
   availableEnd: z.coerce.date().nullish(),
@@ -54,14 +54,14 @@ export default defineRetoolEndpoint('cosmetic', {
         z.object({
           type: z.literal('collection'),
           collectionId: z.coerce.number().int().positive(),
-          requireApproved: z.coerce.boolean().optional(),
+          requireApproved: retoolBoolean.optional(),
         }),
         z.object({
           type: z.literal('userIds'),
           userIds,
         }),
       ]),
-      dryRun: z.coerce.boolean().optional(),
+      dryRun: retoolBoolean.optional(),
     }),
     rateLimit: { max: 10, windowSeconds: 60 },
     async handler(input) {

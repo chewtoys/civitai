@@ -16,7 +16,7 @@ import {
   deleteResourceReviews,
   setExcludeResourceReviews,
 } from '~/server/services/resourceReview.service';
-import { defineRetoolEndpoint, retoolAction } from '~/server/utils/retool-endpoint';
+import { defineRetoolEndpoint, retoolAction, retoolBoolean } from '~/server/utils/retool-endpoint';
 
 const reviewIds = z.array(z.coerce.number().int().positive()).min(1).max(500);
 
@@ -24,7 +24,7 @@ export default defineRetoolEndpoint('review', {
   setExclude: retoolAction({
     input: z.object({
       reviewIds,
-      exclude: z.coerce.boolean(),
+      exclude: retoolBoolean,
     }),
     rateLimit: { max: 30, windowSeconds: 60 },
     async handler(input) {

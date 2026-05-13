@@ -40,15 +40,26 @@ function createMocks({
 }
 
 // --- Hoisted mocks ---
-const { mockGetSession, mockRedis, mockRetoolAudit } = vi.hoisted(() => ({
-  mockGetSession: vi.fn(),
-  mockRedis: {
-    incr: vi.fn().mockResolvedValue(1),
-    expire: vi.fn().mockResolvedValue(1),
-    ttl: vi.fn().mockResolvedValue(60),
-  },
-  mockRetoolAudit: vi.fn(),
-}));
+const { mockGetSession, mockRedis, mockRetoolAudit, mockMultiIncr } = vi.hoisted(() => {
+  const mockMultiIncr = { value: 1 };
+  const multiFactory = () => {
+    const chain = {
+      set: vi.fn().mockReturnThis(),
+      incr: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockImplementation(async () => ['OK', mockMultiIncr.value]),
+    };
+    return chain;
+  };
+  return {
+    mockGetSession: vi.fn(),
+    mockRedis: {
+      multi: vi.fn(multiFactory),
+      ttl: vi.fn().mockResolvedValue(60),
+    },
+    mockRetoolAudit: vi.fn(),
+    mockMultiIncr,
+  };
+});
 
 vi.mock('~/server/auth/bearer-token', () => ({
   getSessionFromBearerToken: mockGetSession,
@@ -102,7 +113,7 @@ function buildHandler(handlerSpy = vi.fn().mockResolvedValue({ ok: true })) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockRedis.incr.mockResolvedValue(1);
+  mockMultiIncr.value = 1;
   mockRedis.ttl.mockResolvedValue(60);
 });
 
@@ -232,7 +243,7 @@ describe('defineRetoolEndpoint', () => {
     mockGetSession.mockResolvedValueOnce({
       user: { id: 7, isModerator: true },
     });
-    mockRedis.incr.mockResolvedValueOnce(99); // above max=5
+    mockMultiIncr.value = 99; // above max=5
     const { handler, handlerSpy } = buildHandler();
     const { req, res } = createMocks({
       method: 'POST',

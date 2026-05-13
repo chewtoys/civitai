@@ -53,6 +53,20 @@ export function retoolAction<TInput extends z.ZodObject<z.ZodRawShape>, TOutput>
   return config;
 }
 
+/**
+ * Safe boolean parser for Retool inputs. `z.coerce.boolean()` passes the value
+ * through JS `Boolean()`, so the string `"false"` evaluates to `true` — which
+ * would be a privilege-escalation footgun on flags like `isModerator` or
+ * `permanentUnlock`. This preprocessor only accepts explicit truthy/falsy
+ * tokens.
+ */
+export const retoolBoolean = z.preprocess((v) => {
+  if (typeof v === 'boolean') return v;
+  if (v === 'true' || v === '1' || v === 1) return true;
+  if (v === 'false' || v === '0' || v === 0) return false;
+  return v; // let z.boolean() reject anything else
+}, z.boolean());
+
 const DEFAULT_RATE_LIMIT = { max: 60, windowSeconds: 60 } as const;
 
 /**
@@ -136,12 +150,19 @@ export function defineRetoolEndpoint<TRegistry extends RetoolRegistry>(
         .json({ error: `Permission "${action.privileged}" required for this action` });
     }
 
-    // 4. Rate limit (per action, per actor)
+    // 4. Rate limit (per action, per actor) — `SET NX EX` + `INCR` in one
+    // round-trip via MULTI. Atomic: the key is always created with its TTL,
+    // so a crash between INCR and EXPIRE can't strand a TTL-less counter
+    // that would permanently lock the actor out.
     const limit = action.rateLimit ?? DEFAULT_RATE_LIMIT;
     const rateKey =
       `${REDIS_SYS_KEYS.RETOOL_ENDPOINT.RATE_LIMIT}:${actionKey}:${actor.id}` as const;
-    const count = await sysRedis.incr(rateKey);
-    if (count === 1) await sysRedis.expire(rateKey, limit.windowSeconds);
+    const multiResult = await sysRedis
+      .multi()
+      .set(rateKey, '0', { NX: true, EX: limit.windowSeconds })
+      .incr(rateKey)
+      .exec();
+    const count = Number(multiResult[1]);
     if (count > limit.max) {
       const retryAfter = await sysRedis.ttl(rateKey);
       res.setHeader('Retry-After', String(Math.max(retryAfter, 1)));

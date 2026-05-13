@@ -420,14 +420,23 @@ export async function setUserMuted({
 /**
  * Privileged: set the moderator flag on a user. Caller is responsible for
  * super-admin allowlist gating (handled by RetoolEndpoint).
+ *
+ * Rejects self-action: a moderator cannot demote (or escalate) themselves —
+ * stops mid-flow session strandings and forces the change to go through a
+ * second operator with audit trail intact.
  */
 export async function setUserModerator({
   userId,
   isModerator,
+  actorId,
 }: {
   userId: number;
   isModerator: boolean;
+  actorId: number;
 }) {
+  if (userId === actorId) {
+    throw new Error('Cannot modify your own moderator status — ask another operator.');
+  }
   const user = await updateUserById({
     id: userId,
     data: { isModerator },
@@ -464,10 +473,27 @@ export async function forceUpdateUserIdentity({
   if (name !== undefined) data.name = name;
   if (Object.keys(data).length === 0) return { updated: false };
 
-  const user = await dbWrite.user.update({ where: { id: userId }, data });
+  let user;
+  try {
+    user = await dbWrite.user.update({ where: { id: userId }, data });
+  } catch (error) {
+    // Translate Prisma unique-constraint violations into a 4xx for callers.
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: string }).code === 'P2002'
+    ) {
+      const target = ((error as { meta?: { target?: string[] } }).meta?.target ?? []).join(', ');
+      throw throwBadRequestError(`Unique constraint failed${target ? ` on ${target}` : ''}`);
+    }
+    throw error;
+  }
   userUpdateCounter?.inc({ location: 'user.service:forceUpdateUserIdentity' });
 
-  if (data.username !== undefined || data.image !== undefined) {
+  // Cache-invalidate for any field on User that downstream caches key off of.
+  // (Username changes drop basic data; name/email touch profile + paddle.)
+  if (data.username !== undefined || data.name !== undefined) {
     await deleteBasicDataForUser(userId);
   }
   if (data.email && user.paddleCustomerId) {

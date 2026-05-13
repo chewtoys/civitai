@@ -24,25 +24,31 @@ import {
   bulkDeleteCommentsV2,
   bulkSetCommentV2TosViolation,
 } from '~/server/services/commentsv2.service';
+import { throwBadRequestError } from '~/server/utils/errorHandling';
 import { defineRetoolEndpoint, retoolAction } from '~/server/utils/retool-endpoint';
 
 const idList = z.array(z.coerce.number().int().positive()).max(500);
 
-const commentIdSchema = z
-  .object({
-    commentIds: idList.optional(),
-    commentV2Ids: idList.optional(),
-  })
-  .refine(
-    (data) => (data.commentIds?.length ?? 0) + (data.commentV2Ids?.length ?? 0) > 0,
-    { message: 'At least one of commentIds or commentV2Ids must be non-empty' }
-  );
+// Kept as a plain ZodObject — the wrapper calls .extend() on every action
+// input, and `.refine()` would return a ZodEffects that has no .extend.
+// The "at least one list" requirement is enforced inside each handler.
+const commentIdSchema = z.object({
+  commentIds: idList.optional(),
+  commentV2Ids: idList.optional(),
+});
+
+function ensureAtLeastOneList(input: { commentIds?: number[]; commentV2Ids?: number[] }) {
+  if ((input.commentIds?.length ?? 0) + (input.commentV2Ids?.length ?? 0) === 0) {
+    throw throwBadRequestError('At least one of commentIds or commentV2Ids must be non-empty');
+  }
+}
 
 export default defineRetoolEndpoint('comment', {
   bulkDelete: retoolAction({
     input: commentIdSchema,
     rateLimit: { max: 30, windowSeconds: 60 },
     async handler(input) {
+      ensureAtLeastOneList(input);
       const v1 = input.commentIds?.length
         ? await bulkDeleteComments({ ids: input.commentIds })
         : { count: 0 };
@@ -63,6 +69,7 @@ export default defineRetoolEndpoint('comment', {
     input: commentIdSchema,
     rateLimit: { max: 30, windowSeconds: 60 },
     async handler(input, ctx) {
+      ensureAtLeastOneList(input);
       const ip = requestIp.getClientIp(ctx.req) ?? undefined;
       const fingerprint = (ctx.req.headers['x-fingerprint'] as string | undefined) ?? undefined;
       const actor = { id: ctx.actor.id, ip, fingerprint };

@@ -20,13 +20,24 @@
  *                  replaced that data source).
  */
 import * as z from 'zod';
+import { NsfwLevel } from '~/server/common/enums';
 import { updateImageNsfwLevel } from '~/server/services/image.service';
 import { addTagVotes, removeTagVotes } from '~/server/services/tag.service';
 import { defineRetoolEndpoint, retoolAction } from '~/server/utils/retool-endpoint';
 
 const imageId = z.coerce.number().int().positive();
 const tagId = z.coerce.number().int().positive();
-const nsfwLevel = z.coerce.number().int().nonnegative();
+// Restrict to valid NsfwLevel bitflag values rather than any non-negative int —
+// passing e.g. `3` or `999` previously silently corrupted the row.
+const validNsfwLevels = Object.values(NsfwLevel).filter(
+  (v): v is number => typeof v === 'number'
+);
+const nsfwLevel = z.coerce
+  .number()
+  .int()
+  .refine((v) => validNsfwLevels.includes(v), {
+    message: `nsfwLevel must be one of [${validNsfwLevels.join(', ')}]`,
+  });
 
 export default defineRetoolEndpoint('image', {
   tagVote: retoolAction({
@@ -40,7 +51,12 @@ export default defineRetoolEndpoint('image', {
           })
         )
         .min(1)
-        .max(500),
+        .max(500)
+        .refine(
+          (votes) =>
+            new Set(votes.map((v) => `${v.imageId}:${v.tagId}`)).size === votes.length,
+          { message: 'Duplicate (imageId, tagId) pairs not allowed' }
+        ),
     }),
     rateLimit: { max: 30, windowSeconds: 60 },
     async handler(input, ctx) {

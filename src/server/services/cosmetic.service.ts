@@ -244,11 +244,23 @@ export async function assignCosmeticByTarget({
     return { granted: 0, userIds, dryRun: true };
   }
 
-  for (const userId of userIds) {
-    await grantCosmetics({ userId, cosmeticIds: [cosmeticId] });
+  // Single bulk insert via unnest — one round-trip vs. N. Returns rows that
+  // were actually inserted (ON CONFLICT DO NOTHING skips already-granted users),
+  // so `granted` reflects truth, not request size.
+  let granted = 0;
+  if (userIds.length > 0) {
+    const inserted = await dbWrite.$queryRaw<{ userId: number }[]>`
+      INSERT INTO "UserCosmetic" ("userId", "cosmeticId", "claimKey")
+      SELECT u, ${cosmeticId}, 'claimed'
+      FROM unnest(${userIds}::int[]) AS u
+      WHERE EXISTS (SELECT 1 FROM "Cosmetic" WHERE id = ${cosmeticId})
+      ON CONFLICT DO NOTHING
+      RETURNING "userId"
+    `;
+    granted = inserted.length;
   }
 
-  return { granted: userIds.length, userIds, dryRun: false };
+  return { granted, userIds, dryRun: false };
 }
 
 export async function unassignCosmetic({
