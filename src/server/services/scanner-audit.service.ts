@@ -47,7 +47,6 @@ type LabelRowSeed = {
   threshold: number | null;
   triggered: 0 | 1;
   version: string;
-  modelReason: string;
   matchedText: string[];
   matchedPositivePrompt: string[];
   matchedNegativePrompt: string[];
@@ -103,9 +102,7 @@ async function insertRows({
   // partition reflects when the scan actually happened, not when this insert
   // ran. Fall back to now() so we still land in a sensible partition if the
   // workflow didn't surface a timestamp.
-  const seenAtStr =
-    completedAtStr ??
-    new Date().toISOString().slice(0, 19).replace('T', ' ');
+  const seenAtStr = completedAtStr ?? new Date().toISOString().slice(0, 19).replace('T', ' ');
 
   const rows = labels.map((l) => ({
     contentHash,
@@ -118,7 +115,6 @@ async function insertRows({
     score: l.score,
     threshold: l.threshold,
     triggered: l.triggered,
-    modelReason: l.modelReason,
     matchedText: l.matchedText,
     matchedPositivePrompt: l.matchedPositivePrompt,
     matchedNegativePrompt: l.matchedNegativePrompt,
@@ -191,16 +187,21 @@ export async function recordXGuardScanFromWorkflow(workflow: Workflow) {
   const labels: LabelRowSeed[] = results.map((r) => {
     const triggered = r.triggered ? 1 : 0;
     return {
-      label: r.label,
+      // Normalize to lowercase at the storage boundary — the orchestrator
+      // sometimes returns labels uppercased (e.g. 'NSFW'). One canonical key
+      // keeps the dedup merge, queue queries, and verdict joins simple.
+      label: r.label.toLowerCase(),
       labelValue: '',
       score: r.score,
       threshold: r.threshold,
       triggered,
       version: r.policyHash ?? '',
-      modelReason: triggered ? r.modelReason ?? '' : '',
-      matchedText: triggered ? r.matchedTerms?.text ?? [] : [],
-      matchedPositivePrompt: triggered ? r.matchedTerms?.positivePrompt ?? [] : [],
-      matchedNegativePrompt: triggered ? r.matchedTerms?.negativePrompt ?? [] : [],
+      // modelReason is intentionally NOT stored here — it lives on the workflow
+      // and is resolved lazily by scanner-content.service when the moderator
+      // opens an item. Snapshot writes preserve it past the orchestrator's TTL.
+      matchedText: r.matchedTerms?.text ?? [],
+      matchedPositivePrompt: r.matchedTerms?.positivePrompt ?? [],
+      matchedNegativePrompt: r.matchedTerms?.negativePrompt ?? [],
     };
   });
 
@@ -254,7 +255,6 @@ export async function recordImageScan({
     threshold: null,
     triggered: 1,
     version: '1',
-    modelReason: '',
     matchedText: [],
     matchedPositivePrompt: [],
     matchedNegativePrompt: [],
@@ -266,7 +266,6 @@ export async function recordImageScan({
     threshold: null,
     triggered: mediaRating.isBlocked ? 1 : 0,
     version: '1',
-    modelReason: '',
     matchedText: [],
     matchedPositivePrompt: [],
     matchedNegativePrompt: [],
@@ -289,7 +288,6 @@ export async function recordImageScan({
       threshold: null,
       triggered: detections.some((d) => d.isMinor) ? 1 : 0,
       version: '1',
-      modelReason: '',
       matchedText: [],
       matchedPositivePrompt: [],
       matchedNegativePrompt: [],
@@ -304,7 +302,6 @@ export async function recordImageScan({
       threshold: null,
       triggered: mediaRating.aiRecognition.label === 'AI' ? 1 : 0,
       version: '1',
-      modelReason: '',
       matchedText: [],
       matchedPositivePrompt: [],
       matchedNegativePrompt: [],
@@ -319,7 +316,6 @@ export async function recordImageScan({
       threshold: null,
       triggered: mediaRating.animeRecognition.label === 'anime' ? 1 : 0,
       version: '1',
-      modelReason: '',
       matchedText: [],
       matchedPositivePrompt: [],
       matchedNegativePrompt: [],

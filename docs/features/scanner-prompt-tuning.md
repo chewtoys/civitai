@@ -8,6 +8,139 @@ This is logically a **separate project** from operational moderation — differe
 
 ---
 
+## Refinement lifecycle
+
+Tuning a scanner label is a four-phase loop. Each pass through the loop tightens the policy. The rest of this doc describes the dataset infrastructure (phase 2) in depth; this section is the framing for *why* that infrastructure exists and where the other phases happen.
+
+### Phase 1 — Define the label/policy
+
+A new label starts orchestrator-side, not in civitai. The civitai workflow only needs to know the label's name so it can be requested in `workflow.metadata.labels`.
+
+What gets authored in phase 1:
+
+- **Label name** — short identifier (`csam`, `nsfw`, `impersonation`, …) that goes in the workflow request.
+- **Policy text** — natural-language description of what makes the label apply (`x`) vs. not (`sec`). For XGuard, this is the `chatTemplateKwargs.policy` string that gets fed into the model on every call.
+- **Threshold** — initial cutoff on the first-token-probability score (educated guess; this is what phase 3 dials in).
+- **Mode applicability** — does this label run on prompt mode, text mode, or both?
+
+The orchestrator stamps each evaluation with a `policyHash` derived from the exact policy text. That hash becomes the `version` column on `scanner_label_results`, which is what makes A/B comparison in phase 3 work without civitai-side bookkeeping.
+
+For image scanners, "defining a label" means adding a new `include*` flag to the `mediaRating` step input and a corresponding output field (see [image-scan-result.service.ts](src/server/services/image-scan-result.service.ts) and the `TagSource` enum). Versioning is currently a `'1'` placeholder until the orchestrator surfaces per-result version info.
+
+### Phase 2 — Provide a dataset
+
+This is what we built. Production traffic flows through the scanner with `metadata.recordForReview = true`, each scan emits per-label rows into ClickHouse `scanner_label_results`, and moderators review items in the focused-review UI (`/moderator/scanner-audit/[mode]/[label]`).
+
+Every verdict produces three pieces of permanent data joined by `(contentHash, version, label)`:
+
+1. The audit row in `scanner_label_results` — score, threshold, triggered flag, matched terms, occurrences.
+2. The verdict row in `ScannerLabelReview` — TP / FP / TN / FN / Unsure (see verdict matrix below).
+3. The `ScannerContentSnapshot` JSON — text/prompt/imageId + per-label `modelReason`. Snapshotted at verdict time so it survives the orchestrator's 30-day TTL.
+
+After ~a week of mod review against a new policy, you have a labeled corpus of `(content, model decision + reasoning, human judgment)` triples scoped to that `version`. That's the input to phase 3.
+
+**Verdict matrix** — "positive" here means "the model triggered," not "the content is bad." We're judging the model's call, not the content directly.
+
+|                            | Mod says: should trigger          | Mod says: should NOT trigger     |
+|----------------------------|-----------------------------------|----------------------------------|
+| Model **triggered**        | **TP** — correct fire             | **FP** — false alarm             |
+| Model **did not trigger**  | **FN** — escape (missed it)       | **TN** — correctly held back     |
+
+In the focused-review UI the mod's two answers map straight to the matrix: **Yes** = "label should have triggered," **No** = "label should not have triggered." `verdictFromAnswer` ([src/pages/moderator/scanner-audit/[mode]/[label].tsx](src/pages/moderator/scanner-audit/[mode]/[label].tsx)) combines that with the row's `triggered` flag to produce the verdict.
+
+Tuning interpretation:
+
+- High **FP** → policy too broad. Look at FP `matchedText` + `modelReason` to find what the policy is over-claiming on, then carve it out.
+- High **FN** → policy too narrow, or threshold too high. Look at FN content + near-miss gap distribution to find what's slipping through.
+- **TP** + **TN** rates climbing across versions is the proof a refinement worked.
+- **Unsure** is a valid answer for genuinely ambiguous cases. Excluded from FP/FN-rate denominators so it doesn't pollute the metric.
+
+### Phase 3 — Review signals against the dataset
+
+Phase 3 is analysis — querying the dataset to surface where the policy is wrong and what kind of wrong. The interesting cuts:
+
+**FP/FN rates per (label, version).** Headline metric. Excludes `Unsure` from the denominator.
+
+```sql
+-- App-side join: CH `scanner_label_results` ⨝ PG `ScannerLabelReview`
+-- Run as: pull verdict counts from PG, pull triggered counts from CH, join
+-- in TypeScript or in BI tooling. We don't have native cross-source joins.
+SELECT label, version,
+  count(*) FILTER (WHERE verdict = 'TruePositive')  AS tp,
+  count(*) FILTER (WHERE verdict = 'FalsePositive') AS fp,
+  count(*) FILTER (WHERE verdict = 'TrueNegative')  AS tn,
+  count(*) FILTER (WHERE verdict = 'FalseNegative') AS fn
+FROM "ScannerLabelReview"
+WHERE verdict <> 'Unsure'
+GROUP BY label, version;
+```
+
+**Near-miss gap distribution.** For each (label, version), histogram of `threshold - score` on untriggered rows. Tells you whether the threshold is sitting in a dense or sparse part of the score distribution — if there's a cluster of near-misses just below threshold that mods consistently mark `FalseNegative`, the threshold is too high.
+
+```sql
+-- Untriggered score-vs-threshold gaps for label 'csam' in last 30 days
+SELECT round(gap * 100) / 100 AS gap_bucket, count() AS n
+FROM (
+  SELECT anyLast(threshold) - anyLast(score) AS gap
+  FROM scanner_label_results
+  WHERE lastSeenAt > now() - INTERVAL 30 DAY
+    AND label = 'csam'
+  GROUP BY contentHash, version, label
+  HAVING max(triggered) = 0 AND anyLast(threshold) IS NOT NULL
+)
+GROUP BY gap_bucket
+ORDER BY gap_bucket
+SETTINGS prefer_column_name_to_alias = 1;
+```
+
+**Matched-term clusters on FPs.** If a label keeps misfiring on the same trigger words, the policy needs to carve out those contexts.
+
+```sql
+SELECT term, count(*) AS fp_count
+FROM (
+  SELECT unnest(slr.matchedText || slr.matchedPositivePrompt || slr.matchedNegativePrompt) AS term
+  FROM scanner_label_results slr
+  JOIN scanner_label_review rev USING (contentHash, version, label)
+  WHERE rev.verdict = 'FalsePositive' AND slr.label = 'csam'
+)
+GROUP BY term ORDER BY fp_count DESC LIMIT 20;
+```
+
+**modelReason corpus per verdict class.** The text the model wrote about each scan is now persisted in `ScannerContentSnapshot.content.labelReasons[label]`. Feed all `FalsePositive` reasons for a label into Claude alongside the policy text and ask "what about this policy is causing these specific kinds of mistakes?" — the model's own self-justifications are the highest-signal input you have for phase 4.
+
+**Cross-version comparison.** Same content, different `version`, lets you measure whether a policy change actually moved the needle on the *same items*.
+
+```sql
+-- Items scanned under both v1 and v2 of the csam policy
+SELECT contentHash, version, max(triggered), anyLast(score), anyLast(threshold)
+FROM scanner_label_results
+WHERE label = 'csam' AND lastSeenAt > now() - INTERVAL 60 DAY
+GROUP BY contentHash, version
+HAVING contentHash IN (
+  SELECT contentHash FROM scanner_label_results
+  WHERE label = 'csam' AND lastSeenAt > now() - INTERVAL 60 DAY
+  GROUP BY contentHash HAVING uniq(version) >= 2
+)
+SETTINGS prefer_column_name_to_alias = 1;
+```
+
+### Phase 4 — Clarify/refine the label/policy
+
+Phase 4 happens orchestrator-side again. The output of phase 3 — concrete failure modes, matched-term clusters, modelReason patterns, FP/FN counts — is the input to a policy edit. Either a human rewrites the policy text, or an AI proposes a rewrite from the FP-reason corpus and a human reviews.
+
+Once the new policy text lands in the orchestrator:
+
+- The orchestrator emits a new `policyHash`.
+- New scans land in `scanner_label_results` with the new `version` column.
+- Old verdicts in `ScannerLabelReview` are still keyed to the *old* version — they remain valid evidence of how v1 performed, but don't carry forward to v2.
+- The same content scanned under v2 produces a new row; mods can re-verdict (or not) those rows separately, which is how the FP/FN comparison in phase 3 closes the loop.
+
+Threshold-only changes don't change `policyHash`, so threshold tuning shows up as score distribution shifts under the same `version`. Treat threshold changes as a separate axis from policy-text changes when interpreting the data.
+
+**Label retirement** is the degenerate case: stop including the label in `workflow.metadata.labels` and the rows stop coming in. Existing audit data stays around for retrospective analysis.
+
+---
+
 ## The two scanners
 
 We operate two independent scanner pipelines. They share **no code** today and store results in different tables.
@@ -191,7 +324,10 @@ CREATE TABLE scanner_label_results (
   score           SimpleAggregateFunction(anyLast, Float32),
   threshold       SimpleAggregateFunction(anyLast, Nullable(Float32)),
   triggered       SimpleAggregateFunction(max, UInt8),
-  modelReason     SimpleAggregateFunction(anyLast, String),
+  -- modelReason intentionally NOT stored here. It lived on this table
+  -- originally but observations of truncation pushed us to resolve it lazily
+  -- from the workflow in scanner-content.service. Snapshots persist it past
+  -- the orchestrator's 30-day TTL.
   matchedText     SimpleAggregateFunction(anyLast, Array(String)),
   matchedPositivePrompt SimpleAggregateFunction(anyLast, Array(String)),
   matchedNegativePrompt SimpleAggregateFunction(anyLast, Array(String)),

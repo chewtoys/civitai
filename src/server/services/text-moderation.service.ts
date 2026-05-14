@@ -1,4 +1,3 @@
-import { env } from '~/env/server';
 import { dbWrite } from '~/server/db/client';
 import { createXGuardModerationRequest } from '~/server/services/orchestrator/orchestrator.service';
 import {
@@ -25,10 +24,6 @@ export async function submitTextModeration({
   wait?: number;
   recordForReview?: boolean;
 }) {
-  const callbackUrl =
-    env.TEXT_MODERATION_CALLBACK ??
-    `${env.NEXTAUTH_URL}/api/webhooks/text-moderation-result?token=${env.WEBHOOK_TOKEN}`;
-
   const contentHash = hashContent(content);
 
   // Persist the Pending row BEFORE calling the orchestrator so a silent
@@ -48,7 +43,6 @@ export async function submitTextModeration({
     entityId,
     content,
     labels,
-    callbackUrl,
     priority,
     wait,
     recordForReview,

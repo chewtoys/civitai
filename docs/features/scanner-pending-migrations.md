@@ -23,7 +23,8 @@ CREATE TABLE scanner_label_results (
   score           SimpleAggregateFunction(anyLast, Float32),
   threshold       SimpleAggregateFunction(anyLast, Nullable(Float32)),
   triggered       SimpleAggregateFunction(max, UInt8),
-  modelReason     SimpleAggregateFunction(anyLast, String),
+  -- modelReason is NOT stored in ClickHouse — resolved lazily from the workflow
+  -- by scanner-content.service and snapshotted to Postgres on review.
   matchedText     SimpleAggregateFunction(anyLast, Array(String)),
   matchedPositivePrompt SimpleAggregateFunction(anyLast, Array(String)),
   matchedNegativePrompt SimpleAggregateFunction(anyLast, Array(String)),

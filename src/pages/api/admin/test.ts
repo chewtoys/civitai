@@ -30,6 +30,10 @@ export default WebhookEndpoint(async (req, res) => {
     labels: LABELS.length > 0 ? LABELS : undefined,
     recordForReview: true,
     wait: 60,
+    // Suppress the auto-callback — this endpoint waits synchronously and
+    // calls `recordXGuardScanFromWorkflow` itself just below, so a callback
+    // would just produce a duplicate (idempotent but wasteful) insert.
+    callbackUrl: null,
   });
 
   if (!workflow) {
