@@ -4232,4 +4232,11 @@ export interface ScannerLabelReview {
   note: string | null;
 }
 
+export interface ScannerContentSnapshot {
+  contentHash: string;
+  scanner: string;
+  content: JsonValue;
+  createdAt: Date;
+}
+
 type JsonValue = string | number | boolean | { [key in string]?: JsonValue } | Array<JsonValue> | null;

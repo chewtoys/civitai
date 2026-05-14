@@ -13,7 +13,17 @@ import { TRPCError } from '@trpc/server';
 import { clickhouse } from '~/server/clickhouse/client';
 import { dbRead, dbWrite } from '~/server/db/client';
 import type { ReviewVerdict } from '~/shared/utils/prisma/enums';
-import type { QueueView, Scanner } from '~/server/schema/scanner-review.schema';
+import type {
+  QueueView,
+  ScanContentBody,
+  Scanner,
+} from '~/server/schema/scanner-review.schema';
+import {
+  getScanContents,
+  snapshotScanContent,
+  type ScanContent,
+  type ScanContentItem,
+} from '~/server/services/scanner-content.service';
 
 /** How far back the queue + detail queries look. Caps partition reads so a
  * mod opening the page doesn't scan years of history. The Aggregating engine
@@ -31,7 +41,6 @@ export type AggregatedScanRow = {
   score: number;
   threshold: number | null;
   triggered: 0 | 1;
-  modelReason: string;
   matchedText: string[];
   matchedPositivePrompt: string[];
   matchedNegativePrompt: string[];
@@ -59,7 +68,6 @@ const AGGREGATE_SELECT = `
   anyLast(score) AS score,
   anyLast(threshold) AS threshold,
   max(triggered) AS triggered,
-  anyLast(modelReason) AS modelReason,
   anyLast(matchedText) AS matchedText,
   anyLast(matchedPositivePrompt) AS matchedPositivePrompt,
   anyLast(matchedNegativePrompt) AS matchedNegativePrompt,
@@ -86,7 +94,7 @@ type ListInput = {
   view: QueueView;
   label?: string;
   version?: string;
-  nearMissFloor: number;
+  nearMissGap: number;
   lookbackDays?: number;
   limit: number;
   offset: number;
@@ -125,10 +133,10 @@ export async function listScans(
   const havingClause =
     input.view === 'triggered'
       ? 'max(triggered) = 1'
-      : `max(triggered) = 0 AND anyLast(threshold) IS NOT NULL AND anyLast(score) >= anyLast(threshold) * {nearMissFloor:Float32}`;
+      : `max(triggered) = 0 AND anyLast(threshold) IS NOT NULL AND anyLast(threshold) - anyLast(score) <= {nearMissGap:Float32}`;
 
   if (input.view === 'near-miss') {
-    params.nearMissFloor = input.nearMissFloor;
+    params.nearMissGap = input.nearMissGap;
   }
 
   // Same applies to ORDER BY — reference the aggregate explicitly.
@@ -235,7 +243,7 @@ export async function getScanDetail(input: {
         AND version = {version:String}
         AND lastSeenAt > now() - INTERVAL ${lookback} DAY
       GROUP BY contentHash, version, label
-      ORDER BY triggered DESC, score DESC
+      ORDER BY max(triggered) DESC, anyLast(score) DESC
       SETTINGS prefer_column_name_to_alias = 1
     `,
     query_params: { contentHash: input.contentHash, version: input.version },
@@ -264,7 +272,22 @@ export async function upsertLabelVerdict(input: {
   verdict: ReviewVerdict;
   note?: string;
   userId: number;
+  contentSnapshot?: {
+    scanner: string;
+    body: ScanContentBody;
+  };
 }) {
+  // Snapshot content first so a verdict insert can't leave the content
+  // dangling if the process dies between writes. Snapshot is idempotent
+  // (first writer per contentHash wins via Postgres unique PK).
+  if (input.contentSnapshot) {
+    await snapshotScanContent(input.contentSnapshot && {
+      contentHash: input.contentHash,
+      scanner: input.contentSnapshot.scanner,
+      body: input.contentSnapshot.body,
+    });
+  }
+
   return dbWrite.scannerLabelReview.upsert({
     where: {
       contentHash_version_label_reviewedBy: {
@@ -288,6 +311,102 @@ export async function upsertLabelVerdict(input: {
       reviewedAt: new Date(),
     },
   });
+}
+
+/**
+ * Focused-review run queue for one (scanner, label). Returns audit rows only —
+ * content resolution is split out into `focusedItemContent` so the queue
+ * paints quickly while the page lazily fetches content for the current item
+ * (and prefetches the next few in the background).
+ *
+ * Over-fetches from ClickHouse to keep `limit` honest after verdict filtering.
+ */
+export async function focusedRun(input: {
+  scanner: Scanner;
+  label: string;
+  lookbackDays?: number;
+  limit: number;
+  nearMissGap: number;
+  userId: number;
+}): Promise<{
+  items: AggregatedScanRow[];
+  totalAvailable: number;
+  alreadyVerdicted: number;
+}> {
+  const ch = ensureClickhouse();
+  const lookback = input.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
+  // Pull more candidates than `limit` so heavy reviewers still hit a full page
+  // after their verdicts are filtered out. Capped to keep CH read bounded.
+  const chLimit = Math.min(input.limit * 5, 300);
+
+  // Include triggered rows always; include untriggered only when they're
+  // within `nearMissGap` of triggering. Anything further below threshold is
+  // noise — moderator doesn't need to see it.
+  const havingClause = `
+    max(triggered) = 1
+    OR (anyLast(threshold) IS NOT NULL AND anyLast(threshold) - anyLast(score) <= {nearMissGap:Float32})
+  `;
+
+  const resp = await ch.query({
+    query: `
+      SELECT ${AGGREGATE_SELECT}
+      FROM scanner_label_results
+      WHERE scanner = {scanner:String}
+        AND label = {label:String}
+        AND lastSeenAt > now() - INTERVAL ${lookback} DAY
+      GROUP BY contentHash, version, label
+      HAVING ${havingClause}
+      ORDER BY max(lastSeenAt) DESC
+      LIMIT {limit:UInt32}
+      SETTINGS prefer_column_name_to_alias = 1
+    `,
+    query_params: {
+      scanner: input.scanner,
+      label: input.label,
+      limit: chLimit,
+      nearMissGap: input.nearMissGap,
+    },
+    format: 'JSONEachRow',
+  });
+  const allRows = (await resp.json()) as AggregatedScanRow[];
+
+  if (allRows.length === 0) {
+    return { items: [], totalAvailable: 0, alreadyVerdicted: 0 };
+  }
+
+  const verdicted = await dbRead.scannerLabelReview.findMany({
+    where: {
+      reviewedBy: input.userId,
+      label: input.label,
+      contentHash: { in: allRows.map((r) => r.contentHash) },
+    },
+    select: { contentHash: true, version: true },
+  });
+  const verdictedSet = new Set(verdicted.map((v) => `${v.contentHash}::${v.version}`));
+  const unverdicted = allRows.filter((r) => !verdictedSet.has(`${r.contentHash}::${r.version}`));
+  const items = unverdicted.slice(0, input.limit);
+
+  return {
+    items,
+    totalAvailable: allRows.length,
+    alreadyVerdicted: allRows.length - unverdicted.length,
+  };
+}
+
+/**
+ * Resolve content for a single audit item. The focused-review page calls this
+ * per-item as the moderator cursors through the run, with React Query
+ * prefetching the next few items in the background.
+ */
+export async function focusedItemContent(item: ScanContentItem): Promise<ScanContent> {
+  const [content] = await getScanContents([item]);
+  return (
+    content ?? {
+      contentHash: item.contentHash,
+      scanner: item.scanner,
+      unavailable: true,
+    }
+  );
 }
 
 export async function deleteLabelVerdict(input: {
