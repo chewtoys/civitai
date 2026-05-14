@@ -730,18 +730,18 @@ export const ModelPlacementCard = ({
 }) => {
   const mobile = useIsMobile({ breakpoint: 'md' });
   const currentUser = useCurrentUser();
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
   const { selectedAuction, justBid, setJustBid } = useAuctionContext();
 
   const isGreenBidBlocked =
-    isGreen &&
+    features.isGreen &&
     !!(
       data.entityData?.model?.nsfw ||
       data.entityData?.model?.poi ||
       data.entityData?.model?.minor
     );
   const isGreenImageNsfw =
-    isGreen &&
+    features.isGreen &&
     !isGreenBidBlocked &&
     !!data.entityData?.image?.nsfwLevel &&
     Flags.intersects(data.entityData.image.nsfwLevel, nsfwBrowsingLevelsFlag);

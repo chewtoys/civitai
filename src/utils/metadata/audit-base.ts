@@ -7,7 +7,7 @@ import { lazy } from '~/shared/utils/lazy';
 
 export function prepareWordRegex(word: string, pluralize = false) {
   let regexStr = word;
-  regexStr = regexStr.replace(/\s+/g, `[^a-zA-Z0-9]*`);
+  regexStr = regexStr.replace(/\s+/g, `[^a-zA-Z0-9]+`);
   if (!word.includes('[')) {
     regexStr = regexStr
       .replace(/i/g, '[i|l|1]')

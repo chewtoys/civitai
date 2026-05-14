@@ -281,7 +281,7 @@ export const orchestratorRouter = router({
       //     });
       //   }
       // }
-      const { ip, fingerprint, user } = ctx;
+      const { ip, user } = ctx;
 
       if (!!workflows?.length) await patchWorkflows({ input: workflows, token: ctx.token });
 
@@ -310,7 +310,7 @@ export const orchestratorRouter = router({
                       userId: user.id,
                       jobId,
                     },
-                    { ip, fingerprint }
+                    { ip }
                   );
                 }
               })
@@ -394,7 +394,10 @@ export const orchestratorRouter = router({
     .input(z.any())
     .query(async ({ ctx, input }) => {
       const userTier = ctx.user.tier ?? 'free';
-      const { externalCtx, status } = await buildGenerationContext(userTier, ctx.features);
+      const { externalCtx, status } = await buildGenerationContext(userTier, ctx.features, {
+        id: ctx.user.id,
+        isModerator: ctx.user.isModerator,
+      });
 
       if (!status.available && !ctx.user.isModerator) {
         throw new TRPCError({

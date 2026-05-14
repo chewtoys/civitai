@@ -129,6 +129,7 @@ export const ECO = {
   HyDit1: 12,
   AuraFlow: 13,
   HiDream: 14,
+  HiDreamO1: 29,
   Kolors: 15,
   Lumina: 16,
   Mochi: 17,
@@ -576,6 +577,22 @@ export const ecosystems: EcosystemRecord[] = [
     sortOrder: 130,
   },
 
+  // HiDream Family (familyId: 19)
+  {
+    id: ECO.HiDream,
+    key: 'HiDream',
+    displayName: 'HiDream',
+    familyId: 19,
+    sortOrder: 140,
+  },
+  {
+    id: ECO.HiDreamO1,
+    key: 'HiDream-O1',
+    displayName: 'HiDream-O1',
+    familyId: 19,
+    sortOrder: 141,
+  },
+
   // Standalone ecosystems (no family)
   { id: ECO.Anima, key: 'Anima', displayName: 'Anima', sortOrder: 199 },
   { id: ECO.AuraFlow, key: 'AuraFlow', displayName: 'AuraFlow', sortOrder: 200 },
@@ -586,12 +603,6 @@ export const ecosystems: EcosystemRecord[] = [
     displayName: 'CogVideoX',
     sortOrder: 202,
     // No generation support - training only
-  },
-  {
-    id: ECO.HiDream,
-    key: 'HiDream',
-    displayName: 'HiDream',
-    sortOrder: 203,
   },
   { id: ECO.Kolors, key: 'Kolors', displayName: 'Kolors', sortOrder: 204 },
   {
@@ -807,6 +818,10 @@ export const ecosystemSupport: EcosystemSupport[] = [
   { ecosystemId: ECO.HiDream, supportType: 'generation', modelTypes: checkpointAndLora },
   { ecosystemId: ECO.HiDream, supportType: 'training', modelTypes: [ModelType.LORA] },
 
+  // HiDream-O1 - checkpoint and LORA
+  { ecosystemId: ECO.HiDreamO1, supportType: 'generation', modelTypes: checkpointAndLora },
+  { ecosystemId: ECO.HiDreamO1, supportType: 'training', modelTypes: [ModelType.LORA] },
+
   // NanoBanana - checkpoint only
   { ecosystemId: ECO.NanoBanana, supportType: 'generation', modelTypes: checkpointOnly },
 
@@ -856,10 +871,12 @@ export const ecosystemSupport: EcosystemSupport[] = [
   // ZImageTurbo - checkpoint and LORA
   { ecosystemId: ECO.ZImageTurbo, supportType: 'generation', modelTypes: checkpointAndLora },
   { ecosystemId: ECO.ZImageTurbo, supportType: 'training', modelTypes: [ModelType.LORA] },
+  { ecosystemId: ECO.ZImageTurbo, supportType: 'auction', modelTypes: checkpointAndLora },
 
   // ZImageBase - checkpoint and LORA
   { ecosystemId: ECO.ZImageBase, supportType: 'generation', modelTypes: checkpointAndLora },
   { ecosystemId: ECO.ZImageBase, supportType: 'training', modelTypes: [ModelType.LORA] },
+  { ecosystemId: ECO.ZImageBase, supportType: 'auction', modelTypes: checkpointAndLora },
 
   // LTXV - checkpoint only (parent ecosystem)
   { ecosystemId: ECO.LTXV, supportType: 'generation', modelTypes: checkpointOnly },
@@ -970,7 +987,6 @@ export const ecosystemSettings: EcosystemSettings[] = [
     ecosystemId: ECO.Anima,
     defaults: {
       model: { id: 2836417 },
-      modelLocked: true,
     },
   },
   {
@@ -983,6 +999,13 @@ export const ecosystemSettings: EcosystemSettings[] = [
     ecosystemId: ECO.HiDream,
     defaults: {
       model: { id: 1771369 },
+      modelLocked: true,
+    },
+  },
+  {
+    ecosystemId: ECO.HiDreamO1,
+    defaults: {
+      model: { id: 2939964 },
       modelLocked: true,
     },
   },
@@ -1639,6 +1662,7 @@ export const BM = {
   Flux2Klein_4B: 75,
   Flux2Klein_4B_base: 76,
   HiDream: 9,
+  HiDreamO1: 87,
   Hunyuan1: 10,
   HunyuanVideo: 11,
   Illustrious: 12,
@@ -1995,6 +2019,11 @@ export const ecosystemFamilies: BaseModelFamilyRecord[] = [
     name: 'Alibaba - Taotian',
     description: "Alibaba Taotian Future Life Lab's video generation models",
   },
+  {
+    id: 19,
+    name: 'HiDream',
+    description: "HiDream.ai's image generation models",
+  },
 ];
 
 export const ecosystemFamilyById = new Map(ecosystemFamilies.map((f) => [f.id, f]));
@@ -2158,6 +2187,14 @@ export const baseModelRecords: BaseModelRecord[] = [
     description: 'High-resolution image generation model optimized for detailed outputs',
     type: 'image',
     ecosystemId: ECO.HiDream,
+    licenseId: 19,
+  },
+  {
+    id: BM.HiDreamO1,
+    name: 'HiDream-O1',
+    description: "HiDream.ai's unified pixel-level transformer for text-to-image generation",
+    type: 'image',
+    ecosystemId: ECO.HiDreamO1,
     licenseId: 19,
   },
 
@@ -4264,6 +4301,6 @@ export function getCanAuctionForGeneration(baseModel?: string): boolean {
   if (!ecosystem) return false;
 
   // Ecosystems that don't support auction
-  const noAuctionEcosystems = ['Qwen', 'ZImageTurbo', 'ZImageBase', 'Other'];
+  const noAuctionEcosystems = ['Qwen', 'Other'];
   return !noAuctionEcosystems.includes(ecosystem.key);
 }

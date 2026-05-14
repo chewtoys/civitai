@@ -39,6 +39,35 @@ export function queryCache(db: PrismaClient, key: string, version?: string) {
   };
 }
 
+// Sibling of queryCache for callers that run raw queries through node-postgres
+// (pg-pool) instead of Prisma. Same Redis caching semantics, but takes a
+// query executor closure that returns rows directly. Used by getAllImages
+// where the query is dispatched to one of pgDbWrite | pgDbRead | datapacketDbRead
+// based on dual-DB routing logic that we can't push into a Prisma client.
+type RawQueryExecutor = <Row>(query: Prisma.Sql) => Promise<Row[]>;
+export function queryCacheRaw(executor: RawQueryExecutor, key: string, version?: string) {
+  return async function <T extends object[]>(query: Prisma.Sql, options?: cachedQueryOptions) {
+    if (options?.ttl === 0) return (await executor<T[number]>(query)) as unknown as T;
+
+    // this typing is not quite right, as we're creating redis keys on the fly here
+    const cacheKey = [key, version, hashifyObject(query).toString()]
+      .filter(isDefined)
+      .join(':') as RedisKeyTemplateCache;
+    const cachedData = await redis.packed.get<T>(cacheKey);
+    if (cachedData && options?.ttl !== 0) {
+      cacheHitCounter.inc({ cache_name: key, cache_type: 'queryCache' });
+      return cachedData ?? ([] as unknown as T);
+    }
+
+    cacheMissCounter.inc({ cache_name: key, cache_type: 'queryCache' });
+    const result = (await executor<T[number]>(query)) as unknown as T;
+    await redis.packed.set(cacheKey, result, { EX: options?.ttl });
+
+    if (options?.tag) await tagCacheKey(cacheKey, options?.tag);
+    return result;
+  };
+}
+
 async function tagCacheKey(key: string, tag: string | string[]) {
   const tags = Array.isArray(tag) ? tag : [tag];
   for (const tag of tags) {
@@ -49,7 +78,9 @@ async function tagCacheKey(key: string, tag: string | string[]) {
 export async function bustCacheTag(tag: string | string[]) {
   const tags = Array.isArray(tag) ? tag : [tag];
   for (const tag of tags) {
-    const keys = await redis.packed.sMembers<RedisKeyTemplateCache>(`${REDIS_KEYS.TAG}:${tag}`);
+    // tagCacheKey writes raw strings via redis.sAdd; read with the same codec.
+    // packed.sMembers would msgpack-decode them and throw on every member.
+    const keys = await redis.sMembers<RedisKeyTemplateCache>(`${REDIS_KEYS.TAG}:${tag}`);
     for (const key of keys) await redis.del(key);
     await redis.del(`${REDIS_KEYS.TAG}:${tag}`);
   }
@@ -431,10 +462,7 @@ export async function bustFetchThroughCache(key: RedisKeyTemplateCache) {
   await redis.packed.set(key, toCache, { KEEPTTL: true });
 }
 
-export async function clearCacheByPattern(
-  pattern: string,
-  onProgress?: (cleared: number) => void
-) {
+export async function clearCacheByPattern(pattern: string, onProgress?: (cleared: number) => void) {
   const cleared: string[] = [];
 
   if (!pattern.includes('*')) {
@@ -469,7 +497,10 @@ export async function clearCacheByPattern(
 }
 
 function globToRegex(pattern: string) {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
   return new RegExp('^' + escaped + '$');
 }
 

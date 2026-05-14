@@ -71,14 +71,13 @@ export const serverSchema = z.object({
   S3_UPLOAD_REGION: z.string(),
   S3_UPLOAD_ENDPOINT: z.url(),
   S3_UPLOAD_BUCKET: z.string(),
-  S3_IMAGE_UPLOAD_KEY: z.string(),
-  S3_IMAGE_UPLOAD_SECRET: z.string(),
-  S3_IMAGE_UPLOAD_REGION: z.string(),
-  S3_IMAGE_UPLOAD_ENDPOINT: z.url(),
-  S3_IMAGE_UPLOAD_BUCKET: z.string(),
+  // Legacy DO Spaces image credentials — only used for deleting old images
+  S3_IMAGE_UPLOAD_KEY: z.string().optional(),
+  S3_IMAGE_UPLOAD_SECRET: z.string().optional(),
+  S3_IMAGE_UPLOAD_REGION: z.string().optional(),
+  S3_IMAGE_UPLOAD_ENDPOINT: z.string().optional(),
+  S3_IMAGE_UPLOAD_BUCKET: z.string().optional(),
   S3_IMAGE_FORCE_PATH_STYLE: zc.booleanString.optional().default(false),
-  S3_IMAGE_UPLOAD_OVERRIDE: z.string().optional(),
-  S3_IMAGE_UPLOAD_BUCKET_OLD: z.string().optional(),
   S3_IMAGE_CACHE_BUCKET: z.string().default(''),
   S3_IMAGE_CACHE_BUCKET_OLD: z.string().optional(),
   CF_ACCOUNT_ID: z.string().optional(),
@@ -88,8 +87,6 @@ export const serverSchema = z.object({
   JOB_TOKEN: z.string(),
   WEBHOOK_URL: z.url().optional(),
   WEBHOOK_TOKEN: z.string(),
-  SCANNING_ENDPOINT: isProd ? z.string() : z.string().optional(),
-  SCANNING_TOKEN: z.string(),
   UNAUTHENTICATED_DOWNLOAD: zc.booleanString,
   UNAUTHENTICATED_LIST_NSFW: zc.booleanString,
   LOGGING: commaDelimitedStringArray(),
@@ -186,8 +183,6 @@ export const serverSchema = z.object({
   UPLOAD_PROHIBITED_EXTENSIONS: commaDelimitedStringArray().optional(),
   POST_INTENT_DETAILS_HOSTS: z.preprocess(stringToArray, z.array(z.url()).optional()),
   CHOPPED_TOKEN: z.string().optional(),
-  FINGERPRINT_SECRET: z.string().length(64).optional(),
-  FINGERPRINT_IV: z.string().length(32).optional(),
   TIER_METADATA_KEY: z.string().default('tier'),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
@@ -290,6 +285,11 @@ export const serverSchema = z.object({
   // Storage resolver internal API (for registering B2 uploads)
   STORAGE_RESOLVER_INTERNAL_URL: z.string().optional(),
   STORAGE_RESOLVER_INTERNAL_TOKEN: z.string().optional(),
+
+  // Image-cacher invalidation endpoint (cluster-internal). Used to clear
+  // image-cacher's Redis L2 cache + Cloudflare cache after we delete an
+  // image from B2. Optional — if unset, invalidation is skipped.
+  IMAGE_CACHER_URL: z.url().optional(),
 
   // BitDex
   BITDEX_URL: z.string().optional().default(''),

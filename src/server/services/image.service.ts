@@ -40,7 +40,7 @@ import {
   type JudgeScore,
 } from '~/server/games/daily-challenge/daily-challenge.utils';
 import { poolCounters } from '~/server/games/new-order/utils';
-import { logToAxiom } from '~/server/logging/client';
+import { logToAxiom, safeError } from '~/server/logging/client';
 import { withSpan } from '~/server/utils/otel-helpers';
 import { fetchDocumentsAbortable, metricsSearchClient } from '~/server/meilisearch/client';
 import { postMetrics } from '~/server/metrics';
@@ -61,7 +61,7 @@ import {
 import type { RedisKeyTemplateSys } from '~/server/redis/client';
 import { redis, REDIS_KEYS, REDIS_SYS_KEYS, sysRedis } from '~/server/redis/client';
 import { imageMetricsCache } from '~/server/redis/entity-metric-populate';
-import { createCachedObject } from '~/server/utils/cache-helpers';
+import { createCachedObject, queryCacheRaw } from '~/server/utils/cache-helpers';
 import { createLruCache } from '~/server/utils/lru-cache';
 import type { GetByIdInput } from '~/server/schema/base.schema';
 import type { CollectionMetadataSchema } from '~/server/schema/collection.schema';
@@ -126,6 +126,7 @@ import {
 import type { ImageModActivity } from '~/server/services/moderator.service';
 import { trackModActivity } from '~/server/services/moderator.service';
 import { createNotification } from '~/server/services/notification.service';
+import { queueComicsForPanelImages } from '~/server/services/nsfwLevels.service';
 import { bustCachesForPosts, updatePostNsfwLevel } from '~/server/services/post.service';
 import { bulkSetReportStatus, resolveEntityAppeal } from '~/server/services/report.service';
 import { getVotableTags2 } from '~/server/services/tag.service';
@@ -174,7 +175,7 @@ import { fetchBlob } from '~/utils/file-utils';
 import { getMetadata } from '~/utils/metadata';
 import { removeEmpty } from '~/utils/object-helpers';
 import { DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { imageS3Client } from '~/utils/s3-client';
+import { getImageS3Client } from '~/utils/s3-client';
 import { serverUploadImage, getB2ImageS3Client } from '~/utils/s3-utils';
 import { resolveMediaLocation } from '~/server/services/storage-resolver';
 import { isDefined, isNumber } from '~/utils/type-guards';
@@ -237,15 +238,37 @@ const {
 
 export async function purgeResizeCache({ url }: { url: string }) {
   // Purge from new cache bucket
-  const { items } = await imageS3Client.listObjects({
+  const { items } = await getImageS3Client().listObjects({
     bucket: env.S3_IMAGE_CACHE_BUCKET,
     prefix: url,
   });
   const keys = items.map((x) => x.Key).filter(isDefined);
   if (keys.length) {
-    await imageS3Client.deleteManyObjects({
+    await getImageS3Client().deleteManyObjects({
       bucket: env.S3_IMAGE_CACHE_BUCKET,
       keys,
+    });
+  }
+
+  // Best-effort: tell image-cacher to invalidate its caches for this UUID
+  // after the source-of-truth deletion (above) has succeeded. If this fails
+  // (network, image-cacher down, etc.) we accept up to 4d of stale L2 entries
+  // — no worse than today's behavior. Never block or throw the delete flow.
+  if (env.IMAGE_CACHER_URL && url) {
+    fetch(`${env.IMAGE_CACHER_URL}/admin/invalidate?imageKey=${encodeURIComponent(url)}`, {
+      method: 'POST',
+      // Invalidation must not slow down the delete flow.
+      signal: AbortSignal.timeout(2000),
+    }).catch((err) => {
+      logToAxiom({
+        type: 'warning',
+        name: 'image-cacher-invalidate',
+        message: 'image-cacher invalidate failed',
+        imageKey: url,
+        error: safeError(err),
+      }).catch(() => {
+        // swallow — best effort logging
+      });
     });
   }
 }
@@ -276,9 +299,9 @@ export async function deleteImageFromS3({ id, url }: { id: number; url: string }
           })
         )
       );
-    } else {
+    } else if (env.S3_IMAGE_UPLOAD_BUCKET) {
       await withRetries(() =>
-        imageS3Client.deleteObject({ bucket: env.S3_IMAGE_UPLOAD_BUCKET, key: url })
+        getImageS3Client().deleteObject({ bucket: env.S3_IMAGE_UPLOAD_BUCKET!, key: url })
       );
     }
     await purgeResizeCache({ url: url });
@@ -502,6 +525,11 @@ export async function handleUnblockImages({
       queueImageSearchIndexUpdate({ ids, action: SearchIndexUpdateQueueAction.Update }),
       deleteImagTagsForReviewByImageIds(ids),
       bulkRemoveBlockedImages(images.map(({ pHash }) => pHash).filter(isDefined)),
+      // Comic projects are gated on `Image.needsReview`/`ingestion`/
+      // `tosViolation`. Unblock flips those, but `processImageScanWorkflow`
+      // (where the standard re-queue lives) isn't on this code path —
+      // re-queue here so the search index re-evaluates visibility.
+      queueComicsForPanelImages(ids),
     ]);
     // Bust after the writes above land so a concurrent reader can't refill the cache from pre-update rows.
     if (postIds.length) await bustCachesForPosts(postIds);
@@ -571,6 +599,11 @@ export async function handleBlockImages({
 
       queueImageSearchIndexUpdate({ ids, action: SearchIndexUpdateQueueAction.Delete }),
       invalidateExistence,
+      // Same reason as `handleUnblockImages` — moderator block bypasses
+      // `processImageScanWorkflow`, so we queue the parent comic project
+      // here directly. Without this the comic stays indexed under its
+      // pre-block (visible) state.
+      queueComicsForPanelImages(ids),
     ]);
     // Bust after the block write commits so a concurrent reader can't refill with the pre-block state.
     if (postIds.length) await bustCachesForPosts(postIds);
@@ -698,6 +731,23 @@ export const getImageById = async ({ id }: GetByIdInput) => {
   });
 };
 
+/**
+ * Runtime toggle for the new image ingestion path (createImageIngestionRequest
+ * with the expanded mediaRating step). Reads from Redis so ops can flip
+ * without a deploy. Accepts '1'/'true' / '0'/'false' as string values.
+ *
+ * If the key doesn't exist (first request after deploy), seeds it to 'false'
+ * so the toggle is discoverable in Redis and explicitly off by default.
+ * Operators set the key to '1' to enable.
+ */
+async function isImageScannerNewEnabled(): Promise<boolean> {
+  const value = await sysRedis.get(REDIS_SYS_KEYS.SYSTEM.IMAGE_SCANNER_NEW);
+  if (value === '1' || value === 'true') return true;
+  if (value === '0' || value === 'false') return false;
+  await sysRedis.set(REDIS_SYS_KEYS.SYSTEM.IMAGE_SCANNER_NEW, 'false');
+  return false;
+}
+
 export const ingestImageById = async ({ id }: GetByIdInput) => {
   const images = await dbWrite.$queryRaw<IngestImageInput[]>`
     SELECT id, url, type, width, height, meta->>'prompt' as prompt
@@ -778,7 +828,7 @@ export const ingestImage = async ({
     image.prompt = prompt;
   }
 
-  if (env.IMAGE_SCANNER_NEW || userId === 5) {
+  if ((await isImageScannerNewEnabled()) || userId === 5) {
     const { data: workflowResponse } = await createImageIngestionRequest({
       imageId: id,
       url,
@@ -1104,8 +1154,14 @@ export const getAllImages = async (
   const AND: Prisma.Sql[] = [Prisma.sql`i."postId" IS NOT NULL`];
   const WITH: Prisma.Sql[] = [];
   let orderBy: string;
-  // const cacheTags: string[] = [];
-  // let cacheTime = CacheTTL.xs;
+  const cacheTags: string[] = [];
+  // Default-deny: cache only enabled for safe, shareable paths (set explicitly below).
+  // Personalized branches set isPersonalized = true. Final cacheTime is forced to 0
+  // at the cache-wrapper site if isPersonalized — this makes the invariant
+  // ordering-independent so a personalization branch above the modelId/modelVersionId
+  // enable site (e.g. `hidden`) can't be silently re-enabled by a later branch.
+  let cacheTime = 0;
+  let isPersonalized = false;
   const userId = user?.id;
   const isModerator = user?.isModerator ?? false;
   const includeCosmetics = include?.includes('cosmetics'); // TODO: This must be done similar to user cosmetics.
@@ -1161,7 +1217,7 @@ export const getAllImages = async (
     if (!userId) throw throwAuthorizationError();
     const imageIds = prefetchedHiddenImages?.map((x) => x.imageId) ?? [];
     if (imageIds.length) {
-      // cacheTime = 0;
+      isPersonalized = true; // per-user hidden image set
       AND.push(Prisma.sql`i."id" IN (${Prisma.join(imageIds)})`);
     } else {
       return { items: [], nextCursor: undefined };
@@ -1215,6 +1271,8 @@ export const getAllImages = async (
     AND.push(Prisma.sql`(p."publishedAt" IS NULL)`);
   } else if (!pending) {
     if (userId && !publishedOnly) {
+      // userId is bound into the SQL, so each user gets their own cache key —
+      // safe to cache, lower hit rate but no cross-user leakage.
       AND.push(Prisma.sql`(p."publishedAt" < now() OR p."userId" = ${userId})`);
     } else {
       AND.push(Prisma.sql`(p."publishedAt" < now())`);
@@ -1253,16 +1311,18 @@ export const getAllImages = async (
     if (reviewId) {
       joins.push(`JOIN "ResourceReview" re ON re."modelVersionId" = irr."modelVersionId"`);
       AND.push(Prisma.sql`re."id" = ${reviewId}`);
-      // cacheTime = 0;
+      // reviewId joins ResourceReview — out of scope for this PR's cache enable.
     } else if (modelVersionId) {
       AND.push(Prisma.sql`irr."modelVersionId" = ${modelVersionId}`);
-      // cacheTime = CacheTTL.day;
-      // cacheTags.push(`images-modelVersion:${modelVersionId}`);
+      // 10 min — model galleries can tolerate brief staleness; bust hooks in
+      // post.service.ts fire on image upload/update for the matching tag.
+      cacheTime = CacheTTL.md;
+      cacheTags.push(`images-modelVersion:${modelVersionId}`);
     } else if (modelId) {
       joins.push(`JOIN "ModelVersion" mv ON mv.id = irr."modelVersionId"`);
       AND.push(Prisma.sql`mv."modelId" = ${modelId}`);
-      // cacheTime = CacheTTL.day;
-      // cacheTags.push(`images-model:${modelId}`);
+      cacheTime = CacheTTL.md;
+      cacheTags.push(`images-model:${modelId}`);
     }
   }
 
@@ -1282,23 +1342,21 @@ export const getAllImages = async (
       // Prisma.sql`(i."userId" = ${targetUserId} OR i."postId" IN (SELECT id FROM collaboratingPosts))`
       Prisma.sql`i."userId" = ${targetUserId}`
     );
-    // Don't cache self queries
-    // cacheTime = 0;
-    // if (targetUserId !== userId) {
-    //   cacheTime = CacheTTL.day;
-    //   cacheTags.push(`images-user:${targetUserId}`);
-    // } else cacheTime = 0;
+    // user-gallery path: out of scope for this PR; future work could enable
+    // cache for targetUserId !== userId via an `images-user:${targetUserId}` tag.
+    isPersonalized = true;
   }
 
   // Filter only followed users
   // [x]
   if (userId && followed && prefetchedUserFollows?.length) {
-    // cacheTime = 0;
+    isPersonalized = true; // per-user follow set
     AND.push(Prisma.sql`i."userId" IN (${Prisma.join(prefetchedUserFollows)})`);
   }
 
   // Filter to specific tags
   if (tags?.length) {
+    isPersonalized = true; // tag combinations are high-cardinality; skip cache for now
     AND.push(Prisma.sql`i.id IN (
       SELECT "imageId"
       FROM "TagsOnImageDetails"
@@ -1319,7 +1377,10 @@ export const getAllImages = async (
   if (!!postIds?.length) AND.push(Prisma.sql`i."postId" IN (${Prisma.join(postIds)})`);
 
   // Filter to a specific image
-  if (imageId) AND.push(Prisma.sql`i.id = ${imageId}`);
+  if (imageId) {
+    isPersonalized = true; // single-image lookups don't benefit from caching
+    AND.push(Prisma.sql`i.id = ${imageId}`);
+  }
 
   if (sort === ImageSort.Random && !collectionId) {
     throw throwBadRequestError('Random sort requires a collectionId');
@@ -1428,7 +1489,10 @@ export const getAllImages = async (
     //   orderBy = `im."collectedCount" DESC, im."reactionCount" DESC, im."imageId"`;
     //   if (!isGallery) AND.push(Prisma.sql`im."collectedCount" > 0`);
     // }
-    if (sort === ImageSort.Random) orderBy = 'ct."sortKey" DESC, i."id" DESC';
+    if (sort === ImageSort.Random) {
+      isPersonalized = true; // random ordering should not be pinned by a cache
+      orderBy = 'ct."sortKey" DESC, i."id" DESC';
+    }
     // TODO this causes the app to spike
     // else if (sort === ImageSort.Oldest) {
     //   orderBy = 'i."sortAt" ASC';
@@ -1487,6 +1551,7 @@ export const getAllImages = async (
   if (prioritizeUser && !useModelVersionCache) {
     // [x]
     if (cursor) throw new Error('Cannot use cursor with prioritizedUserIds');
+    isPersonalized = true; // prioritizedUserIds reorders/filters per-caller
     if (modelVersionId) AND.push(Prisma.sql`p."modelVersionId" = ${modelVersionId}`);
 
     // If system user, show community images
@@ -1508,7 +1573,7 @@ export const getAllImages = async (
   }
 
   if (userId && !!reactions?.length) {
-    // cacheTime = 0;
+    isPersonalized = true; // per-user reaction filter
     // Use IN subquery - planner can start from reactions (small set per user) and join to images
     AND.push(Prisma.sql`i.id IN (
       SELECT ir."imageId" FROM "ImageReaction" ir
@@ -1543,6 +1608,7 @@ export const getAllImages = async (
   }
 
   if (pending && (isModerator || userId)) {
+    isPersonalized = true; // pending view is moderator/owner-scoped
     if (isModerator) {
       AND.push(Prisma.sql`((i."nsfwLevel" & ${browsingLevel}) != 0 OR i."nsfwLevel" = 0)`);
     } else if (userId) {
@@ -1644,13 +1710,26 @@ export const getAllImages = async (
       LIMIT ${limit + 1}
   `;
 
-  // Disable Prisma query
-  // if (!env.IMAGE_QUERY_CACHING) cacheTime = 0;
-  // const cacheable = queryCache(dbRead, 'getAllImages', 'v1');
-  // const rawImages = await cacheable<GetAllImagesRaw[]>(query, { ttl: cacheTime, tag: cacheTags });
-
-  const { rows: rawImages } = await withSpan('image:getAllImages:rawQuery', () =>
-    imageDb.query<GetAllImagesRaw>(query)
+  // Final invariant: any personalized branch above forces no-cache, regardless of
+  // ordering relative to the modelId/modelVersionId enable site. This prevents a
+  // future personalization branch added above the enable from being silently
+  // re-cached.
+  if (isPersonalized) cacheTime = 0;
+  if (!env.IMAGE_QUERY_CACHING) cacheTime = 0;
+  // queryCacheRaw wraps imageDb.query so the dual-DB routing (write/datapacket/read)
+  // computed above is preserved while gaining Redis cache semantics.
+  // bustCacheTag('images-model:X' / 'images-modelVersion:X') is already wired in
+  // post.service.ts on image upload/update events.
+  const cacheable = queryCacheRaw(
+    async <Row,>(q: Prisma.Sql) => {
+      const { rows } = await imageDb.query(q as any);
+      return rows as Row[];
+    },
+    'getAllImages',
+    'v1'
+  );
+  const rawImages = await withSpan('image:getAllImages:rawQuery', () =>
+    cacheable<GetAllImagesRaw[]>(query, { ttl: cacheTime, tag: cacheTags })
   );
   // const rawImages = await dbRead.$queryRaw<GetAllImagesRaw[]>(query);
 
@@ -7130,7 +7209,7 @@ export const uploadImageFromUrl = async ({ imageUrl }: { imageUrl: string }) => 
   const upload = await serverUploadImage({
     file: blob,
     key: imageKey,
-    bucket: env.S3_IMAGE_UPLOAD_BUCKET,
+    bucket: env.S3_IMAGE_B2_BUCKET ?? 'civitai-media-uploads',
   });
 
   const data = await upload.done();

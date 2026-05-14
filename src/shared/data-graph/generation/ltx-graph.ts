@@ -53,16 +53,19 @@ const LTXV2_DISTILLED_ID = 2600562;
 const LTXV23_DEV_ID = 2749908;
 const LTXV23_DISTILLED_ID = 2749948;
 
-/** Sulpher 2 model version IDs (LTXV23 ecosystem) */
-const SULPHER2_DEV_ID = 2921800;
-const SULPHER2_DISTILLED_ID = 2923808;
+/** Sulphur 2 model version IDs (LTXV23 ecosystem) */
+const SULPHUR2_DEV_ID = 2921800;
+const SULPHUR2_DISTILLED_ID = 2923808;
 
 /** Set of all distilled version IDs (across both ecosystems) */
 const DISTILLED_IDS = new Set<number>([
   LTXV2_DISTILLED_ID,
   LTXV23_DISTILLED_ID,
-  SULPHER2_DISTILLED_ID,
+  SULPHUR2_DISTILLED_ID,
 ]);
+
+/** Set of Sulphur 2 version IDs — these route through LTXV23 with a diffusionModel AIR override */
+const SULPHUR2_IDS = new Set<number>([SULPHUR2_DEV_ID, SULPHUR2_DISTILLED_ID]);
 
 /**
  * Hierarchical version options for the model selector.
@@ -98,14 +101,14 @@ const ltxVersionOptions: VersionGroup = {
       },
     },
     {
-      label: 'Sulpher 2',
-      value: SULPHER2_DEV_ID,
+      label: 'Sulphur 2',
+      value: SULPHUR2_DEV_ID,
       baseModel: 'LTXV23',
       children: {
         label: 'Variant',
         options: [
-          { label: 'Dev', value: SULPHER2_DEV_ID, baseModel: 'LTXV23' },
-          { label: 'Distilled', value: SULPHER2_DISTILLED_ID, baseModel: 'LTXV23' },
+          { label: 'Dev', value: SULPHUR2_DEV_ID, baseModel: 'LTXV23' },
+          { label: 'Distilled', value: SULPHUR2_DISTILLED_ID, baseModel: 'LTXV23' },
         ],
       },
     },
@@ -328,6 +331,11 @@ const ltxv23SubGraph = new DataGraph<LTXVersionCtx, GenerationCtx>()
     defaultValue: true,
   });
 
+// `quantity` lives in ecosystem-graph (single source of truth so the two
+// definitions don't fight over the same key during evaluation). LTXV23 is
+// allow-listed there for video output — it batches multiple videos in a
+// single job using Seed + slotIndex.
+
 // =============================================================================
 // LTX Graph (parent)
 // =============================================================================
@@ -489,4 +497,8 @@ export {
   ltxVersionOptions,
   LTXV2_DISTILLED_ID,
   LTXV23_DISTILLED_ID,
+  SULPHUR2_DEV_ID,
+  SULPHUR2_DISTILLED_ID,
+  DISTILLED_IDS,
+  SULPHUR2_IDS,
 };

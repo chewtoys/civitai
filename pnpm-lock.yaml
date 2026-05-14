@@ -26,8 +26,8 @@ importers:
         specifier: ^0.12.0
         version: 0.12.0
       '@civitai/client':
-        specifier: 0.2.0-beta.58
-        version: 0.2.0-beta.58
+        specifier: 0.2.0-beta.62
+        version: 0.2.0-beta.62
       '@civitai/cybertipline-tools':
         specifier: ^0.1.0
         version: 0.1.0
@@ -178,9 +178,6 @@ importers:
       '@prisma/instrumentation':
         specifier: ^7.4.2
         version: 7.4.2(@opentelemetry/api@1.9.0)
-      '@rajesh896/broprint.js':
-        specifier: ^2.1.1
-        version: 2.1.1
       '@react-hook/window-size':
         specifier: ^3.1.1
         version: 3.1.1(react@18.3.1)
@@ -1179,8 +1176,8 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@civitai/client@0.2.0-beta.58':
-    resolution: {integrity: sha512-WB20sWVbXxP6RnNxzH1DA+U/EmZXzKq5kILMRWzF2F4IcqpPism4Mgx1tZ7FTtlbmKtJcYHHQ8XvNqmNrvf8PQ==}
+  '@civitai/client@0.2.0-beta.62':
+    resolution: {integrity: sha512-/1qxMKlh+xkGLcP841ccorIYqc09HGfMPprkzr00R91+N1SlvJp6bnL2eCBctsTVu007X5fXRCe0FqH8nmIKRQ==}
     engines: {git: '>=2.11.0', node: '>=18.0.0', npm: '>=7.19.0', yarn: '>=1.7.0'}
 
   '@civitai/cybertipline-tools@0.1.0':
@@ -2746,10 +2743,6 @@ packages:
   '@protobufjs/utf8@1.1.0':
     resolution: {integrity: sha512-Vvn3zZrhQZkkBE8LSuW3em98c0FwgO4nxzv6OdSxPKJIEKY2bGbHn+mhGIPerzI4twdxaP8/0+06HBpwf345Lw==}
 
-  '@rajesh896/broprint.js@2.1.1':
-    resolution: {integrity: sha512-34L0SFrOLHWAhF4ZU7QS32zItGOKdu3BY0DmMwoW6zekLuJWSuCIK07Xzgyy2AqCCUByd2VHMr2wbHousid+qg==}
-    hasBin: true
-
   '@react-aria/focus@3.21.0':
     resolution: {integrity: sha512-7NEGtTPsBy52EZ/ToVKCu0HSelE3kq9qeis+2eEq90XSuJOMaDHUQrA7RC2Y89tlEwQB31bud/kKRi9Qme1dkA==}
     peerDependencies:
@@ -4293,6 +4286,7 @@ packages:
   '@xmldom/xmldom@0.9.8':
     resolution: {integrity: sha512-p96FSY54r+WJ50FIOsCOjyj/wavs8921hG5+kVMmZgKcvIKxMXHTrjNJvRgWa/zuX3B6t2lijLNFaOyuxUH+2A==}
     engines: {node: '>=14.6'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xtuc/ieee754@1.2.0':
     resolution: {integrity: sha512-DX8nKgqcGwsc0eJSqYt5lwP4DH5FlHnmuWWBRy7X0NcaGR0ZtuyeESgMwTYVEtxmsNGY+qit4QYT/MIYTOTPeA==}
@@ -10962,7 +10956,7 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@civitai/client@0.2.0-beta.58':
+  '@civitai/client@0.2.0-beta.62':
     dependencies:
       '@hey-api/client-fetch': 0.1.14
       rfc6902: 5.2.0
@@ -12475,8 +12469,6 @@ snapshots:
   '@protobufjs/pool@1.1.0': {}
 
   '@protobufjs/utf8@1.1.0': {}
-
-  '@rajesh896/broprint.js@2.1.1': {}
 
   '@react-aria/focus@3.21.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
     dependencies:

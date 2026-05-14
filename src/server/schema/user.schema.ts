@@ -371,9 +371,6 @@ export const userMeta = z.object({
 });
 export type UserMeta = z.infer<typeof userMeta>;
 
-export type ComputeDeviceFingerprintInput = z.infer<typeof computeDeviceFingerprintSchema>;
-export const computeDeviceFingerprintSchema = z.object({ fingerprint: z.string() });
-
 export type UpdateContentSettingsInput = z.infer<typeof updateContentSettingsSchema>;
 export const updateContentSettingsSchema = z.object({
   showNsfw: z.boolean().optional(),

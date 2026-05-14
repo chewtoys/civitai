@@ -222,11 +222,7 @@ export const getUserByIdHandler = async ({ input }: { input: GetByIdInput }) => 
   }
 };
 
-export const getNotificationSettingsHandler = async ({
-  ctx,
-}: {
-  ctx: ProtectedContext;
-}) => {
+export const getNotificationSettingsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   const { id } = ctx.user;
 
   try {
@@ -712,14 +708,11 @@ export const toggleFollowUserHandler = async ({
   ctx: ProtectedContext;
 }) => {
   try {
-    const { ip, fingerprint, user } = ctx;
+    const { ip, user } = ctx;
     const { id: userId } = user;
     const following = await toggleFollowUser({ ...input, userId });
     if (following) {
-      await firstDailyFollowReward.apply(
-        { followingId: input.targetUserId, userId },
-        { ip, fingerprint }
-      );
+      await firstDailyFollowReward.apply({ followingId: input.targetUserId, userId }, { ip });
       ctx.track
         .userEngagement({
           type: 'Follow',
@@ -1413,21 +1406,13 @@ export const restoreAlertHandler = async ({
   }
 };
 
-export const getUserBookmarkCollectionsHandler = async ({
-  ctx,
-}: {
-  ctx: ProtectedContext;
-}) => {
+export const getUserBookmarkCollectionsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   return getUserBookmarkCollections({
     userId: ctx.user.id,
   });
 };
 
-export const getUserPurchasedRewardsHandler = async ({
-  ctx,
-}: {
-  ctx: ProtectedContext;
-}) => {
+export const getUserPurchasedRewardsHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
     return getUserPurchasedRewards({
       userId: ctx.user.id,

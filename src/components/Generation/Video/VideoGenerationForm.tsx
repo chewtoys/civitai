@@ -34,7 +34,7 @@ import { Veo3FormInput } from '~/components/Generation/Video/Veo3FormInput';
 import { generationGraphStore, useGenerationGraphStore } from '~/store/generation-graph.store';
 import { isNewFormOnly } from '~/shared/data-graph/generation/config/workflows';
 import { ecosystemByKey } from '~/shared/constants/basemodel.constants';
-import { WORKFLOW_TAGS } from '~/shared/constants/generation.constants';
+import { WORKFLOW_TAGS, VID_QUANTITY_BY_TIER } from '~/shared/constants/generation.constants';
 import { openSwitchToNewFormModal } from '~/components/generation_v2/SwitchToNewFormModal';
 import { useLegacyGeneratorStore } from '~/store/legacy-generator.store';
 import { GenForm } from '~/components/Generation/Form/GenForm';
@@ -63,20 +63,21 @@ import { defaultWorkflowCost } from '~/shared/orchestrator/workflow-data';
  */
 const WHATIF_EXCLUDE_KEYS = new Set(['prompt', 'negativePrompt', 'seed', 'cfgScale']);
 
-
 /** Build external context for generation graph from status */
 function buildGraphContext(status: {
   limits: { quantity: number; resources: number };
   tier: string;
 }): GenerationCtx {
+  const tier = status.tier as GenerationCtx['user']['tier'];
   return {
     limits: {
       maxQuantity: status.limits.quantity,
       maxResources: status.limits.resources,
+      vidQuantity: VID_QUANTITY_BY_TIER[tier] ?? 1,
     },
     user: {
       isMember: status.tier !== 'free',
-      tier: status.tier as GenerationCtx['user']['tier'],
+      tier,
     },
   };
 }
@@ -308,13 +309,22 @@ function SubmitButton2({
   const isUploadingImage = isUploadingImageValue === 1 || isUploadingMultiple;
 
   // Use whatIfFromGraph instead of legacy whatIf route
-  const { data: queryData, isFetching, error } = trpc.orchestrator.whatIfFromGraph.useQuery(
-    query!,
-    { enabled: !!query && !isUploadingImage && canQuery }
-  );
+  const {
+    data: queryData,
+    isFetching,
+    error,
+  } = trpc.orchestrator.whatIfFromGraph.useQuery(query!, {
+    enabled: !!query && !isUploadingImage && canQuery,
+  });
 
   const data = useMemo(
-    () => queryData ?? { cost: defaultWorkflowCost, ready: false, allowMatureContent: false, transactions: undefined },
+    () =>
+      queryData ?? {
+        cost: defaultWorkflowCost,
+        ready: false,
+        allowMatureContent: false,
+        transactions: undefined,
+      },
     [queryData]
   );
 
@@ -421,10 +431,7 @@ function SubmitButton2({
       >
         Generate
       </GenerateButton>
-      <BuzzTypeSelector
-        cost={totalCost}
-        loading={isFetching}
-      />
+      <BuzzTypeSelector cost={totalCost} loading={isFetching} />
     </Button.Group>
   );
 }

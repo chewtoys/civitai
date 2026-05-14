@@ -73,10 +73,9 @@ const DrawingEditorModal = dynamic(
   { ssr: false }
 );
 
-const ImageSelectModal = dynamic(
-  () => import('~/components/Training/Form/ImageSelectModal'),
-  { ssr: false }
-);
+const ImageSelectModal = dynamic(() => import('~/components/Training/Form/ImageSelectModal'), {
+  ssr: false,
+});
 
 /** Show the "taking longer than usual" alert after this long. Matches the
  *  Generator queue's threshold (5 minutes). */
@@ -245,9 +244,7 @@ export function IterativeImageEditor({
 
   // ── Core state ──
   const [iterations, setIterations] = useState<IterationEntry[]>([]);
-  const [currentSource, setCurrentSource] = useState<SourceImage | null>(
-    initialSource ?? null
-  );
+  const [currentSource, setCurrentSource] = useState<SourceImage | null>(initialSource ?? null);
   const [annotationElements, setAnnotationElements] = useState<DrawingElement[]>([]);
   const [originalSourceUrl, setOriginalSourceUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -262,13 +259,13 @@ export function IterativeImageEditor({
   // permits it, and the previous user-blur-preference gate forbade reuse even
   // for users who explicitly opted in. The block-on-green path still routes
   // through the red-domain handoff (same flow as `siteRestricted`).
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
   const isImageBlurred = useCallback(
     (img: SourceImage | null | undefined) => {
       if (!img?.nsfwLevel) return false;
-      return isGreen && !hasSafeBrowsingLevel(img.nsfwLevel);
+      return features.isGreen && !hasSafeBrowsingLevel(img.nsfwLevel);
     },
-    [isGreen]
+    [features.isGreen]
   );
   // Stable ref so handlePollResult (a useCallback that doesn't depend on the
   // blurLevels closure) can read the latest predicate without rebuilding.
@@ -283,9 +280,10 @@ export function IterativeImageEditor({
   // edited — falling back to the config default when there's no source. Picking
   // 3:4 regardless of input would silently squash/expand the image on first
   // generation, which catches users out.
-  const [aspectRatio, setAspectRatio] = useState(() =>
-    pickClosestAspectRatio(initialSource, config.modelSizes[config.defaultModel]) ??
-    config.defaultAspectRatio
+  const [aspectRatio, setAspectRatio] = useState(
+    () =>
+      pickClosestAspectRatio(initialSource, config.modelSizes[config.defaultModel]) ??
+      config.defaultAspectRatio
   );
   const [generationModel, setGenerationModel] = useState<string | null>(null);
   const [selectedImageIds, setSelectedImageIds] = useState<number[] | null>(null);
@@ -345,9 +343,8 @@ export function IterativeImageEditor({
   // Notify parent when settings change so it can update cost queries
   useEffect(() => {
     // Extract reference IDs from @mentioned characters for server-side image fetch
-    const mentionedRefIds = mentionedCharacterRefs.length > 0
-      ? mentionedCharacterRefs.map((r) => r.id)
-      : undefined;
+    const mentionedRefIds =
+      mentionedCharacterRefs.length > 0 ? mentionedCharacterRefs.map((r) => r.id) : undefined;
 
     onSettingsChange?.({
       baseModel: generationModel,
@@ -365,7 +362,16 @@ export function IterativeImageEditor({
       selectedImageIds: activeSelectedImageIds ?? undefined,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [generationModel, aspectRatio, quantity, currentSource, activeUserReferences, mentionedCharacterRefs, activeSelectedImageIds, onSettingsChange]);
+  }, [
+    generationModel,
+    aspectRatio,
+    quantity,
+    currentSource,
+    activeUserReferences,
+    mentionedCharacterRefs,
+    activeSelectedImageIds,
+    onSettingsChange,
+  ]);
 
   const effectiveCharacterImageCount = activeSelectedImageIds
     ? activeSelectedImageIds.length
@@ -391,9 +397,8 @@ export function IterativeImageEditor({
       [];
     if (!newSizes.some((s) => s.label === aspectRatio)) {
       const defaultLabel =
-        newSizes.find(
-          (s) => s.label === '3:4' || s.label === 'Portrait' || s.label === '2:3'
-        )?.label ?? newSizes[0]?.label;
+        newSizes.find((s) => s.label === '3:4' || s.label === 'Portrait' || s.label === '2:3')
+          ?.label ?? newSizes[0]?.label;
       if (defaultLabel) setAspectRatio(defaultLabel);
     }
   };
@@ -469,8 +474,7 @@ export function IterativeImageEditor({
               ? {
                   ...it,
                   status: 'error' as const,
-                  errorMessage:
-                    result.errorMessage ?? 'Generation failed. Buzz has been refunded.',
+                  errorMessage: result.errorMessage ?? 'Generation failed. Buzz has been refunded.',
                 }
               : it
           )
@@ -593,8 +597,7 @@ export function IterativeImageEditor({
     useCallback(
       (data: Omit<WorkflowStepEvent, '$type'> & { $type: string }) => {
         if (data.$type !== 'step') return;
-        if (!activeWorkflowIdRef.current || data.workflowId !== activeWorkflowIdRef.current)
-          return;
+        if (!activeWorkflowIdRef.current || data.workflowId !== activeWorkflowIdRef.current) return;
         if (
           data.status === 'succeeded' ||
           data.status === 'failed' ||
@@ -962,7 +965,8 @@ export function IterativeImageEditor({
       uploadFn: uploadToCF,
       ImageSelectModal,
       maxSelections: 20,
-      onLoadingChange: (loading) => setUploadingCount((c) => loading ? c + 1 : Math.max(0, c - 1)),
+      onLoadingChange: (loading) =>
+        setUploadingCount((c) => (loading ? c + 1 : Math.max(0, c - 1))),
       onSuccess: async (cfId: string) => {
         const edgeUrl = getEdgeUrl(cfId, { width: 100 }) ?? cfId;
         const fullUrl = getEdgeUrl(cfId, { original: true }) ?? cfId;
@@ -1016,9 +1020,7 @@ export function IterativeImageEditor({
     if (iterations.length > 0) {
       openConfirmModal({
         title: 'Discard changes?',
-        children: (
-          <Text size="sm">You have uncommitted changes. Close without committing?</Text>
-        ),
+        children: <Text size="sm">You have uncommitted changes. Close without committing?</Text>,
         labels: { confirm: 'Discard', cancel: 'Keep editing' },
         confirmProps: { color: 'red' },
         onConfirm: () => onClose?.(),
@@ -1037,16 +1039,13 @@ export function IterativeImageEditor({
 
   // ── Keyboard shortcut: Ctrl/Cmd+Enter to send ──
   const sendButtonRef = useRef<HTMLDivElement>(null);
-  const handleTextareaKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        const btn = sendButtonRef.current?.querySelector('button');
-        if (btn && !btn.disabled) btn.click();
-      }
-    },
-    []
-  );
+  const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      const btn = sendButtonRef.current?.querySelector('button');
+      if (btn && !btn.disabled) btn.click();
+    }
+  }, []);
 
   // ── Running total buzz spent ──
   const totalSpent = useMemo(
@@ -1054,8 +1053,7 @@ export function IterativeImageEditor({
     [iterations]
   );
 
-  const containerClass =
-    mode === 'page' ? styles.editorContainerPage : styles.editorContainer;
+  const containerClass = mode === 'page' ? styles.editorContainerPage : styles.editorContainer;
 
   // ── Shared slot context ──
   const slotContext = useMemo(
@@ -1107,9 +1105,7 @@ export function IterativeImageEditor({
                 }
                 onUseAsSource={() => handleUseAsSource(iteration)}
                 onSelectImage={(image) => handleSelectImage(iteration.id, image)}
-                onRetry={
-                  iteration.status === 'error' ? () => handleRetry(iteration) : undefined
-                }
+                onRetry={iteration.status === 'error' ? () => handleRetry(iteration) : undefined}
                 onAbort={
                   iteration.status === 'generating' ? () => handleAbort(iteration.id) : undefined
                 }
@@ -1144,9 +1140,8 @@ export function IterativeImageEditor({
               <Text span fw={600}>
                 This is taking longer than usual.
               </Text>{' '}
-              Don&apos;t want to wait? Stop waiting now and try again — your in-flight job
-              will keep running, and if it eventually completes you can find it in the
-              Generator queue.
+              Don&apos;t want to wait? Stop waiting now and try again — your in-flight job will keep
+              running, and if it eventually completes you can find it in the Generator queue.
             </Text>
             <Button
               size="compact-xs"
@@ -1202,8 +1197,7 @@ export function IterativeImageEditor({
             />
           )}
           <div className={styles.inputActions}>
-            <div className={styles.inputActionsLeft}>
-            </div>
+            <div className={styles.inputActionsLeft}></div>
             <div className="flex items-center gap-1">
               {costFailed && onRetryCost && (
                 <Tooltip label="Retry cost calculation" withArrow position="top">
@@ -1233,12 +1227,12 @@ export function IterativeImageEditor({
                   queueFull
                     ? `Queue full (${used}/${limit})`
                     : generationDisabled
-                      ? 'Generation unavailable'
-                      : costFailed
-                        ? 'Cost estimation failed'
-                        : costLoading || estimatedCost == null
-                          ? 'Calculating cost…'
-                          : `~${estimatedCost} Buzz (Ctrl+Enter)`
+                    ? 'Generation unavailable'
+                    : costFailed
+                    ? 'Cost estimation failed'
+                    : costLoading || estimatedCost == null
+                    ? 'Calculating cost…'
+                    : `~${estimatedCost} Buzz (Ctrl+Enter)`
                 }
                 withArrow
                 position="top"
@@ -1254,7 +1248,13 @@ export function IterativeImageEditor({
                       </span>
                     }
                     loading={isGenerating || (costLoading && !costFailed)}
-                    disabled={!prompt.trim() || isGenerating || estimatedCost == null || queueFull || generationDisabled}
+                    disabled={
+                      !prompt.trim() ||
+                      isGenerating ||
+                      estimatedCost == null ||
+                      queueFull ||
+                      generationDisabled
+                    }
                     onPerformTransaction={handleSend}
                     showPurchaseModal
                     size="compact-sm"
@@ -1269,360 +1269,379 @@ export function IterativeImageEditor({
       {/* ── Controls sidebar (right) ── */}
       <div className={styles.controlsSidebar}>
         <div className={styles.sidebarScrollable}>
-        {/* Current source preview */}
-        <div className={styles.sidebarSection}>
-          <div className={styles.sidebarSectionTitle}>Current Source</div>
-          {currentSourcePreviewUrl ? (
-            <div
-              className={styles.currentSourcePreview}
-              style={{ cursor: 'pointer', position: 'relative' }}
-              onClick={() =>
-                setLightboxUrl(
-                  currentSource
-                    ? getEdgeUrl(currentSource.url, { width: 1200 }) ?? currentSourcePreviewUrl
-                    : currentSourcePreviewUrl
-                )
-              }
-              role="button"
-              tabIndex={0}
-            >
-              <img src={currentSourcePreviewUrl} alt="Current source" />
-              {isGenerating && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    background: 'rgba(0,0,0,0.5)',
-                    borderRadius: 'var(--mantine-radius-sm)',
-                  }}
-                >
-                  <Loader size="sm" color="white" />
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className={styles.noSourcePlaceholder}>
-              <IconPhotoPlus size={28} style={{ opacity: 0.5 }} />
-              <Text size="xs" c="dimmed" ta="center">
-                No source image
-              </Text>
-              <Text size="xs" c="dimmed" ta="center" style={{ opacity: 0.6 }}>
-                First generation will create from prompt
-              </Text>
-            </div>
-          )}
-          {canResetToOriginal && (
-            <Button
-              variant="subtle"
-              size="compact-xs"
-              leftSection={<IconRestore size={14} />}
-              onClick={handleResetToOriginal}
-              disabled={isGenerating}
-              mt={4}
-              fullWidth
-            >
-              Reset to original
-            </Button>
-          )}
-          <Group gap="xs" mt={4}>
-            {currentSource && (
-              <Tooltip label="Annotate / sketch on the source image">
-                <Button
-                  variant="light"
-                  size="compact-xs"
-                  leftSection={<IconPencil size={14} />}
-                  onClick={handleAnnotateSource}
-                  disabled={isGenerating}
-                  flex={1}
-                >
-                  Annotate
-                </Button>
-              </Tooltip>
-            )}
-            {annotationElements.length > 0 && (
-              <Badge size="sm" color="blue" variant="light">
-                <IconPencil size={10} style={{ marginRight: 4 }} />
-                Annotated
-              </Badge>
-            )}
-          </Group>
-        </div>
-
-        {/* Model selector */}
-        <div className={styles.sidebarSection}>
-          <Select
-            label="Model"
-            data={config.modelOptions}
-            value={effectiveModel}
-            onChange={handleModelChange}
-            size="xs"
-          />
-          <Text size="xs" c={remainingImageSlots === 0 ? 'yellow' : 'dimmed'}>
-            {usedImageSlots}/{maxReferenceImages} image slots used
-            {remainingImageSlots === 0 ? ' (max)' : ''}
-          </Text>
-        </div>
-
-        {/* Aspect ratio */}
-        <div className={styles.sidebarSection}>
-          <AspectRatioSelector
-            value={aspectRatio}
-            onChange={setAspectRatio}
-            aspectRatios={activeAspectRatios}
-          />
-        </div>
-
-        {/* Reference images — unified section for characters + uploads */}
-        <div className={styles.sidebarSection}>
-          <div className={styles.sidebarSectionTitle}>
-            References
-          </div>
-
-          {/* Scrollable container for reference thumbnails */}
-          <div className={styles.sidebarSectionScrollable}>
-          {/* Character reference images from @mentions — grouped by character */}
-          {mentionedCharacterRefs.map((charRef) => {
-            const images = (charRef.images ?? []) as { image: { id: number; url: string } }[];
-            if (images.length === 0) return null;
-            const effectiveIds = selectedImageIds ?? allCharacterImageIds;
-            return (
-              <div key={charRef.id}>
-                <Text size="xs" fw={600} c="dimmed" mb={2}>
-                  <IconUser size={10} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} />
-                  {charRef.name}
-                </Text>
-                <div className="flex flex-wrap gap-1">
-                  {images.map((ri) => {
-                    const checked = effectiveIds.includes(ri.image.id);
-                    return (
-                      <div
-                        key={ri.image.id}
-                        className={styles.refThumb}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => {
-                          const current = selectedImageIds ?? [...allCharacterImageIds];
-                          if (checked) {
-                            if (current.length <= 1) return;
-                            setSelectedImageIds(current.filter((id) => id !== ri.image.id));
-                          } else {
-                            setSelectedImageIds([...current, ri.image.id]);
-                          }
-                        }}
-                        style={{
-                          position: 'relative',
-                          width: 48,
-                          height: 48,
-                          borderRadius: 6,
-                          overflow: 'hidden',
-                          border: checked
-                            ? '2px solid var(--mantine-color-yellow-5)'
-                            : '1px solid var(--mantine-color-default-border)',
-                          opacity: checked ? 1 : 0.4,
-                          cursor: 'pointer',
-                          transition: 'opacity 0.15s, border 0.15s',
-                        }}
-                      >
-                        <img
-                          src={getEdgeUrl(ri.image.url, { width: 100 }) ?? ri.image.url}
-                          alt={charRef.name}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                        />
-                        <button
-                          type="button"
-                          className={styles.zoomButton}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setLightboxUrl(getEdgeUrl(ri.image.url, { width: 1200 }) ?? ri.image.url);
-                          }}
-                        >
-                          <IconZoomIn size={12} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-
-          {/* User-uploaded references */}
-          {(userReferences.length > 0 || uploadingCount > 0) && (
-            <>
-              {mentionedCharacterRefs.length > 0 && (
-                <Text size="xs" fw={600} c="dimmed" mb={2}>
-                  <IconUpload size={10} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} />
-                  Uploaded
-                </Text>
-              )}
-              <div className="flex flex-wrap gap-1">
-                {userReferences.map((ref) => {
-                  const isDisabled = disabledRefUrls.has(ref.url);
-                  return (
-                    <div
-                      key={ref.url}
-                      className={styles.refThumb}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => toggleUserReference(ref.url)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          toggleUserReference(ref.url);
-                        }
-                      }}
-                      style={{
-                        position: 'relative',
-                        width: 48,
-                        height: 48,
-                        borderRadius: 6,
-                        overflow: 'hidden',
-                        border: isDisabled
-                          ? '1px solid var(--mantine-color-default-border)'
-                          : '2px solid var(--mantine-color-blue-filled)',
-                        opacity: isDisabled ? 0.4 : 1,
-                        cursor: 'pointer',
-                        transition: 'opacity 0.15s, border 0.15s',
-                      }}
-                    >
-                      <img
-                        src={ref.previewUrl}
-                        alt="Reference"
-                        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                      />
-                      <button
-                        type="button"
-                        className={styles.zoomButton}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setLightboxUrl(getEdgeUrl(ref.url, { width: 1200 }) ?? ref.previewUrl);
-                        }}
-                      >
-                        <IconZoomIn size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeUserReference(ref.url);
-                        }}
-                        style={{
-                          position: 'absolute',
-                          top: 1,
-                          right: 1,
-                          width: 16,
-                          height: 16,
-                          borderRadius: '50%',
-                          background: 'rgba(0,0,0,0.7)',
-                          color: '#fff',
-                          border: 'none',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontSize: 10,
-                          lineHeight: 1,
-                          padding: 0,
-                        }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  );
-                })}
-                {/* Upload loading placeholders */}
-                {Array.from({ length: uploadingCount }).map((_, i) => (
+          {/* Current source preview */}
+          <div className={styles.sidebarSection}>
+            <div className={styles.sidebarSectionTitle}>Current Source</div>
+            {currentSourcePreviewUrl ? (
+              <div
+                className={styles.currentSourcePreview}
+                style={{ cursor: 'pointer', position: 'relative' }}
+                onClick={() =>
+                  setLightboxUrl(
+                    currentSource
+                      ? getEdgeUrl(currentSource.url, { width: 1200 }) ?? currentSourcePreviewUrl
+                      : currentSourcePreviewUrl
+                  )
+                }
+                role="button"
+                tabIndex={0}
+              >
+                <img src={currentSourcePreviewUrl} alt="Current source" />
+                {isGenerating && (
                   <div
-                    key={`uploading-${i}`}
                     style={{
-                      width: 48,
-                      height: 48,
-                      borderRadius: 6,
-                      border: '1px dashed var(--mantine-color-default-border)',
+                      position: 'absolute',
+                      inset: 0,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      background: 'var(--mantine-color-dark-6)',
+                      background: 'rgba(0,0,0,0.5)',
+                      borderRadius: 'var(--mantine-radius-sm)',
                     }}
                   >
-                    <Loader size={16} color="gray" />
+                    <Loader size="sm" color="white" />
                   </div>
-                ))}
+                )}
               </div>
-            </>
+            ) : (
+              <div className={styles.noSourcePlaceholder}>
+                <IconPhotoPlus size={28} style={{ opacity: 0.5 }} />
+                <Text size="xs" c="dimmed" ta="center">
+                  No source image
+                </Text>
+                <Text size="xs" c="dimmed" ta="center" style={{ opacity: 0.6 }}>
+                  First generation will create from prompt
+                </Text>
+              </div>
+            )}
+            {canResetToOriginal && (
+              <Button
+                variant="subtle"
+                size="compact-xs"
+                leftSection={<IconRestore size={14} />}
+                onClick={handleResetToOriginal}
+                disabled={isGenerating}
+                mt={4}
+                fullWidth
+              >
+                Reset to original
+              </Button>
+            )}
+            <Group gap="xs" mt={4}>
+              {currentSource && (
+                <Tooltip label="Annotate / sketch on the source image">
+                  <Button
+                    variant="light"
+                    size="compact-xs"
+                    leftSection={<IconPencil size={14} />}
+                    onClick={handleAnnotateSource}
+                    disabled={isGenerating}
+                    flex={1}
+                  >
+                    Annotate
+                  </Button>
+                </Tooltip>
+              )}
+              {annotationElements.length > 0 && (
+                <Badge size="sm" color="blue" variant="light">
+                  <IconPencil size={10} style={{ marginRight: 4 }} />
+                  Annotated
+                </Badge>
+              )}
+            </Group>
+          </div>
+
+          {/* Model selector */}
+          <div className={styles.sidebarSection}>
+            <Select
+              label="Model"
+              data={config.modelOptions}
+              value={effectiveModel}
+              onChange={handleModelChange}
+              size="xs"
+            />
+            <Text size="xs" c={remainingImageSlots === 0 ? 'yellow' : 'dimmed'}>
+              {usedImageSlots}/{maxReferenceImages} image slots used
+              {remainingImageSlots === 0 ? ' (max)' : ''}
+            </Text>
+          </div>
+
+          {/* Aspect ratio */}
+          <div className={styles.sidebarSection}>
+            <AspectRatioSelector
+              value={aspectRatio}
+              onChange={setAspectRatio}
+              aspectRatios={activeAspectRatios}
+            />
+          </div>
+
+          {/* Reference images — unified section for characters + uploads */}
+          <div className={styles.sidebarSection}>
+            <div className={styles.sidebarSectionTitle}>References</div>
+
+            {/* Scrollable container for reference thumbnails */}
+            <div className={styles.sidebarSectionScrollable}>
+              {/* Character reference images from @mentions — grouped by character */}
+              {mentionedCharacterRefs.map((charRef) => {
+                const images = (charRef.images ?? []) as { image: { id: number; url: string } }[];
+                if (images.length === 0) return null;
+                const effectiveIds = selectedImageIds ?? allCharacterImageIds;
+                return (
+                  <div key={charRef.id}>
+                    <Text size="xs" fw={600} c="dimmed" mb={2}>
+                      <IconUser
+                        size={10}
+                        style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }}
+                      />
+                      {charRef.name}
+                    </Text>
+                    <div className="flex flex-wrap gap-1">
+                      {images.map((ri) => {
+                        const checked = effectiveIds.includes(ri.image.id);
+                        return (
+                          <div
+                            key={ri.image.id}
+                            className={styles.refThumb}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => {
+                              const current = selectedImageIds ?? [...allCharacterImageIds];
+                              if (checked) {
+                                if (current.length <= 1) return;
+                                setSelectedImageIds(current.filter((id) => id !== ri.image.id));
+                              } else {
+                                setSelectedImageIds([...current, ri.image.id]);
+                              }
+                            }}
+                            style={{
+                              position: 'relative',
+                              width: 48,
+                              height: 48,
+                              borderRadius: 6,
+                              overflow: 'hidden',
+                              border: checked
+                                ? '2px solid var(--mantine-color-yellow-5)'
+                                : '1px solid var(--mantine-color-default-border)',
+                              opacity: checked ? 1 : 0.4,
+                              cursor: 'pointer',
+                              transition: 'opacity 0.15s, border 0.15s',
+                            }}
+                          >
+                            <img
+                              src={getEdgeUrl(ri.image.url, { width: 100 }) ?? ri.image.url}
+                              alt={charRef.name}
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                objectFit: 'cover',
+                                display: 'block',
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className={styles.zoomButton}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setLightboxUrl(
+                                  getEdgeUrl(ri.image.url, { width: 1200 }) ?? ri.image.url
+                                );
+                              }}
+                            >
+                              <IconZoomIn size={12} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* User-uploaded references */}
+              {(userReferences.length > 0 || uploadingCount > 0) && (
+                <>
+                  {mentionedCharacterRefs.length > 0 && (
+                    <Text size="xs" fw={600} c="dimmed" mb={2}>
+                      <IconUpload
+                        size={10}
+                        style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }}
+                      />
+                      Uploaded
+                    </Text>
+                  )}
+                  <div className="flex flex-wrap gap-1">
+                    {userReferences.map((ref) => {
+                      const isDisabled = disabledRefUrls.has(ref.url);
+                      return (
+                        <div
+                          key={ref.url}
+                          className={styles.refThumb}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => toggleUserReference(ref.url)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              toggleUserReference(ref.url);
+                            }
+                          }}
+                          style={{
+                            position: 'relative',
+                            width: 48,
+                            height: 48,
+                            borderRadius: 6,
+                            overflow: 'hidden',
+                            border: isDisabled
+                              ? '1px solid var(--mantine-color-default-border)'
+                              : '2px solid var(--mantine-color-blue-filled)',
+                            opacity: isDisabled ? 0.4 : 1,
+                            cursor: 'pointer',
+                            transition: 'opacity 0.15s, border 0.15s',
+                          }}
+                        >
+                          <img
+                            src={ref.previewUrl}
+                            alt="Reference"
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'cover',
+                              display: 'block',
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className={styles.zoomButton}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLightboxUrl(
+                                getEdgeUrl(ref.url, { width: 1200 }) ?? ref.previewUrl
+                              );
+                            }}
+                          >
+                            <IconZoomIn size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeUserReference(ref.url);
+                            }}
+                            style={{
+                              position: 'absolute',
+                              top: 1,
+                              right: 1,
+                              width: 16,
+                              height: 16,
+                              borderRadius: '50%',
+                              background: 'rgba(0,0,0,0.7)',
+                              color: '#fff',
+                              border: 'none',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: 10,
+                              lineHeight: 1,
+                              padding: 0,
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {/* Upload loading placeholders */}
+                    {Array.from({ length: uploadingCount }).map((_, i) => (
+                      <div
+                        key={`uploading-${i}`}
+                        style={{
+                          width: 48,
+                          height: 48,
+                          borderRadius: 6,
+                          border: '1px dashed var(--mantine-color-default-border)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          background: 'var(--mantine-color-dark-6)',
+                        }}
+                      >
+                        <Loader size={16} color="gray" />
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="flex gap-1">
+              <Button
+                variant="light"
+                size="compact-xs"
+                leftSection={<IconUpload size={12} />}
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isGenerating}
+              >
+                Upload
+              </Button>
+              <Button
+                variant="light"
+                size="compact-xs"
+                leftSection={<IconWand size={12} />}
+                onClick={handleImportFromGenerator}
+                disabled={isGenerating}
+              >
+                Generator
+              </Button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: 'none' }}
+              onChange={handleFileInputChange}
+            />
+          </div>
+
+          {/* Quantity selector */}
+          <div className={styles.sidebarSection}>
+            <NumberInput
+              label="Images per generation"
+              value={quantity}
+              onChange={(val) =>
+                setQuantity(typeof val === 'number' ? Math.max(1, Math.min(4, val)) : 1)
+              }
+              min={1}
+              max={4}
+              size="xs"
+            />
+          </div>
+
+          {/* Enhance prompt toggle (only when enhanceInPlace is not used) */}
+          {!enhanceInPlace && (
+            <Switch
+              label="Enhance prompt"
+              description="AI adds detail and composition"
+              checked={enhancePromptToggle}
+              onChange={(e) => setEnhancePromptToggle(e.currentTarget.checked)}
+              color="yellow"
+              size="sm"
+            />
           )}
 
-          </div>
-          <div className="flex gap-1">
-            <Button
-              variant="light"
-              size="compact-xs"
-              leftSection={<IconUpload size={12} />}
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isGenerating}
-            >
-              Upload
-            </Button>
-            <Button
-              variant="light"
-              size="compact-xs"
-              leftSection={<IconWand size={12} />}
-              onClick={handleImportFromGenerator}
-              disabled={isGenerating}
-            >
-              Generator
-            </Button>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            style={{ display: 'none' }}
-            onChange={handleFileInputChange}
-          />
-        </div>
+          {/* Plugin sidebar sections */}
+          {renderSidebarExtra?.(slotContext)}
 
-        {/* Quantity selector */}
-        <div className={styles.sidebarSection}>
-          <NumberInput
-            label="Images per generation"
-            value={quantity}
-            onChange={(val) => setQuantity(typeof val === 'number' ? Math.max(1, Math.min(4, val)) : 1)}
-            min={1}
-            max={4}
-            size="xs"
-          />
-        </div>
-
-        {/* Enhance prompt toggle (only when enhanceInPlace is not used) */}
-        {!enhanceInPlace && (
-          <Switch
-            label="Enhance prompt"
-            description="AI adds detail and composition"
-            checked={enhancePromptToggle}
-            onChange={(e) => setEnhancePromptToggle(e.currentTarget.checked)}
-            color="yellow"
-            size="sm"
-          />
-        )}
-
-        {/* Plugin sidebar sections */}
-        {renderSidebarExtra?.(slotContext)}
-
-        {/* Cost info */}
-        <Text size="xs" c={costFailed ? 'red' : 'dimmed'}>
-          {costFailed
-            ? 'Cost estimation failed'
-            : costLoading || estimatedCost == null
+          {/* Cost info */}
+          <Text size="xs" c={costFailed ? 'red' : 'dimmed'}>
+            {costFailed
+              ? 'Cost estimation failed'
+              : costLoading || estimatedCost == null
               ? 'Calculating cost…'
               : `~${estimatedCost} Buzz per generation`}
-        </Text>
-
-        </div>{/* end sidebarScrollable */}
+          </Text>
+        </div>
+        {/* end sidebarScrollable */}
 
         {/* Commit button */}
         <div className={styles.commitSection}>

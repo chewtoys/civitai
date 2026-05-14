@@ -10,6 +10,7 @@ import {
   Loader,
   Menu,
   Modal,
+  Popover,
   Stack,
   Text,
   ThemeIcon,
@@ -17,7 +18,7 @@ import {
   useComputedColorScheme,
   useMantineTheme,
 } from '@mantine/core';
-import { useLocalStorage } from '@mantine/hooks';
+import { useDisclosure, useLocalStorage } from '@mantine/hooks';
 import {
   IconBellCheck,
   IconBellPlus,
@@ -33,6 +34,7 @@ import {
   IconFlag,
   IconGavel,
   IconHeart,
+  IconInfoSquareRounded,
   IconLicense,
   IconLock,
   IconMessageCircle2,
@@ -57,6 +59,7 @@ import { useCivitaiLink } from '~/components/CivitaiLink/CivitaiLinkProvider';
 import { CollectionFollowAction } from '~/components/Collections/components/CollectionFollow';
 import { ContainerGrid2 } from '~/components/ContainerGrid/ContainerGrid';
 import { ContentClamp } from '~/components/ContentClamp/ContentClamp';
+import { CurrencyIcon } from '~/components/Currency/CurrencyIcon';
 import { SmartCreatorCard } from '~/components/CreatorCard/CreatorCard';
 import { AnimatedCount, useLiveMetrics, useMetricSubscription } from '~/components/Metrics';
 import { openAddToCollectionModal } from '~/components/Dialog/triggers/add-to-collection';
@@ -126,6 +129,7 @@ import {
 } from '~/shared/utils/prisma/enums';
 import type { ModelById } from '~/types/router';
 import { formatDate, formatDateMin } from '~/utils/date-helpers';
+import { numberWithCommas } from '~/utils/number-helpers';
 import { showErrorNotification, showSuccessNotification } from '~/utils/notifications';
 import { componentTypeConfig, getFileIconConfig } from '~/utils/file-display-helpers';
 import { formatKBytes } from '~/utils/number-helpers';
@@ -153,6 +157,7 @@ function ModelVersionDetailsContent({ model, version, image, onFavoriteClick }: 
     defaultValue: ['version-details', 'required-components'],
   });
   const adContainerRef = useRef<HTMLDivElement | null>(null);
+  const [feeInfoOpened, feeInfoHandlers] = useDisclosure(false);
 
   const {
     isLoadingAccess,
@@ -1315,6 +1320,54 @@ function ModelVersionDetailsContent({ model, version, image, onFavoriteClick }: 
                         />
                       </Group>
                     )}
+                  {/* Generation License Fee */}
+                  {!!version.licensingFee && version.licensingFee > 0 && (
+                    <Group
+                      justify="space-between"
+                      px="md"
+                      py={10}
+                      style={{
+                        borderBottom: `1px solid ${
+                          colorScheme === 'dark' ? theme.colors.dark[4] : theme.colors.gray[3]
+                        }`,
+                      }}
+                    >
+                      <Text size="sm" c="dimmed">
+                        Generation License Fee
+                      </Text>
+                      <Group gap={4} wrap="nowrap">
+                        <CurrencyIcon currency="BUZZ" size={16} />
+                        <Text size="sm">{numberWithCommas(version.licensingFee)} / image</Text>
+                        <Popover
+                          width={260}
+                          shadow="md"
+                          withArrow
+                          position="top"
+                          opened={feeInfoOpened}
+                          onChange={feeInfoHandlers.close}
+                        >
+                          <Popover.Target>
+                            <ActionIcon
+                              size="xs"
+                              variant="subtle"
+                              color="gray"
+                              onClick={feeInfoHandlers.toggle}
+                              aria-label="License fee info"
+                            >
+                              <IconInfoSquareRounded size={18} />
+                            </ActionIcon>
+                          </Popover.Target>
+                          <Popover.Dropdown>
+                            <Text size="xs">
+                              The creator has issued a license fee. This amount is added on top
+                              of the standard generation cost for each image generated on Civitai
+                              with this resource.
+                            </Text>
+                          </Popover.Dropdown>
+                        </Popover>
+                      </Group>
+                    </Group>
+                  )}
                   {/* Reviews */}
                   <Group
                     justify="space-between"
@@ -1621,52 +1674,44 @@ function ModelVersionDetailsContent({ model, version, image, onFavoriteClick }: 
 
           <Group justify="space-between" align="flex-start" wrap="nowrap">
             {model.type === 'Checkpoint' && (
-              <Stack gap={4}>
-                <Group
-                  gap={4}
-                  wrap="nowrap"
-                  style={{ flex: 1, overflow: 'hidden' }}
-                  align="flex-start"
-                >
+              <Stack gap={4} style={{ flex: 1, minWidth: 0 }}>
+                <Group gap={4} wrap="wrap" align="center">
                   <IconLicense size={16} />
                   <Text
                     size="xs"
                     c="dimmed"
-                    style={{
-                      whiteSpace: 'nowrap',
-                      lineHeight: 1.1,
-                    }}
+                    style={{ whiteSpace: 'nowrap', lineHeight: 1.1 }}
                   >
                     License{model.licenses.length > 0 ? 's' : ''}:
                   </Text>
-                </Group>
-                {license && (
-                  <Text
-                    component="a"
-                    href={license.url}
-                    rel="nofollow noreferrer"
-                    td="underline"
-                    target="_blank"
-                    size="xs"
-                    c="dimmed"
-                    style={{ lineHeight: 1.1 }}
-                  >
-                    {license.name}
-                  </Text>
-                )}
-                {showAddendumLicense && (
-                  <Link legacyBehavior href={`/models/license/${version.id}`} passHref>
-                    <Anchor
-                      variant="text"
+                  {license && (
+                    <Text
+                      component="a"
+                      href={license.url}
+                      rel="nofollow noreferrer"
                       td="underline"
+                      target="_blank"
                       size="xs"
                       c="dimmed"
                       style={{ lineHeight: 1.1 }}
                     >
-                      Addendum
-                    </Anchor>
-                  </Link>
-                )}
+                      {license.name}
+                    </Text>
+                  )}
+                  {showAddendumLicense && (
+                    <Link legacyBehavior href={`/models/license/${version.id}`} passHref>
+                      <Anchor
+                        variant="text"
+                        td="underline"
+                        size="xs"
+                        c="dimmed"
+                        style={{ lineHeight: 1.1 }}
+                      >
+                        Addendum
+                      </Anchor>
+                    </Link>
+                  )}
+                </Group>
                 {model.licenses.map(({ url, name }) => (
                   <Text
                     key={name}

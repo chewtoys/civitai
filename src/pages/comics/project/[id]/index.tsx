@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   Badge,
   Button,
   Container,
@@ -15,7 +16,10 @@ import {
 import { useDisclosure } from '@mantine/hooks';
 import { openConfirmModal } from '@mantine/modals';
 import {
+  IconAlertCircle,
   IconArrowLeft,
+  IconBell,
+  IconBolt,
   IconBook,
   IconCalendar,
   IconCopy,
@@ -30,6 +34,7 @@ import {
   IconSettings,
   IconSparkles,
   IconUser,
+  IconUsers,
   IconWorld,
 } from '@tabler/icons-react';
 import clsx from 'clsx';
@@ -38,6 +43,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { slugit } from '~/utils/string-helpers';
+import { abbreviateNumber } from '~/utils/number-helpers';
 
 import type { DragEndEvent } from '@dnd-kit/core';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
@@ -1229,6 +1235,59 @@ function ProjectWorkspace() {
 
       <Container size="xl" py="xl">
         <Stack gap="xl">
+          {/* ── Visibility alert ─────────────────────────── */}
+          {/* Surfaced to the OWNER only (this page is owner-protected) so
+              they understand why a published comic isn't reaching the
+              public. The list of affected chapters comes from the same
+              `hiddenReason` the listing route uses to gate visibility, so
+              what we show here matches what readers would see. */}
+          {(() => {
+            const tosChapters = project.chapters.filter((ch) => ch.hiddenReason === 'tosViolation');
+            const reviewChapters = project.chapters.filter(
+              (ch) => ch.hiddenReason === 'reviewPending'
+            );
+            const projectTos = project.hiddenReason === 'tosViolation';
+            if (!projectTos && tosChapters.length === 0 && reviewChapters.length === 0) {
+              return null;
+            }
+            return (
+              <Alert
+                color={projectTos || tosChapters.length > 0 ? 'red' : 'orange'}
+                icon={<IconAlertCircle size={18} />}
+                title={
+                  projectTos
+                    ? 'Comic hidden — TOS violation'
+                    : tosChapters.length > 0
+                    ? 'Some chapters are hidden — TOS violation'
+                    : 'Some chapters are hidden — moderator review pending'
+                }
+              >
+                <Stack gap={4}>
+                  {projectTos && (
+                    <Text size="sm">
+                      This comic has been flagged for a Terms of Service violation and is not
+                      visible to readers. Please review your content or contact support.
+                    </Text>
+                  )}
+                  {!projectTos && tosChapters.length > 0 && (
+                    <Text size="sm">
+                      The following chapters were flagged for a Terms of Service violation and
+                      are hidden from readers: <b>{tosChapters.map((c) => c.name).join(', ')}</b>.
+                    </Text>
+                  )}
+                  {reviewChapters.length > 0 && (
+                    <Text size="sm">
+                      The following chapters have one or more panel images awaiting moderator
+                      review and won't appear publicly until they're cleared:{' '}
+                      <b>{reviewChapters.map((c) => c.name).join(', ')}</b>. They'll publish
+                      automatically once approved.
+                    </Text>
+                  )}
+                </Stack>
+              </Alert>
+            );
+          })()}
+
           {/* ── Header card ─────────────────────────── */}
           <div className={clsx(styles.headerCard, styles.gradientTopBorder)}>
             <div className={styles.headerImage} onClick={() => openSettings()}>
@@ -1265,7 +1324,7 @@ function ProjectWorkspace() {
                 </Text>
               )}
 
-              <div className="flex gap-3 items-center">
+              <div className="flex gap-3 items-center flex-wrap">
                 <span className={styles.statPill}>
                   <span className={styles.statDot} />
                   {project.chapters.length}{' '}
@@ -1275,6 +1334,60 @@ function ProjectWorkspace() {
                   <span className={styles.statDot} />
                   {totalPanelCount} {totalPanelCount === 1 ? 'panel' : 'panels'}
                 </span>
+                {/* Public-facing engagement counters (watcher → ClickHouse →
+                    Redis). Shown to the creator on their own workspace so
+                    they can see how their comic is performing without
+                    having to navigate to the public page. Each pill is
+                    only rendered when non-zero so a brand-new comic still
+                    looks clean. */}
+                {project.metrics?.readerCount > 0 && (
+                  <Tooltip label="Unique readers" withArrow>
+                    <span className={styles.statPill}>
+                      <IconUsers size={12} />
+                      {abbreviateNumber(project.metrics.readerCount)}
+                    </span>
+                  </Tooltip>
+                )}
+                {project.metrics?.chapterReadCount > 0 && (
+                  <Tooltip label="Total chapter reads" withArrow>
+                    <span className={styles.statPill}>
+                      <IconEye size={12} />
+                      {abbreviateNumber(project.metrics.chapterReadCount)}
+                    </span>
+                  </Tooltip>
+                )}
+                {project.metrics?.followerCount > 0 && (
+                  <Tooltip label="Followers" withArrow>
+                    <span className={styles.statPill}>
+                      <IconBell size={12} />
+                      {abbreviateNumber(project.metrics.followerCount)}
+                    </span>
+                  </Tooltip>
+                )}
+                {project.metrics?.tippedAmount > 0 && (
+                  <Tooltip
+                    label={`Buzz tipped (${abbreviateNumber(project.metrics.tippedCount)} tip${
+                      project.metrics.tippedCount === 1 ? '' : 's'
+                    })`}
+                    withArrow
+                  >
+                    <span className={styles.statPill}>
+                      <IconBolt size={12} />
+                      {abbreviateNumber(project.metrics.tippedAmount)}
+                    </span>
+                  </Tooltip>
+                )}
+                {project.metrics?.hiddenCount > 0 && (
+                  <Tooltip
+                    label="Users who have hidden this comic from their feed"
+                    withArrow
+                  >
+                    <span className={styles.statPill}>
+                      <IconEyeOff size={12} />
+                      {abbreviateNumber(project.metrics.hiddenCount)}
+                    </span>
+                  </Tooltip>
+                )}
                 {(() => {
                   const nsfw = getNsfwLabel(project.nsfwLevel);
                   return nsfw ? (
@@ -1595,6 +1708,29 @@ function ProjectWorkspace() {
                                     </Badge>
                                   ) : null;
                                 })()}
+                                {chapter.hiddenReason && (
+                                  <Tooltip
+                                    label={
+                                      chapter.hiddenReason === 'tosViolation'
+                                        ? 'Hidden from readers — flagged as a TOS violation. Please remove the offending content or contact support.'
+                                        : 'Hidden from readers — at least one panel image is awaiting moderator review. It will publish automatically once cleared.'
+                                    }
+                                    withArrow
+                                    position="right"
+                                    multiline
+                                    w={260}
+                                  >
+                                    <Badge
+                                      size="xs"
+                                      color={chapter.hiddenReason === 'tosViolation' ? 'red' : 'orange'}
+                                      variant="filled"
+                                      ml={2}
+                                      leftSection={<IconAlertCircle size={10} />}
+                                    >
+                                      {chapter.hiddenReason === 'tosViolation' ? 'TOS' : 'Review'}
+                                    </Badge>
+                                  </Tooltip>
+                                )}
                               </div>
                             </div>
                           </div>

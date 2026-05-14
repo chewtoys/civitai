@@ -31,7 +31,7 @@ export function VotableTags({
   ...props
 }: GalleryTagProps) {
   const currentUser = useCurrentUser();
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
   const { data: tags = [], isLoading } = trpc.tag.getVotableTags.useQuery(
     { id, type },
     { enabled: !initialTags, initialData: initialTags }
@@ -54,11 +54,11 @@ export function VotableTags({
       if (!aMod && bMod) return 1;
       return 0;
     });
-    if (!canViewNsfw)
+    if (!features.canViewNsfw)
       displayTags = displayTags.filter((x) => getIsPublicBrowsingLevel(x.nsfwLevel));
     if (!collapsible || showAll) return displayTags;
     return displayTags.slice(0, limit);
-  }, [tags, showAll, collapsible, limit, canViewNsfw]);
+  }, [tags, showAll, collapsible, limit, features.canViewNsfw]);
 
   useEffect(() => {
     if (onTagsLoaded && tags && !initialTags) {

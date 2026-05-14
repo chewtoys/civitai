@@ -29,6 +29,7 @@ import {
   ComicPanelStatus,
   ComicProjectStatus,
   ComicReferenceType,
+  ImageIngestionStatus,
 } from '~/shared/utils/prisma/enums';
 import { getOrchestratorToken } from '~/server/orchestrator/get-orchestrator-token';
 import { pollIterationWorkflow } from '~/server/services/orchestrator/poll-iteration';
@@ -95,6 +96,8 @@ import { registerMediaLocation } from '~/server/services/storage-resolver';
 import { env } from '~/env/server';
 import { randomUUID } from 'crypto';
 import { TokenScope } from '~/shared/constants/token-scope.constants';
+import { comicMetricsCache } from '~/server/redis/entity-metric-populate';
+import { Prisma } from '@prisma/client';
 
 // Feature flag gate — all procedures require the comicCreator flag
 const comicFlag = isFlagProtected('comicCreator');
@@ -1019,18 +1022,31 @@ export const comicsRouter = router({
           chapters: {
             orderBy: { position: 'asc' },
             include: {
-              // Pull only `status` per panel so we can derive `panelCount`
-              // and `hasInProgressPanels` on the server. Even at 100 panels
-              // per chapter this is dramatically smaller than the full
-              // include used by `getProject`.
-              panels: { select: { status: true } },
+              // Pull `status` plus the panel image's moderation fields so
+              // we can derive `panelCount`, `hasInProgressPanels`, AND a
+              // per-chapter `hiddenReason` describing why a published
+              // chapter isn't reaching the public (a panel image flagged
+              // for review or marked TOS-violating).
+              panels: {
+                select: {
+                  status: true,
+                  image: {
+                    select: { ingestion: true, needsReview: true, tosViolation: true },
+                  },
+                },
+              },
             },
           },
         },
       });
 
       if (!project) throw throwNotFoundError();
-      if (project.userId !== ctx.user.id) throw throwAuthorizationError();
+      // Moderators always have access — they need to be able to load any
+      // comic's workspace to investigate flagged content. All public-state
+      // mutations stay owner-only via their own checks.
+      const isOwner = project.userId === ctx.user.id;
+      const isModerator = ctx.user.isModerator === true;
+      if (!isOwner && !isModerator) throw throwAuthorizationError();
 
       const projectRefs = await dbWrite.comicProjectReference.findMany({
         where: { projectId: project.id },
@@ -1040,7 +1056,10 @@ export const comicsRouter = router({
       const references =
         refIds.length > 0
           ? await dbWrite.comicReference.findMany({
-              where: { id: { in: refIds }, userId: ctx.user.id },
+              // For mods viewing someone else's comic, scope by reference
+              // ids only — the project-owner constraint on `userId` would
+              // hide all of the comic's references.
+              where: { id: { in: refIds }, ...(isOwner ? { userId: ctx.user.id } : {}) },
               orderBy: { createdAt: 'asc' },
               include: {
                 images: {
@@ -1068,15 +1087,72 @@ export const comicsRouter = router({
         const hasInProgressPanels = chapter.panels.some(
           (p) => p.status !== ComicPanelStatus.Ready && p.status !== ComicPanelStatus.Failed
         );
+
+        // Per-chapter visibility for the owner: mirror the gates used by
+        // `getPublicProjects` and the search index so the editor can tell
+        // the creator *why* a Published chapter isn't visible to readers.
+        // We only flag Published chapters — drafts are obviously hidden
+        // and don't need a separate reason. TOS wins over review when
+        // both are present (more severe / final).
+        // Compute the flag for *all* chapters, not just Published ones.
+        // Draft chapters with already-flagged panels still need the signal
+        // — otherwise a creator with three chapters all containing
+        // problem panels only sees the warning on whichever one happened
+        // to be published, and the rest look fine until publish time.
+        // The banner copy ("won't appear publicly until cleared … will
+        // publish automatically once approved") reads correctly for both
+        // Published (currently hidden) and Draft (will be hidden when
+        // published) cases.
+        let hiddenReason: 'tosViolation' | 'reviewPending' | null = null;
+        const readyPanels = chapter.panels.filter(
+          (p) => p.status === ComicPanelStatus.Ready
+        );
+        const hasTosImage = readyPanels.some((p) => p.image?.tosViolation === true);
+        const hasReviewImage = readyPanels.some(
+          (p) =>
+            !!p.image &&
+            !p.image.tosViolation &&
+            (p.image.needsReview != null || p.image.ingestion !== ImageIngestionStatus.Scanned)
+        );
+        if (hasTosImage) hiddenReason = 'tosViolation';
+        else if (hasReviewImage) hiddenReason = 'reviewPending';
+
         // Strip the panel array from the returned shape — callers that need
         // panel data should use `getChapter`. The derived flags above are
         // all the sidebar needs.
         const { panels: _panels, ...rest } = chapter;
-        return { ...rest, panelCount, hasInProgressPanels };
+        return { ...rest, panelCount, hasInProgressPanels, hiddenReason };
       });
 
+      // Project-level: TOS-violated projects are hidden globally regardless
+      // of chapter state. Per-chapter reasons cover the rest.
+      const projectHiddenReason: 'tosViolation' | null = project.tosViolation
+        ? 'tosViolation'
+        : null;
+
+      // Pull watcher-fed metrics so the workspace header can show the
+      // creator the same public counters readers see — reader count,
+      // chapter reads, followers, hides, tips. Same cache the public
+      // listing uses, so a creator opening their workspace right after
+      // publishing typically hits a warm Redis key.
+      const metrics =
+        (await comicMetricsCache.fetch(project.id))[project.id] ?? null;
+
       const { chapters: _chapters, ...projectRest } = project;
-      return { ...projectRest, chapters, references };
+      return {
+        ...projectRest,
+        chapters,
+        references,
+        hiddenReason: projectHiddenReason,
+        metrics: {
+          readerCount: metrics?.readerCount ?? 0,
+          chapterReadCount: metrics?.chapterReadCount ?? 0,
+          followerCount: metrics?.followerCount ?? 0,
+          hiddenCount: metrics?.hiddenCount ?? 0,
+          tippedCount: metrics?.tippedCount ?? 0,
+          tippedAmount: metrics?.tippedAmount ?? 0,
+        },
+      };
     }),
 
   // Full panel data for a single chapter. Pair with `getProjectShell`.
@@ -1085,12 +1161,15 @@ export const comicsRouter = router({
     .input(getChapterSchema)
     .query(async ({ ctx, input }) => {
       // Owner check via the parent project — chapters don't store userId.
+      // Mods are allowed through for moderation review.
       const project = await dbWrite.comicProject.findUnique({
         where: { id: input.projectId },
         select: { id: true, userId: true },
       });
       if (!project) throw throwNotFoundError();
-      if (project.userId !== ctx.user.id) throw throwAuthorizationError();
+      const isOwner = project.userId === ctx.user.id;
+      const isModerator = ctx.user.isModerator === true;
+      if (!isOwner && !isModerator) throw throwAuthorizationError();
 
       const chapter = await dbWrite.comicChapter.findUnique({
         where: {
@@ -1104,7 +1183,26 @@ export const comicsRouter = router({
             orderBy: { position: 'asc' },
             include: {
               references: { select: { referenceId: true } },
-              image: { select: { nsfwLevel: true, width: true, height: true } },
+              image: {
+                select: {
+                  nsfwLevel: true,
+                  width: true,
+                  height: true,
+                  // Exposed to the workspace UI so PanelCard can show *why*
+                  // a panel is blocking its chapter from publishing.
+                  ingestion: true,
+                  needsReview: true,
+                  tosViolation: true,
+                  // `blockedFor` distinguishes `AiNotVerified` (the owner
+                  // can fix it by adding generation metadata) from other
+                  // moderator-only blocks. `meta` is the current generation
+                  // metadata — passed into ImageMetaModal as the starting
+                  // values so the owner doesn't lose any prompt they've
+                  // already entered.
+                  blockedFor: true,
+                  meta: true,
+                },
+              },
             },
           },
         },
@@ -1188,7 +1286,11 @@ export const comicsRouter = router({
     .input(
       z.object({
         limit: z.number().int().min(1).max(50).default(20),
-        cursor: z.number().int().optional(),
+        // For `Newest` the cursor is the trailing comic id (number).
+        // For `MostFollowed` / `MostChapters` we need a compound cursor
+        // — see the comment on `prefilteredIds` below — so we encode it
+        // as `"<rank>:<id>"` and accept either shape here.
+        cursor: z.union([z.number().int(), z.string()]).optional(),
         genre: z.nativeEnum(ComicGenre).optional(),
         period: z.enum(['Day', 'Week', 'Month', 'Year', 'AllTime']).optional(),
         sort: z.enum(['Newest', 'MostFollowed', 'MostChapters']).default('Newest'),
@@ -1200,10 +1302,49 @@ export const comicsRouter = router({
     .query(async ({ input, ctx }) => {
       const { limit, cursor, genre, period, sort, followed, userId, browsingLevel } = input;
 
+      // Cursor handling: `Newest` carries the trailing id as a number,
+      // `MostFollowed` / `MostChapters` carry a compound `<rank>:<id>`
+      // string so we can do row-constructor comparison in raw SQL. Parse
+      // once up-front and route each shape to the right code path.
+      const isPrefilteredSort = sort === 'MostFollowed' || sort === 'MostChapters';
+      let numericCursor: number | undefined;
+      let compoundCursor: { rank: bigint; id: number } | undefined;
+      if (cursor != null) {
+        if (typeof cursor === 'number') {
+          numericCursor = cursor;
+        } else if (isPrefilteredSort && cursor.includes(':')) {
+          const [rankStr, idStr] = cursor.split(':');
+          const rank = BigInt(rankStr);
+          const id = parseInt(idStr, 10);
+          if (!Number.isNaN(id)) compoundCursor = { rank, id };
+        } else {
+          // String cursor passed on the Newest path (or malformed
+          // compound) — best-effort parse as numeric id.
+          const parsed = parseInt(cursor, 10);
+          if (!Number.isNaN(parsed)) numericCursor = parsed;
+        }
+      }
+
       // Build where clause
+      //
+      // Visibility gates layered here (each one is a hard requirement —
+      // the listing must NEVER expose content that fails any of them):
+      //  - project is Active and not TOS-violated
+      //  - author is not banned (User.bannedAt IS NULL)
+      //  - project has at least one Published chapter with at least one
+      //    Ready panel that carries an imageUrl
+      //  - among the Ready panels of that chapter, none has an Image still
+      //    awaiting review (`needsReview` set) or in a non-clean ingestion
+      //    state (anything other than `Scanned`). Without this, panels
+      //    whose underlying Image was flagged after the panel record went
+      //    to `Ready` would still surface.
       const where: any = {
         status: ComicProjectStatus.Active,
         tosViolation: false,
+        // Match the search-index WHERE clause so listing and search agree:
+        // exclude system-user content (-1) and banned authors.
+        userId: { not: -1 },
+        user: { bannedAt: null },
         chapters: {
           some: {
             status: ComicChapterStatus.Published,
@@ -1211,6 +1352,29 @@ export const comicsRouter = router({
               some: {
                 status: ComicPanelStatus.Ready,
                 imageUrl: { not: null },
+                image: {
+                  ingestion: ImageIngestionStatus.Scanned,
+                  needsReview: null,
+                  tosViolation: false,
+                },
+              },
+              // No Ready panel may have an Image that's still under
+              // review or blocked. We deliberately constrain to
+              // `status === Ready` here: a chapter being actively
+              // generated (Pending/Generating panels) is fine; we just
+              // can't surface it if any of its Ready panels carries a
+              // tainted Image.
+              none: {
+                status: ComicPanelStatus.Ready,
+                OR: [
+                  { image: { needsReview: { not: null } } },
+                  { image: { tosViolation: true } },
+                  {
+                    image: {
+                      ingestion: { not: ImageIngestionStatus.Scanned },
+                    },
+                  },
+                ],
               },
             },
           },
@@ -1234,12 +1398,15 @@ export const comicsRouter = router({
 
       if (userId) {
         // Explicit author filter: if the requested author is on the exclusion
-        // list (e.g. a stale link to a blocker's profile), force a no-match
-        // userId so the query returns nothing rather than leaking comics.
-        where.userId = excludedUserIds.includes(userId) ? { in: [] } : userId;
+        // list (e.g. a stale link to a blocker's profile) or is the system
+        // user (-1), force a no-match userId so the query returns nothing.
+        const blocked = userId === -1 || excludedUserIds.includes(userId);
+        where.userId = blocked ? { in: [] } : userId;
       } else if (excludedUserIds.length) {
-        where.userId = { notIn: excludedUserIds };
+        where.userId = { notIn: [...excludedUserIds, -1] };
       }
+      // else: the project-level `userId: { not: -1 }` set above still
+      // excludes the system user.
 
       // NSFW browsing level filter — compute allowed nsfwLevel values using bitwise match.
       //
@@ -1288,19 +1455,116 @@ export const comicsRouter = router({
         };
       }
 
-      // Build orderBy – always include id tie-breaker for stable cursor pagination
+      // Build orderBy – always include id tie-breaker for stable cursor pagination.
+      // `MostFollowed` and `MostChapters` need filtered relation counts —
+      // engagements has multiple types (only `Notify` counts as a follow) and
+      // chapters can be Draft or Published (only `Published` should count).
+      // Prisma's `_count` in orderBy can't take a `where` filter, so for those
+      // sorts we fetch the ID order via `$queryRaw` and let findMany hydrate
+      // with the full visibility WHERE intact. `Newest` stays on the pure
+      // Prisma path.
       let orderBy: any[] = [{ updatedAt: 'desc' }, { id: 'desc' }];
-      if (sort === 'MostFollowed') {
-        orderBy = [{ engagements: { _count: 'desc' } }, { id: 'desc' }];
-      } else if (sort === 'MostChapters') {
-        orderBy = [{ chapters: { _count: 'desc' } }, { id: 'desc' }];
+      let prefilteredIds: number[] | null = null;
+
+      // Prefiltered sorts also carry the rank_value back so we can build
+      // a `<rank>:<id>` cursor for the next page. Same row keyed in JS
+      // so we don't have to re-query the rank for cursor encoding.
+      let prefilteredRanked: { id: number; rank_value: bigint }[] | null = null;
+
+      if (isPrefilteredSort) {
+        // Overfetch to compensate for rows that the findMany WHERE later
+        // rejects (panel-level review/TOS filters that we deliberately don't
+        // duplicate in the raw query — keeping the visibility contract in
+        // one place).
+        const overfetch = (limit + 1) * 5;
+
+        // Cursor predicate uses row-constructor comparison: `(rank, id) <
+        // (cursorRank, cursorId)` returns every row strictly AFTER the
+        // cursor in the sort order. This is what makes pagination
+        // correct — a plain `cp.id < cursor` filter would re-show
+        // high-rank low-id comics that were already on a previous page.
+        const cursorFilter = compoundCursor
+          ? Prisma.sql`AND (rank_value, cp.id) < (${compoundCursor.rank}::bigint, ${compoundCursor.id}::int)`
+          : Prisma.empty;
+
+        // Each query returns one row per comic with a `rank_value` column
+        // computed by a correlated scalar subquery — for every `cp` row,
+        // the subquery is evaluated against THAT row's projectId. PG
+        // then orders by the per-row scalar, exactly like
+        // `ORDER BY UPPER(name)` would. The CTE makes the rank_value
+        // alias visible to the cursor predicate in the outer WHERE.
+        if (sort === 'MostFollowed') {
+          // Count only ComicProjectEngagement rows of type 'Notify'. Other
+          // engagement types (Hide, None) still live in the same table but
+          // don't represent followers.
+          prefilteredRanked = await dbRead.$queryRaw<{ id: number; rank_value: bigint }[]>(
+            Prisma.sql`
+              WITH ranked AS (
+                SELECT
+                  cp.id,
+                  (
+                    SELECT COUNT(*) FROM "ComicProjectEngagement"
+                    WHERE "projectId" = cp.id AND type = 'Notify'::"ComicEngagementType"
+                  ) AS rank_value
+                FROM "ComicProject" cp
+                LEFT JOIN "User" u ON u.id = cp."userId"
+                WHERE cp.status = 'Active'::"ComicProjectStatus"
+                  AND cp."tosViolation" = false
+                  AND cp."userId" != -1
+                  AND u."bannedAt" IS NULL
+              )
+              SELECT id, rank_value
+              FROM ranked cp
+              WHERE TRUE
+                ${cursorFilter}
+              ORDER BY rank_value DESC, cp.id DESC
+              LIMIT ${overfetch}
+            `
+          );
+        } else {
+          // Count only Published chapters — Draft / scheduled chapters
+          // shouldn't influence the "Most Chapters" ranking since readers
+          // can't see them anyway.
+          prefilteredRanked = await dbRead.$queryRaw<{ id: number; rank_value: bigint }[]>(
+            Prisma.sql`
+              WITH ranked AS (
+                SELECT
+                  cp.id,
+                  (
+                    SELECT COUNT(*) FROM "ComicChapter"
+                    WHERE "projectId" = cp.id AND status = 'Published'::"ComicChapterStatus"
+                  ) AS rank_value
+                FROM "ComicProject" cp
+                LEFT JOIN "User" u ON u.id = cp."userId"
+                WHERE cp.status = 'Active'::"ComicProjectStatus"
+                  AND cp."tosViolation" = false
+                  AND cp."userId" != -1
+                  AND u."bannedAt" IS NULL
+              )
+              SELECT id, rank_value
+              FROM ranked cp
+              WHERE TRUE
+                ${cursorFilter}
+              ORDER BY rank_value DESC, cp.id DESC
+              LIMIT ${overfetch}
+            `
+          );
+        }
+        prefilteredIds = prefilteredRanked.map((r) => r.id);
       }
 
       const projects = await dbRead.comicProject.findMany({
-        where,
-        take: limit + 1,
-        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-        orderBy,
+        // For filtered sorts, restrict to the pre-sorted IDs from raw SQL.
+        // findMany still applies the full visibility WHERE for safety; the
+        // raw SQL only constrains ordering.
+        where: prefilteredIds ? { ...where, id: { in: prefilteredIds } } : where,
+        // For prefiltered sorts, take everything that matched (already capped
+        // at `overfetch` upstream). We trim to `limit + 1` after re-sorting.
+        take: prefilteredIds ? undefined : limit + 1,
+        ...(numericCursor != null && !prefilteredIds
+          ? { cursor: { id: numericCursor }, skip: 1 }
+          : {}),
+        orderBy: prefilteredIds ? undefined : orderBy,
         select: {
           id: true,
           name: true,
@@ -1338,9 +1602,6 @@ export const comicsRouter = router({
           user: {
             select: userWithCosmeticsSelect,
           },
-          _count: {
-            select: { engagements: true },
-          },
           chapters: {
             where: { status: ComicChapterStatus.Published },
             select: {
@@ -1348,12 +1609,23 @@ export const comicsRouter = router({
               position: true,
               name: true,
               publishedAt: true,
+              // Mirror the project-level WHERE: only Ready panels whose
+              // Image is fully clean (Scanned, no review, no TOS) count
+              // toward `readyPanelCount` and the thumbnail sample.
+              // Without this, a project that passes the gate on one
+              // clean panel can still ship a thumbnail/preview drawn
+              // from a tainted Ready panel.
               _count: {
                 select: {
                   panels: {
                     where: {
                       status: ComicPanelStatus.Ready,
                       imageUrl: { not: null },
+                      image: {
+                        ingestion: ImageIngestionStatus.Scanned,
+                        needsReview: null,
+                        tosViolation: false,
+                      },
                     },
                   },
                 },
@@ -1362,6 +1634,11 @@ export const comicsRouter = router({
                 where: {
                   status: ComicPanelStatus.Ready,
                   imageUrl: { not: null },
+                  image: {
+                    ingestion: ImageIngestionStatus.Scanned,
+                    needsReview: null,
+                    tosViolation: false,
+                  },
                 },
                 take: 1,
                 orderBy: { position: 'asc' },
@@ -1373,11 +1650,52 @@ export const comicsRouter = router({
         },
       });
 
-      let nextCursor: number | undefined;
-      if (projects.length > limit) {
-        const nextItem = projects.pop()!;
-        nextCursor = nextItem.id;
+      // For prefiltered sorts the findMany result came back in arbitrary
+      // (id-ordered) order — restore the raw-SQL ranking by matching each
+      // project against its position in `prefilteredIds`. After re-sorting,
+      // trim to `limit` and use the next-in-line item's id as the cursor.
+      if (prefilteredIds) {
+        const orderMap = new Map(prefilteredIds.map((id, i) => [id, i]));
+        projects.sort(
+          (a, b) =>
+            (orderMap.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+            (orderMap.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+        );
       }
+
+      // nextCursor type depends on the sort:
+      //  - Newest:        numeric (trailing id), back-compat
+      //  - MostFollowed / MostChapters: `<rank>:<id>` string so the next
+      //    page can do a row-constructor comparison against the same
+      //    (rank, id) tuple this page ended on.
+      let nextCursor: number | string | undefined;
+      if (projects.length > limit) {
+        if (prefilteredIds && prefilteredRanked) {
+          // Cursor = LAST shown item's (rank, id). The next page asks
+          // for rows strictly AFTER it in the sort order, so there's no
+          // overlap (the old `cp.id < cursor` filter was the source of
+          // the repeats users were seeing).
+          const lastShown = projects[limit - 1];
+          const rankRow = prefilteredRanked.find((r) => r.id === lastShown.id);
+          if (rankRow) {
+            nextCursor = `${rankRow.rank_value.toString()}:${rankRow.id}`;
+          }
+          projects.length = limit;
+        } else {
+          const nextItem = projects.pop()!;
+          nextCursor = nextItem.id;
+        }
+      }
+
+      // Hydrate ClickHouse-backed counters (reads / followers / tips / hides)
+      // from Redis. The cache lazily populates from `entityMetricDailyAgg_new`
+      // on miss, so first-page-of-a-cold-comic costs one CH query and
+      // subsequent pages are pure Redis. Fall back to the PG engagement
+      // count for `followerCount` until the watcher has fully backfilled.
+      const projectIds = projects.map((p) => p.id);
+      const metricsByProject = projectIds.length > 0
+        ? await comicMetricsCache.fetch(projectIds)
+        : ({} as Record<string, Awaited<ReturnType<typeof comicMetricsCache.fetch>>[string]>);
 
       const items = projects.map((p) => {
         const readyPanelCount = p.chapters.reduce((sum, ch) => sum + ch._count.panels, 0);
@@ -1414,6 +1732,7 @@ export const comicsRouter = router({
           publishedAt: ch.publishedAt,
         }));
 
+        const m = metricsByProject[p.id] ?? null;
         return {
           id: p.id,
           name: p.name,
@@ -1426,7 +1745,18 @@ export const comicsRouter = router({
           readyPanelCount,
           chapterCount,
           latestChapters,
-          followerCount: p._count.engagements,
+          // All counters come from the watcher via `comicMetricsCache`.
+          // We deliberately don't fall back to `_count.engagements` —
+          // that PG aggregate counts every ComicProjectEngagement row
+          // regardless of `type`, so Hide + Notify rows would both
+          // inflate the displayed "follower" number. The watcher
+          // already filters to `type=Notify` on its side.
+          followerCount: m?.followerCount ?? 0,
+          readerCount: m?.readerCount ?? 0,
+          chapterReadCount: m?.chapterReadCount ?? 0,
+          hiddenCount: m?.hiddenCount ?? 0,
+          tippedCount: m?.tippedCount ?? 0,
+          tippedAmount: m?.tippedAmount ?? 0,
           user: p.user,
           updatedAt: p.updatedAt,
         };
@@ -1439,7 +1769,24 @@ export const comicsRouter = router({
     .meta({ requiredScope: TokenScope.MediaRead })
     .input(z.object({ id: z.number().int() }))
     .query(async ({ input, ctx }) => {
-      const isOwnerOrMod = ctx.user != null;
+      // Cheap meta read first — we need to know who owns this project
+      // before we can decide whether to pull non-Published chapters in
+      // the SQL select. Doing this in one query would force us to fall
+      // back to the old `ctx.user != null` shortcut, which leaks draft
+      // rows for every logged-in viewer, not just owners/mods.
+      const projectMeta = await dbRead.comicProject.findUnique({
+        where: { id: input.id },
+        select: { userId: true, status: true },
+      });
+      if (!projectMeta || projectMeta.status === ComicProjectStatus.Deleted) {
+        throw throwNotFoundError('Comic not found');
+      }
+      const isModerator = ctx.user?.isModerator === true;
+      const isOwner = ctx.user != null && ctx.user.id === projectMeta.userId;
+      // Only the owner or a moderator gets non-Published chapters from the
+      // SQL select. Public reader viewers (anonymous OR logged-in non-owners)
+      // never see drafts on this endpoint.
+      const canSeeAllChapters = isOwner || isModerator;
 
       const project = await dbRead.comicProject.findUnique({
         where: { id: input.id },
@@ -1456,12 +1803,16 @@ export const comicsRouter = router({
           nsfwLevel: true,
           status: true,
           tosViolation: true,
+          publishedAt: true,
           user: {
-            select: userWithCosmeticsSelect,
+            select: { ...userWithCosmeticsSelect, bannedAt: true },
           },
           chapters: {
-            // Owners and mods see all chapters; public sees only published
-            ...(!isOwnerOrMod ? { where: { status: ComicChapterStatus.Published } } : {}),
+            // Public reader: only Published chapters reach the SQL response
+            // for non-owner / non-mod viewers. Owners and mods can pull
+            // all statuses (drafts included) so they can preview the
+            // page or moderate flagged content.
+            ...(!canSeeAllChapters ? { where: { status: ComicChapterStatus.Published } } : {}),
             orderBy: { position: 'asc' },
             select: {
               id: true,
@@ -1485,8 +1836,23 @@ export const comicsRouter = router({
                   imageUrl: true,
                   prompt: true,
                   position: true,
+                  // Pull moderation-relevant Image fields so non-owner/mod
+                  // viewers can be denied chapters that have any panel
+                  // image still in review or with a TOS / blocked
+                  // ingestion state. Without this a `Ready` panel whose
+                  // underlying Image was flagged AFTER scan would still
+                  // surface here.
                   image: {
-                    select: { id: true, nsfwLevel: true, hash: true, width: true, height: true },
+                    select: {
+                      id: true,
+                      nsfwLevel: true,
+                      hash: true,
+                      width: true,
+                      height: true,
+                      ingestion: true,
+                      needsReview: true,
+                      tosViolation: true,
+                    },
                   },
                 },
               },
@@ -1516,6 +1882,22 @@ export const comicsRouter = router({
         throw throwNotFoundError('Comic not found');
       }
 
+      // Block projects authored by banned users for non-owner, non-mod.
+      // Banning a user must remove their content from public surfaces;
+      // owners (themselves) and mods can still load it for moderation.
+      if ((project.user as any)?.bannedAt && !isOwnerOrModViewer) {
+        throw throwNotFoundError('Comic not found');
+      }
+
+      // Block projects that have never been published. `publishedAt` is
+      // set the first time *any* chapter publishes — until that happens
+      // the project is unpublished and shouldn't be reachable through the
+      // public reader URL even if SEO/links surface the id. Owners and
+      // mods can still pull it up for review/preview.
+      if (project.publishedAt == null && !isOwnerOrModViewer) {
+        throw throwNotFoundError('Comic not found');
+      }
+
       // Hide projects authored by hidden/blocked users (or users who blocked
       // the viewer). Owners and moderators bypass this so a self-blocked or
       // mod-reviewed project remains reachable.
@@ -1537,14 +1919,35 @@ export const comicsRouter = router({
       const canViewDrafts =
         ctx.user != null && (project.userId === ctx.user.id || ctx.user.isModerator === true);
 
-      // Filter out draft chapters for non-owner, non-mod viewers
-      // Also filter out chapters with no ready panels
+      // Filter out draft chapters for non-owner, non-mod viewers, chapters
+      // with no ready panels, AND chapters whose Ready panels carry any
+      // Image still in review or in a non-clean ingestion state. The
+      // listing endpoint applies an equivalent filter at the query layer
+      // so a chapter held back here also won't make a project discoverable
+      // through the feed. Owners and mods bypass the review filter so
+      // they can still navigate their own comic and moderate flagged
+      // content.
       const filteredChapters = project.chapters.filter((ch) => {
         if (ch.panels.length === 0) return false;
         if (ch.status !== ComicChapterStatus.Published && !canViewDrafts) return false;
+        if (!canViewDrafts) {
+          const hasTaintedPanel = ch.panels.some((p) => {
+            const img = p.image;
+            if (!img) return true; // no Image yet — treat as not-yet-clean
+            if (img.tosViolation) return true;
+            if (img.needsReview) return true;
+            if (img.ingestion !== ImageIngestionStatus.Scanned) return true;
+            return false;
+          });
+          if (hasTaintedPanel) return false;
+        }
         return true;
       });
 
+      // Public viewers get a 404 if nothing's visible. Owners and mods
+      // still get the page even when empty — they may be previewing a
+      // brand-new project or reviewing flagged content where every
+      // chapter has been pulled by the moderation gates.
       if (filteredChapters.length === 0 && !canViewDrafts) {
         throw throwNotFoundError('Comic not found');
       }
@@ -1605,13 +2008,12 @@ export const comicsRouter = router({
         stripNsfwPanelImages(chapters, !!ctx.user);
       }
 
-      // Aggregate tip total from BuzzTip table
-      const tipResult = await dbRead.$queryRaw<[{ total: number }]>`
-        SELECT COALESCE(SUM(amount), 0)::int AS total
-        FROM "BuzzTip"
-        WHERE "entityType" = 'ComicProject' AND "entityId" = ${project.id}
-      `;
-      const tippedAmountCount = tipResult?.[0]?.total ?? 0;
+      // Pull all watcher-fed counters (tips / reads / followers / hides)
+      // through the cache. Replaces the previous inline aggregate against
+      // BuzzTip — the watcher already rolls those tips up into
+      // `entityMetricDailyAgg_new` under `entityType = 'ComicProject'`,
+      // and the cache merges them in with the engagement counters.
+      const metrics = (await comicMetricsCache.fetch(project.id))[project.id] ?? null;
 
       return {
         id: project.id,
@@ -1625,7 +2027,18 @@ export const comicsRouter = router({
         user: project.user,
         isOwnerOrMod: canViewDrafts,
         tosViolation: project.tosViolation,
-        tippedAmountCount,
+        // Preserved for back-compat with existing readers — same value the
+        // old BuzzTip aggregate produced, just sourced from ClickHouse now.
+        tippedAmountCount: metrics?.tippedAmount ?? 0,
+        tippedCount: metrics?.tippedCount ?? 0,
+        // All counters come from the watcher. No PG fallback: the
+        // `_count.engagements` aggregate would count every engagement
+        // type (Notify + Hide + None), which doesn't match the
+        // type-filtered `followerCount` the watcher emits.
+        followerCount: metrics?.followerCount ?? 0,
+        readerCount: metrics?.readerCount ?? 0,
+        chapterReadCount: metrics?.chapterReadCount ?? 0,
+        hiddenCount: metrics?.hiddenCount ?? 0,
         chapters,
       };
     }),
@@ -4826,6 +5239,131 @@ export const comicsRouter = router({
       ]);
 
       return { success: true };
+    }),
+
+  // ──── Moderation tools ────
+  //
+  // Surface comic panels whose Image is flagged for review or already
+  // marked as a TOS violation. Lets the mod team find and action comic-
+  // specific content without having to wade through the global image
+  // review queue. Approve / block actions flow through the existing
+  // `image.moderate` mutation, so any decision made here also clears
+  // the parent comic project from the moderation gates that hide it
+  // from public surfaces.
+  getModReviewQueue: comicModeratorProcedure
+    .meta({ requiredScope: TokenScope.MediaRead })
+    .input(
+      z.object({
+        limit: z.number().int().min(1).max(50).default(20),
+        cursor: z.number().int().optional(),
+        // Filter by a specific `needsReview` reason (`minor`, `poi`,
+        // `newUser`, `bestiality`, `appeal`, …). Omit to see every
+        // panel awaiting any kind of review.
+        needsReview: z.string().optional(),
+        // When true, also include panels whose Image was already marked
+        // `tosViolation` even though `needsReview` may be null. Useful
+        // for double-checking moderator actions or finding leftovers
+        // after a TOS sweep.
+        includeTosViolations: z.boolean().default(true),
+      })
+    )
+    .query(async ({ input }) => {
+      const { limit, cursor, needsReview, includeTosViolations } = input;
+
+      // Build top-level OR conditions. Each branch is `{ image: { ... } }`
+      // so Prisma generates JOIN + WHERE on the related Image row rather
+      // than a nested OR inside a relation filter (which has been finicky
+      // in this codebase before).
+      //
+      // The "any reason" path mirrors the workspace banner — a panel is
+      // surfaced if ANY of the following is true:
+      //  - `needsReview` is set (automated or manual review request),
+      //  - `tosViolation` is true (already flagged),
+      //  - `ingestion` is anything other than `Scanned` (Blocked,
+      //    PendingManualAssignment, Error, Rescan, NotFound). These are
+      //    the same states `getProjectShell` uses to drive the
+      //    `reviewPending` chapter pill, so a panel a creator sees as
+      //    "hidden from readers — review pending" will reliably appear
+      //    here for the mod team.
+      const orConditions: any[] = [];
+      if (needsReview) {
+        // Specific reason selected — only that one. Don't union in other
+        // states or the dropdown becomes meaningless.
+        orConditions.push({ image: { needsReview } });
+      } else {
+        orConditions.push({ image: { needsReview: { not: null } } });
+        orConditions.push({
+          image: { ingestion: { not: ImageIngestionStatus.Scanned } },
+        });
+      }
+      if (includeTosViolations) {
+        orConditions.push({ image: { tosViolation: true } });
+      }
+
+      const panels = await dbRead.comicPanel.findMany({
+        where: {
+          imageId: { not: null },
+          OR: orConditions,
+        },
+        take: limit + 1,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        orderBy: { id: 'desc' },
+        select: {
+          id: true,
+          position: true,
+          chapterPosition: true,
+          projectId: true,
+          prompt: true,
+          imageUrl: true,
+          createdAt: true,
+          image: {
+            select: {
+              id: true,
+              url: true,
+              nsfwLevel: true,
+              needsReview: true,
+              tosViolation: true,
+              ingestion: true,
+              blockedFor: true,
+              width: true,
+              height: true,
+              hash: true,
+              type: true,
+            },
+          },
+          chapter: {
+            select: {
+              name: true,
+              status: true,
+              position: true,
+              project: {
+                select: {
+                  id: true,
+                  name: true,
+                  status: true,
+                  tosViolation: true,
+                  user: {
+                    select: {
+                      id: true,
+                      username: true,
+                      image: true,
+                      deletedAt: true,
+                      bannedAt: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      let nextCursor: number | undefined;
+      if (panels.length > limit) {
+        nextCursor = panels.pop()!.id;
+      }
+
+      return { items: panels, nextCursor };
     }),
 
   moderatorUnpublishChapter: comicModeratorProcedure

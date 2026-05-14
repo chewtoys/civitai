@@ -28,7 +28,6 @@ export const getServerProxySSGHelpers = async (
       res: ctx.res as any,
       cache: null as any,
       req: ctx.req as any,
-      fingerprint: null as any,
       domain,
       signal: new AbortController().signal,
       tokenScope: TokenScope.Full,

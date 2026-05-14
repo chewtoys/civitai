@@ -27,7 +27,7 @@ import dynamic from 'next/dynamic';
 const NotificationsCard = dynamic(() => import('~/components/Account/NotificationsCard'));
 
 export default function Account() {
-  const { apiKeys, oauthApps, canViewNsfw, strikes } = useFeatureFlags();
+  const features = useFeatureFlags();
   const currentUser = useCurrentUser();
 
   return (
@@ -48,17 +48,17 @@ export default function Account() {
           <SettingsCard />
           <ContentControlsCard />
           <GenerationSettingsCard />
-          {canViewNsfw && <ModerationCard />}
+          {features.canViewNsfw && <ModerationCard />}
           <AccountsCard />
           <UserPaymentConfigurationCard />
           {currentUser?.subscriptionId && <SubscriptionCard />}
           <PaymentMethodsCard />
           {/* {buzz && <UserReferralCodesCard />} */}
           <NotificationsCard />
-          {apiKeys && <ApiKeysCard />}
-          {oauthApps && <OAuthAppsCard />}
-          {oauthApps && <ConnectedAppsCard />}
-          {strikes && <StrikesCard />}
+          {features.apiKeys && <ApiKeysCard />}
+          {features.oauthApps && <OAuthAppsCard />}
+          {features.oauthApps && <ConnectedAppsCard />}
+          {features.strikes && <StrikesCard />}
           <RefreshSessionCard />
           <DeleteCard />
         </Stack>

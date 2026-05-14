@@ -15,21 +15,12 @@ import {
 import { showNotification } from '@mantine/notifications';
 import { IconSettings, IconSparkles } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
+import { Page } from '~/components/AppLayout/Page';
 import { Meta } from '~/components/Meta/Meta';
-import { createServerSideProps } from '~/server/utils/server-side-helpers';
+import { GenerationStatusCard } from '~/components/Moderation/GenerationStatusCard';
 import { trpc } from '~/utils/trpc';
 
-export const getServerSideProps = createServerSideProps({
-  useSession: true,
-  resolver: async ({ session }) => {
-    if (!session || !session.user?.isModerator)
-      return { redirect: { destination: '/', permanent: false } };
-
-    return { props: {} };
-  },
-});
-
-export default function ServiceStatusPage() {
+function ServiceStatusPage() {
   return (
     <>
       <Meta title="Service Status" deIndex />
@@ -40,12 +31,13 @@ export default function ServiceStatusPage() {
             <Stack gap={0}>
               <Title order={2}>Service Status</Title>
               <Text c="dimmed" size="sm">
-                Enable or disable training. Set the message shown to users when the service is
-                unavailable. Generation status lives on the Generation Config page.
+                Enable or disable image generation and training. Set the message shown to users
+                when a service is unavailable.
               </Text>
             </Stack>
           </Group>
 
+          <GenerationStatusCard />
           <TrainingStatusCard />
         </Stack>
       </Container>
@@ -146,3 +138,7 @@ function TrainingStatusCard() {
     </Card>
   );
 }
+
+export default Page(ServiceStatusPage, {
+  features: (features) => features.serviceStatus,
+});

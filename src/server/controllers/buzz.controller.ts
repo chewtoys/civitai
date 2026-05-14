@@ -376,9 +376,9 @@ export const getUserMultipliersHandler = async ({ ctx }: { ctx: ProtectedContext
 
 export const claimDailyBoostRewardHandler = async ({ ctx }: { ctx: ProtectedContext }) => {
   try {
-    const { ip, fingerprint, user } = ctx;
+    const { ip, user } = ctx;
     const { id: userId } = user;
-    await dailyBoostReward.apply({ userId }, { ip, fingerprint });
+    await dailyBoostReward.apply({ userId }, { ip });
   } catch (error) {
     const parsedError = getTRPCErrorFromUnknown(error);
     handleLogError(parsedError);

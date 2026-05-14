@@ -45,7 +45,7 @@ const filterMediaTypesOptions: RefinementListProps['transformItems'] = (items) =
 };
 
 function RenderFilters() {
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
   const browsingSettingsAddons = useBrowsingSettingsAddons();
   const currentUser = useCurrentUser();
 
@@ -73,11 +73,11 @@ function RenderFilters() {
     <>
       <BrowsingLevelFilter
         filters={filters}
-        attributeName={!canViewNsfw ? 'combinedNsfwLevel' : 'nsfwLevel'}
+        attributeName={!features.canViewNsfw ? 'combinedNsfwLevel' : 'nsfwLevel'}
       />
       <SortBy
         title="Sort images by"
-        items={!canViewNsfw ? items.filter((x) => x.label !== 'Newest') : items}
+        items={!features.canViewNsfw ? items.filter((x) => x.label !== 'Newest') : items}
       />
       <DateRangeRefinement title="Filter by Creation Date" attribute="createdAtUnix" />
       <ChipRefinementList

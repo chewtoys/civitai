@@ -523,7 +523,6 @@ export const EXPERIMENTAL_MODE_SUPPORTED_MODELS: string[] = [
 // sdcpp under the hood.
 export const SDCPP_SUPPORTED_ECOSYSTEMS: string[] = [
   ...EXPERIMENTAL_MODE_SUPPORTED_MODELS,
-  'Anima',
   'ZImageBase',
   'ZImageTurbo',
   'Flux2Klein_9B',
@@ -536,6 +535,22 @@ export const SDCPP_SUPPORTED_ECOSYSTEMS: string[] = [
 // the sdcpp/BOGO path (e.g. Flux Pro 1.1 and Flux Ultra run on a different
 // engine even though their ecosystem is `Flux1`).
 export const SDCPP_EXCLUDED_MODEL_IDS: number[] = [fluxProAirId, fluxUltraAirId];
+
+// Per-tier per-request video quantity for ecosystems that batch multiple
+// outputs in a single job (currently LTXV23). Drives `ext.limits.vidQuantity`
+// and the LTXV23 quantity node max. Founder treated as gold so legacy paid
+// members retain the highest cap.
+export const VID_QUANTITY_BY_TIER: Record<
+  'free' | 'founder' | 'bronze' | 'silver' | 'gold',
+  number
+> = {
+  free: 1,
+  founder: 2,
+  bronze: 2,
+  silver: 3,
+  gold: 4,
+};
+export const LTXV23_MAX_QUANTITY = Math.max(...Object.values(VID_QUANTITY_BY_TIER));
 export const fluxModeOptions = [
   { label: 'Draft', value: fluxDraftAir },
   { label: 'Standard', value: fluxStandardAir },

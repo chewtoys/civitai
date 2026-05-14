@@ -471,6 +471,8 @@ export const TagSource = {
   HiveDemographics: 'HiveDemographics',
   Clavata: 'Clavata',
   SpineRating: 'SpineRating',
+  AiRecognition: 'AiRecognition',
+  AnimeRecognition: 'AnimeRecognition',
 } as const;
 
 export type TagSource = (typeof TagSource)[keyof typeof TagSource];
@@ -1054,3 +1056,13 @@ export const WildcardSetCategoryAuditStatus = {
 } as const;
 
 export type WildcardSetCategoryAuditStatus = (typeof WildcardSetCategoryAuditStatus)[keyof typeof WildcardSetCategoryAuditStatus];
+
+export const ReviewVerdict = {
+  TruePositive: 'TruePositive',
+  FalsePositive: 'FalsePositive',
+  TrueNegative: 'TrueNegative',
+  FalseNegative: 'FalseNegative',
+  Unsure: 'Unsure',
+} as const;
+
+export type ReviewVerdict = (typeof ReviewVerdict)[keyof typeof ReviewVerdict];

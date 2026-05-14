@@ -28,7 +28,8 @@ import {
   ltxv2AspectRatios,
   ltxv23AspectRatiosByResolution,
   LTXV2_DISTILLED_ID,
-  LTXV23_DISTILLED_ID,
+  DISTILLED_IDS,
+  SULPHUR2_IDS,
 } from '~/shared/data-graph/generation/ltx-graph';
 import { defineHandler } from './handler-factory';
 import type { StepInput } from '.';
@@ -116,13 +117,19 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
   }
 
   if (data.ltxVersion === 'v23') {
-    const distilled = data.model?.id === LTXV23_DISTILLED_ID;
+    const distilled = DISTILLED_IDS.has(data.model?.id ?? -1);
     const model = distilled ? '22b-distilled' : '22b-dev';
     const resolution = data.resolution ?? '720p';
     const aspectRatios =
       ltxv23AspectRatiosByResolution[resolution] ?? ltxv23AspectRatiosByResolution['720p'];
     const guidanceScale = distilled ? 1 : data.cfgScale;
     const stepCount = distilled ? 8 : data.steps;
+    // Sulphur 2 is a community LTXV23 fine-tune — pass its AIR through `diffusionModel`
+    // to override the transformer file while leaving CLIPs/VAEs/upscale-LoRA intact.
+    const diffusionModel =
+      data.model && SULPHUR2_IDS.has(data.model.id)
+        ? ctx.airs.getOrThrow(data.model.id)
+        : undefined;
 
     let videoStep: VideoGenStepTemplate;
     switch (data.workflow) {
@@ -142,12 +149,14 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             width,
             height,
             model,
+            diffusionModel,
             guidanceScale,
             steps: stepCount,
             duration: data.duration,
             firstFrame: images?.[0]?.url,
             lastFrame: images && images.length > 1 ? images[1]?.url : undefined,
             frameGuideStrength: data.frameGuideStrength,
+            quantity: data.quantity,
             seed: data.seed,
             generateAudio: data.generateAudio,
             loras,
@@ -166,6 +175,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             width: 'video' in data ? data.video?.metadata?.width : undefined,
             height: 'video' in data ? data.video?.metadata?.height : undefined,
             model,
+            diffusionModel,
             guidanceScale,
             steps: stepCount,
             duration: data.duration,
@@ -173,6 +183,7 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             cannyLowThreshold: data.cannyLowThreshold,
             cannyHighThreshold: data.cannyHighThreshold,
             guideStrength: data.guideStrength,
+            quantity: data.quantity,
             seed: data.seed,
             generateAudio: data.generateAudio,
             loras,
@@ -191,10 +202,12 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             width: data.video?.metadata?.width,
             height: data.video?.metadata?.height,
             model,
+            diffusionModel,
             guidanceScale,
             steps: stepCount,
             sourceVideo: data.video?.url,
             numFrames: data.numFrames,
+            quantity: data.quantity,
             seed: data.seed,
             generateAudio: data.generateAudio,
             loras,
@@ -214,9 +227,11 @@ export const createLTXInput = defineHandler<LTXCtx, StepInput[]>((data, ctx) => 
             width: data.aspectRatio?.width,
             height: data.aspectRatio?.height,
             model,
+            diffusionModel,
             guidanceScale,
             steps: stepCount,
             duration: data.duration,
+            quantity: data.quantity,
             seed: data.seed,
             images: data.images?.map((x) => x.url),
             generateAudio: data.generateAudio,

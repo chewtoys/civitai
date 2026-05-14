@@ -37,7 +37,7 @@ export function UserAvatarSimple({
   cosmetics?: UserWithCosmetics['cosmetics'] | null;
   autoplayAnimations?: boolean;
 }) {
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
   const currentUser = useCurrentUser();
   const browsingLevel = useBrowsingLevelDebounced();
   const displayProfilePicture =
@@ -69,7 +69,7 @@ export function UserAvatarSimple({
         <div className="relative ">
           <div className="flex size-8 items-center justify-center overflow-hidden rounded-full bg-white/30 dark:bg-black/30">
             {profilePicture &&
-            (!canViewNsfw
+            (!features.canViewNsfw
               ? currentUser
                 ? hasSafeBrowsingLevel(profilePicture.nsfwLevel)
                 : hasPublicBrowsingLevel(profilePicture.nsfwLevel)

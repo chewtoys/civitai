@@ -57,6 +57,7 @@ const EDIT_IMG_IDS = [
   ECO.Flux1Kontext,
   ECO.Grok,
   ECO.WanImage27,
+  ECO.HiDreamO1,
 ];
 
 /** Image ecosystems that support image:create */
@@ -82,6 +83,7 @@ const TXT2IMG_IDS = [
   ECO.Qwen,
   ECO.Qwen2,
   ECO.HiDream,
+  ECO.HiDreamO1,
   ECO.NanoBanana,
   ECO.OpenAI,
   ECO.Imagen4,
@@ -674,7 +676,8 @@ const NEW_FORM_ONLY = new Map<string, NewFormOnlyRule>([
       ecoId === ECO.Grok ||
       ecoId === ECO.Qwen2 ||
       ecoId === ECO.WanImage27 ||
-      ecoId === ECO.Ernie,
+      ecoId === ECO.Ernie ||
+      ecoId === ECO.HiDreamO1,
   ],
   [
     'img2img:edit',
@@ -682,7 +685,8 @@ const NEW_FORM_ONLY = new Map<string, NewFormOnlyRule>([
       (ecoId === ECO.NanoBanana && modelId === nanoBananaVersionIds.v2) ||
       ecoId === ECO.Grok ||
       ecoId === ECO.Qwen2 ||
-      ecoId === ECO.WanImage27,
+      ecoId === ECO.WanImage27 ||
+      ecoId === ECO.HiDreamO1,
   ],
 
   // Grok/LTXV23 vid2vid:edit - no legacy equivalent

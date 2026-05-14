@@ -86,19 +86,53 @@ type ComicForSearchIndex = {
   } | null;
 };
 
+// Visibility gates for the search index — must mirror the
+// `getPublicProjects` listing query in `comics.router.ts`. Anything that
+// passes here ends up indexed in Meilisearch and reachable by anonymous
+// search, so missing a gate here is a leak even if the listing route
+// gets it right.
+//
+//  - project Active and not TOS-violated
+//  - author exists, isn't the system user (-1), isn't banned
+//  - has at least one Published chapter with a Ready panel that has a
+//    *clean* underlying Image: ingestion = Scanned, not in review, not
+//    TOS-violated. Without the Image checks, panels whose underlying
+//    Image was flagged AFTER scan would still surface in search.
 const WHERE = [
   Prisma.sql`cp."status" = 'Active'::"ComicProjectStatus"`,
+  Prisma.sql`cp."tosViolation" = FALSE`,
   Prisma.sql`cp."userId" != -1`,
+  Prisma.sql`EXISTS (
+    SELECT 1 FROM "User" u
+    WHERE u.id = cp."userId" AND u."bannedAt" IS NULL
+  )`,
   Prisma.sql`EXISTS (
     SELECT 1 FROM "ComicChapter" cc
     WHERE cc."projectId" = cp.id
     AND cc."status" = 'Published'::"ComicChapterStatus"
     AND EXISTS (
       SELECT 1 FROM "ComicPanel" cpn
+      JOIN "Image" i ON i.id = cpn."imageId"
       WHERE cpn."projectId" = cc."projectId"
       AND cpn."chapterPosition" = cc."position"
       AND cpn."status" = 'Ready'::"ComicPanelStatus"
       AND cpn."imageUrl" IS NOT NULL
+      AND i."ingestion" = 'Scanned'::"ImageIngestionStatus"
+      AND i."needsReview" IS NULL
+      AND i."tosViolation" = FALSE
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM "ComicPanel" cpn
+      LEFT JOIN "Image" i ON i.id = cpn."imageId"
+      WHERE cpn."projectId" = cc."projectId"
+      AND cpn."chapterPosition" = cc."position"
+      AND cpn."status" = 'Ready'::"ComicPanelStatus"
+      AND (
+        i.id IS NULL
+        OR i."ingestion" != 'Scanned'::"ImageIngestionStatus"
+        OR i."needsReview" IS NOT NULL
+        OR i."tosViolation" = TRUE
+      )
     )
   )`,
 ];

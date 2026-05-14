@@ -14,7 +14,7 @@ export default function CsamReports() {
   const router = useRouter();
   const page = router.query.page ? Number(router.query.page) : 1;
 
-  const { csamReports } = useFeatureFlags();
+  const features = useFeatureFlags();
 
   const [pagination, setPagination] = useState<MRT_PaginationState>({
     pageIndex: 0,
@@ -90,7 +90,7 @@ export default function CsamReports() {
     .filter(([, count]) => count > 0)
     .map(([key, count]) => ({ label: key, count }));
 
-  if (!csamReports) return <NotFound />;
+  if (!features.csamReports) return <NotFound />;
 
   return (
     <Container size="xl">

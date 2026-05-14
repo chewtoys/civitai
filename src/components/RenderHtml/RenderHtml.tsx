@@ -22,29 +22,45 @@ export function RenderHtml({
   const blurNsfw = useBrowsingSettings((state) => state.blurNsfw);
 
   html = useMemo(() => {
-    // Apply profanity filtering if enabled, but skip mentions
     let processedHtml = html;
     if (withProfanityFilter && blurNsfw) {
       const profanityFilter = createProfanityFilter();
 
-      // Use regex to find and preserve mentions while filtering everything else
-      const mentionRegex = /<span[^>]*data-type="mention"[^>]*>.*?<\/span>/gi;
-      const mentions: string[] = [];
-      let mentionIndex = 0;
+      // Preserve mentions (entire span + content) and all HTML tag markup so
+      // the filter only operates on visible text content. Capturing entire
+      // tags also protects href/src attribute values, since the whole opening
+      // tag is one match. The per-render nonce prevents collisions with any
+      // user-typed text that happens to look like a placeholder.
+      const nonce = Math.random().toString(36).slice(2, 12);
+      const mentionToken = (i: number) => `__pf${nonce}M${i}__`;
+      const tagToken = (i: number) => `__pf${nonce}T${i}__`;
 
-      // Extract mentions and replace with placeholders
+      const mentionRegex = /<span[^>]*data-type="mention"[^>]*>.*?<\/span>/gi;
+      const tagRegex = /<[^>]+>/g;
+
+      const mentions: string[] = [];
       processedHtml = processedHtml.replace(mentionRegex, (match) => {
         mentions.push(match);
-        return `__MENTION_PLACEHOLDER_${mentionIndex++}__`;
+        return mentionToken(mentions.length - 1);
       });
 
-      // Apply profanity filtering to the text without mentions
+      const tags: string[] = [];
+      processedHtml = processedHtml.replace(tagRegex, (match) => {
+        tags.push(match);
+        return tagToken(tags.length - 1);
+      });
+
       processedHtml = profanityFilter.clean(processedHtml);
 
-      // Restore mentions
-      mentions.forEach((mention, index) => {
-        processedHtml = processedHtml.replace(`__MENTION_PLACEHOLDER_${index}__`, mention);
-      });
+      // Single-pass O(n) restore per type via global regex callback.
+      processedHtml = processedHtml.replace(
+        new RegExp(`__pf${nonce}T(\\d+)__`, 'g'),
+        (_, index) => tags[Number(index)] ?? ''
+      );
+      processedHtml = processedHtml.replace(
+        new RegExp(`__pf${nonce}M(\\d+)__`, 'g'),
+        (_, index) => mentions[Number(index)] ?? ''
+      );
     }
 
     return sanitizeHtml(processedHtml, {

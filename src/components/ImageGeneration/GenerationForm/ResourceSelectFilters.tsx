@@ -227,12 +227,12 @@ export function ResourceSelectFiltersDropdown() {
 }
 
 export function ResourceSelectSort() {
-  const { canViewNsfw } = useFeatureFlags();
+  const features = useFeatureFlags();
   const { currentRefinement, options, refine } = useSortBy({
     items: Object.entries(resourceSort)
       .map(([k, v]) => ({ label: v, value: k }))
       .filter((x) => {
-        return !(!canViewNsfw && x.label === 'Newest');
+        return !(!features.canViewNsfw && x.label === 'Newest');
       }),
   });
 

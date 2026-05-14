@@ -1,6 +1,6 @@
 {
   "name": "model-share",
-  "version": "5.0.1700",
+  "version": "5.0.1722",
   "private": true,
   "packageManager": "pnpm@10.28.1",
   "scripts": {
@@ -74,7 +74,7 @@
     "@aws-sdk/lib-storage": "^3.490.0",
     "@aws-sdk/s3-request-presigner": "^3.490.0",
     "@axiomhq/axiom-node": "^0.12.0",
-    "@civitai/client": "0.2.0-beta.58",
+    "@civitai/client": "0.2.0-beta.62",
     "@civitai/cybertipline-tools": "^0.1.0",
     "@civitai/next-axiom": "^0.17.0",
     "@clavata/sdk": "^0.2.3",
@@ -125,7 +125,6 @@
     "@paypal/react-paypal-js": "^8.1.3",
     "@prisma/client": "^6.3.0",
     "@prisma/instrumentation": "^7.4.2",
-    "@rajesh896/broprint.js": "^2.1.1",
     "@react-hook/window-size": "^3.1.1",
     "@react-pdf/renderer": "^3.3.8",
     "@stripe/react-stripe-js": "^2.4.0",

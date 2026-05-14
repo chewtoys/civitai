@@ -29,6 +29,8 @@ import {
   IconChevronRight,
   IconColumns,
   IconDotsVertical,
+  IconEye,
+  IconEyeOff,
   IconFlag,
   IconLayoutList,
   IconLock,
@@ -38,6 +40,7 @@ import {
   IconPencil,
   IconPhoto,
   IconPhotoOff,
+  IconUsers,
   IconShare,
   IconTrash,
 } from '@tabler/icons-react';
@@ -98,7 +101,7 @@ export const getServerSideProps = createServerSideProps({
 
 function PublicComicReader() {
   const router = useRouter();
-  const { isGreen } = useFeatureFlags();
+  const features = useFeatureFlags();
   const { id, slug } = router.query as { id: string; slug?: string[] };
   const projectId = Number(id);
 
@@ -141,7 +144,11 @@ function PublicComicReader() {
 
   // Block NSFW comics on green domain.
   // Project nsfwLevel is bit_or of all chapters, so check for ANY NSFW bits.
-  if (isGreen && project.nsfwLevel !== 0 && Flags.intersects(project.nsfwLevel, nsfwBrowsingLevelsFlag)) {
+  if (
+    features.isGreen &&
+    project.nsfwLevel !== 0 &&
+    Flags.intersects(project.nsfwLevel, nsfwBrowsingLevelsFlag)
+  ) {
     return (
       <div className="absolute inset-0 flex items-center justify-center">
         <Text>This content is not available on this site</Text>
@@ -194,9 +201,7 @@ function ChapterListItem({
   const daysUntilFree = ch.earlyAccessEndsAt
     ? Math.max(
         0,
-        Math.ceil(
-          (new Date(ch.earlyAccessEndsAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
-        )
+        Math.ceil((new Date(ch.earlyAccessEndsAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
       )
     : 0;
 
@@ -233,9 +238,7 @@ function ChapterListItem({
       </div>
       <div className={styles.chapterInfo}>
         <p className={styles.chapterName}>
-          {!isRead && (
-            <span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1.5" />
-          )}
+          {!isRead && <span className="inline-block w-2 h-2 rounded-full bg-blue-500 mr-1.5" />}
           {ch.name}
           {ch.status === ComicChapterStatus.Draft && (
             <Badge size="xs" variant="light" color="yellow" ml={4}>
@@ -254,7 +257,13 @@ function ChapterListItem({
             </Badge>
           )}
           {isNsfw && (
-            <span className="ml-1" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+            <span
+              className="ml-1"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+            >
               <BrowsingLevelBadge
                 browsingLevel={ch.nsfwLevel}
                 size="xs"
@@ -278,8 +287,7 @@ function ChapterListItem({
           {isLocked ? (
             daysUntilFree > 0 ? (
               <>
-                Early access · free in {daysUntilFree}{' '}
-                {daysUntilFree === 1 ? 'day' : 'days'}
+                Early access · free in {daysUntilFree} {daysUntilFree === 1 ? 'day' : 'days'}
               </>
             ) : (
               <>Early access</>
@@ -481,9 +489,7 @@ function ComicOverview({ project }: { project: Project }) {
                         icon={<IconBolt />}
                       >
                         <span className="text-sm">
-                          {abbreviateNumber(
-                            (project.tippedAmountCount ?? 0) + tippedAmount
-                          )}
+                          {abbreviateNumber((project.tippedAmountCount ?? 0) + tippedAmount)}
                         </span>
                       </IconBadge>
                     </InteractiveTipBuzzButton>
@@ -606,6 +612,59 @@ function ComicOverview({ project }: { project: Project }) {
             <UserAvatarSimple {...project.user} />
           </div>
 
+          {/* Public metric strip — ClickHouse-backed counters via the
+              watcher. Readers (unique viewers) and chapter-reads (total
+              page turns) are the most useful social-proof signals; we
+              also surface followers and the tip total. Moderators
+              additionally see the hide count which is otherwise
+              suppressed (creators don't need to know how many people
+              muted them). Each pill renders only when non-zero. */}
+          {(project.readerCount > 0 ||
+            project.chapterReadCount > 0 ||
+            project.followerCount > 0 ||
+            (project.tippedAmountCount ?? 0) > 0 ||
+            (isMod && project.hiddenCount > 0)) && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {project.readerCount > 0 && (
+                <Tooltip label="Unique readers">
+                  <IconBadge radius="sm" color="gray" size="md" icon={<IconUsers size={14} />}>
+                    <span className="text-xs">{abbreviateNumber(project.readerCount)}</span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+              {project.chapterReadCount > 0 && (
+                <Tooltip label="Total chapter reads">
+                  <IconBadge radius="sm" color="gray" size="md" icon={<IconEye size={14} />}>
+                    <span className="text-xs">{abbreviateNumber(project.chapterReadCount)}</span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+              {project.followerCount > 0 && (
+                <Tooltip label="Followers">
+                  <IconBadge radius="sm" color="gray" size="md" icon={<IconBell size={14} />}>
+                    <span className="text-xs">{abbreviateNumber(project.followerCount)}</span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+              {(project.tippedAmountCount ?? 0) > 0 && (
+                <Tooltip label="Buzz tipped">
+                  <IconBadge radius="sm" color="gray" size="md" icon={<IconBolt size={14} />}>
+                    <span className="text-xs">
+                      {abbreviateNumber((project.tippedAmountCount ?? 0) + tippedAmount)}
+                    </span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+              {isMod && project.hiddenCount > 0 && (
+                <Tooltip label="Moderator-only: users who hid this comic">
+                  <IconBadge radius="sm" color="yellow" size="md" icon={<IconEyeOff size={14} />}>
+                    <span className="text-xs">{abbreviateNumber(project.hiddenCount)}</span>
+                  </IconBadge>
+                </Tooltip>
+              )}
+            </div>
+          )}
+
           {/* Description */}
           {project.description && (
             <p className={styles.overviewDescription}>{project.description}</p>
@@ -676,10 +735,7 @@ function ComicOverview({ project }: { project: Project }) {
             }
             if (isOwner && hasAnyPanels) {
               return (
-                <Link
-                  href={`/comics/project/${project.id}/read`}
-                  className={styles.ctaBtn}
-                >
+                <Link href={`/comics/project/${project.id}/read`} className={styles.ctaBtn}>
                   <IconBook size={20} />
                   Preview
                 </Link>
@@ -791,7 +847,11 @@ function ChapterReader({ project, chapterDbPos }: { project: Project; chapterDbP
   // proper text labels there instead of an iconbutton-in-menu hack.
   const exportPanels = activeChapter?.panels ?? [];
   const exportChapterName = activeChapter?.name ?? '';
-  const { exporting: isExporting, exportCBZ, exportPDF } = useChapterExport({
+  const {
+    exporting: isExporting,
+    exportCBZ,
+    exportPDF,
+  } = useChapterExport({
     projectName: project.name,
     chapterName: exportChapterName,
     panels: exportPanels,
@@ -820,7 +880,6 @@ function ChapterReader({ project, chapterDbPos }: { project: Project; chapterDbP
       goToChapter(safeIdx - 1, lastPage);
     }
   };
-
 
   // Connection key for ImageGuard2 — all panels in a chapter share the same key
   const chapterConnectId = `${project.id}-${activeChapter?.position ?? 0}`;
@@ -940,11 +999,7 @@ function ChapterReader({ project, chapterDbPos }: { project: Project; chapterDbP
     if (panel.image) {
       return (
         <div key={panel.id} className="relative">
-          <ImageGuard2
-            image={panel.image}
-            connectType="comicChapter"
-            connectId={chapterConnectId}
-          >
+          <ImageGuard2 image={panel.image} connectType="comicChapter" connectId={chapterConnectId}>
             {(safe) =>
               safe ? (
                 <>
@@ -1017,7 +1072,10 @@ function ChapterReader({ project, chapterDbPos }: { project: Project; chapterDbP
 
   return (
     <>
-      <Meta title={`${activeChapter?.name ?? 'Chapter'} - ${project.name} - Civitai Comics`} deIndex={true} />
+      <Meta
+        title={`${activeChapter?.name ?? 'Chapter'} - ${project.name} - Civitai Comics`}
+        deIndex={true}
+      />
 
       <div className={styles.readerRoot}>
         {/* Sticky header — hides on scroll down */}
@@ -1113,11 +1171,7 @@ function ChapterReader({ project, chapterDbPos }: { project: Project; chapterDbP
                     onClick={toggleComments}
                     aria-label={commentsVisible ? 'Hide comments' : 'Show comments'}
                   >
-                    {commentsVisible ? (
-                      <IconMessage size={16} />
-                    ) : (
-                      <IconMessageOff size={16} />
-                    )}
+                    {commentsVisible ? <IconMessage size={16} /> : <IconMessageOff size={16} />}
                   </ActionIcon>
                 </Tooltip>
                 {/* Chapter prev/next chevrons are redundant with the Select */}
@@ -1151,9 +1205,7 @@ function ChapterReader({ project, chapterDbPos }: { project: Project; chapterDbP
                 {/* Desktop: secondary actions inline. */}
                 {!isMobile && (
                   <>
-                    <CopyButton
-                      value={typeof window !== 'undefined' ? window.location.href : ''}
-                    >
+                    <CopyButton value={typeof window !== 'undefined' ? window.location.href : ''}>
                       {({ copied, copy }) => (
                         <Tooltip label={copied ? 'Copied!' : 'Copy link'}>
                           <ActionIcon
@@ -1289,33 +1341,32 @@ function ChapterReader({ project, chapterDbPos }: { project: Project; chapterDbP
                           Report
                         </Menu.Item>
                       )}
-                      {isMod &&
-                        activeChapter?.status === ComicChapterStatus.Published && (
-                          <>
-                            <Menu.Divider />
-                            <Menu.Label>Moderator</Menu.Label>
-                            <Menu.Item
-                              leftSection={<IconBan size={14} stroke={1.5} />}
-                              color="red"
-                              onClick={() =>
-                                openConfirmModal({
-                                  title: 'Unpublish Chapter',
-                                  children:
-                                    'This will unpublish the chapter and revert it to draft. The creator will be notified.',
-                                  labels: { confirm: 'Unpublish', cancel: 'Cancel' },
-                                  confirmProps: { color: 'red' },
-                                  onConfirm: () =>
-                                    modUnpublishMutation.mutate({
-                                      projectId: project.id,
-                                      chapterPosition: activeChapter.position,
-                                    }),
-                                })
-                              }
-                            >
-                              Unpublish Chapter
-                            </Menu.Item>
-                          </>
-                        )}
+                      {isMod && activeChapter?.status === ComicChapterStatus.Published && (
+                        <>
+                          <Menu.Divider />
+                          <Menu.Label>Moderator</Menu.Label>
+                          <Menu.Item
+                            leftSection={<IconBan size={14} stroke={1.5} />}
+                            color="red"
+                            onClick={() =>
+                              openConfirmModal({
+                                title: 'Unpublish Chapter',
+                                children:
+                                  'This will unpublish the chapter and revert it to draft. The creator will be notified.',
+                                labels: { confirm: 'Unpublish', cancel: 'Cancel' },
+                                confirmProps: { color: 'red' },
+                                onConfirm: () =>
+                                  modUnpublishMutation.mutate({
+                                    projectId: project.id,
+                                    chapterPosition: activeChapter.position,
+                                  }),
+                              })
+                            }
+                          >
+                            Unpublish Chapter
+                          </Menu.Item>
+                        </>
+                      )}
                     </Menu.Dropdown>
                   </Menu>
                 )}

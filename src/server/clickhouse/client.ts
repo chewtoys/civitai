@@ -229,7 +229,6 @@ export type TrackRequest = {
   userId: number;
   ip: string;
   userAgent: string;
-  fingerprint?: string;
 };
 
 /** Track a webhook event to ClickHouse (fire and forget) */
@@ -252,7 +251,6 @@ export class Tracker {
     userId: 0,
     ip: 'unknown',
     userAgent: 'unknown',
-    fingerprint: 'unknown',
   };
   private session: Session | null = null;
   private req: NextApiRequest | undefined;
@@ -288,7 +286,6 @@ export class Tracker {
       this.res = res;
       this.actor.ip = requestIp.getClientIp(req) ?? this.actor.ip;
       this.actor.userAgent = req.headers['user-agent'] ?? this.actor.userAgent;
-      this.actor.fingerprint = (req.headers['x-fingerprint'] as string) ?? this.actor.fingerprint;
     }
   }
 
@@ -648,5 +645,23 @@ export class Tracker {
     valid?: boolean;
   }) {
     return this.track('moderationRequest', { ...values }, { skipActorMeta: true });
+  }
+
+  public retoolAudit(values: {
+    action: string;
+    privileged: boolean;
+    outcome: 'ok' | 'error';
+    errorMsg?: string;
+    payload: Record<string, unknown>;
+    affected?: Record<string, unknown>;
+  }) {
+    return this.track('retoolAuditLog', {
+      action: values.action,
+      privileged: values.privileged ? 1 : 0,
+      outcome: values.outcome,
+      errorMsg: values.errorMsg ?? '',
+      payload: JSON.stringify(values.payload),
+      affected: values.affected ? JSON.stringify(values.affected) : '',
+    });
   }
 }

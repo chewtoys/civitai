@@ -58,7 +58,7 @@ export const PlanBenefitList = ({
         }
       >
         <Stack gap="xs">
-          {benefits.map(({ content, icon, iconColor, iconVariant }, index) =>
+          {benefits.map(({ content, icon, iconColor, iconVariant, iconStyle }, index) =>
             content ? (
               <List.Item
                 key={index}
@@ -69,6 +69,7 @@ export const PlanBenefitList = ({
                       size={themeIconSize}
                       radius="xl"
                       variant={iconVariant}
+                      style={iconStyle}
                     >
                       {icon}
                     </ThemeIcon>
@@ -136,5 +137,6 @@ export type BenefitItem = {
   icon?: React.ReactNode;
   iconColor?: DefaultMantineColor;
   iconVariant?: ThemeIconVariant;
+  iconStyle?: React.CSSProperties;
   key?: string;
 };

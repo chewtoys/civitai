@@ -519,6 +519,8 @@ export function enumNode<T extends string | number>({
 // =============================================================================
 
 export interface QuantityNodeConfig {
+  /** Maximum quantity (typically `ext.limits.maxQuantity`) */
+  max: number;
   /** Minimum quantity (default: value of `step`) */
   min?: number;
   /** Step increment (default: 1) */
@@ -526,40 +528,34 @@ export interface QuantityNodeConfig {
 }
 
 /**
- * Creates a quantity node with configurable min/step.
- * Max is always derived from external context (ext.limits.maxQuantity).
+ * Creates a quantity node config with configurable min/step/max.
+ * Caller passes `max` from external context (typically `ext.limits.maxQuantity`)
+ * so this stays a plain builder — the node's (ctx, ext) callback owns the
+ * lookup and any conditional logic.
  *
  * Meta contains: min, max, step (for UI rendering)
  *
  * @example
- * // Default quantity (min: 1, step: 1)
- * .node('quantity', quantityNode(), [])
- *
- * // Draft mode quantity (min: 4, step: 4)
- * .node('quantity', quantityNode({ min: 4, step: 4 }), [])
+ * .node(
+ *   'quantity',
+ *   (_ctx, ext) => quantityNode({ max: ext.limits.maxQuantity }),
+ *   []
+ * )
  */
-export function quantityNode(config?: QuantityNodeConfig) {
-  return (_ctx: Record<string, unknown>, ext: GenerationCtx) => {
-    const step = config?.step ?? 1;
-    const min = config?.min ?? step;
-    const max = ext.limits.maxQuantity;
-
-    return {
-      input: z.coerce
-        .number()
-        .optional()
-        .transform((val) => {
-          if (val === undefined) return undefined;
-          return snapToStep(val, step, min, max);
-        }),
-      output: z.number().min(min).max(max),
-      defaultValue: min,
-      meta: {
-        min,
-        max,
-        step,
-      },
-    };
+export function quantityNode({ max, min: minOpt, step: stepOpt }: QuantityNodeConfig) {
+  const step = stepOpt ?? 1;
+  const min = minOpt ?? step;
+  return {
+    input: z.coerce
+      .number()
+      .optional()
+      .transform((val) => {
+        if (val === undefined) return undefined;
+        return snapToStep(val, step, min, max);
+      }),
+    output: z.number().min(min).max(max),
+    defaultValue: min,
+    meta: { min, max, step },
   };
 }
 

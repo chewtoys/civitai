@@ -23,6 +23,7 @@ export const getModelVersionDetailsSelect = Prisma.validator<Prisma.ModelVersion
   description: true,
   uploadType: true,
   usageControl: true,
+  licensingFee: true,
   metrics: {
     select: {
       downloadCount: true,

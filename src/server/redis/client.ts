@@ -51,6 +51,7 @@ interface CustomRedisClient<K extends RedisKeyTemplates>
     | 'hSet'
     | 'hmGet'
     | 'del'
+    | 'unlink'
     | 'exists'
     | 'expire'
     | 'expireAt'
@@ -140,6 +141,9 @@ interface CustomRedisClient<K extends RedisKeyTemplates>
   ): Promise<T[]>;
   // Wrapped to avoid CROSSSLOT errors - deletes keys individually with Promise.all when array
   del(key: K | K[]): Promise<number>;
+  // Wrapped to avoid CROSSSLOT errors - unlinks keys individually with Promise.all when array.
+  // Prefer over del for large keys (sets/hashes) — UNLINK frees memory in a background thread.
+  unlink(key: K | K[]): Promise<number>;
   exists(key: K | K[]): Promise<number>;
   expire(key: K, seconds: number, mode?: 'NX' | 'XX' | 'GT' | 'LT'): Promise<boolean>;
   expireAt(key: K, timestamp: number | Date, mode?: 'NX' | 'XX' | 'GT' | 'LT'): Promise<boolean>;
@@ -461,16 +465,34 @@ function getClient<K extends RedisKeyTemplates>(type: 'cache' | 'system') {
     [RESP_TYPES.BLOB_STRING]: Buffer,
   }) as CustomRedisClient<K>;
 
+  // Decode a packed Buffer, evicting the bad entry if msgpack fails so the next
+  // read falls through to source. Returns null on decode failure, treated as cache miss.
+  const safeUnpack = <T>(value: Buffer, evict: () => Promise<unknown>): T | null => {
+    try {
+      return unpack(value) as T;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`Packed unpack failed, evicting bad cache entry: ${msg}`);
+      evict().catch((e) =>
+        log(`Eviction after unpack failure failed: ${e instanceof Error ? e.message : e}`)
+      );
+      return null;
+    }
+  };
+
   client.packed = {
     async get<T>(key: K): Promise<T | null> {
       const result = await bufferClient.get<Buffer>(key);
-      return result ? unpack(result) : null;
+      if (!result) return null;
+      return safeUnpack<T>(result, () => client.unlink(key));
     },
 
     // Wrapped to avoid CROSSSLOT errors - fetches keys individually with Promise.all
     async mGet<T>(keys: K[]): Promise<(T | null)[]> {
       const results = await Promise.all(keys.map((key) => bufferClient.get<Buffer>(key)));
-      return results.map((result) => (result ? unpack(result) : null));
+      return results.map((result, i) =>
+        result ? safeUnpack<T>(result, () => client.unlink(keys[i])) : null
+      );
     },
 
     async set<T>(key: K, value: T, options?: SetOptions): Promise<void> {
@@ -487,7 +509,10 @@ function getClient<K extends RedisKeyTemplates>(type: 'cache' | 'system') {
 
     async sPop<T>(key: K, count: number): Promise<T[]> {
       const packedValues = await bufferClient.sPop<Buffer>(key, count);
-      return packedValues.map((value) => unpack(value));
+      // sPop already removed each value from the set, so on decode failure we just drop it.
+      return packedValues
+        .map((value) => safeUnpack<T>(value, () => Promise.resolve()))
+        .filter((v): v is T => v !== null);
     },
 
     async sRemove<T>(key: K, value: T): Promise<void> {
@@ -496,17 +521,30 @@ function getClient<K extends RedisKeyTemplates>(type: 'cache' | 'system') {
 
     async sMembers<T>(key: K): Promise<T[]> {
       const packedValues = await bufferClient.sMembers<Buffer>(key);
-      return packedValues.map((value) => unpack(value));
+      return packedValues
+        .map((value) =>
+          // node-redis accepts Buffer for sRem; cast through unknown to satisfy the
+          // typed wrapper without re-encoding the raw stored bytes.
+          safeUnpack<T>(value, () => client.sRem(key, value as unknown as Buffer))
+        )
+        .filter((v): v is T => v !== null);
     },
 
     async hGet<T>(key: K, hashKey: string): Promise<T | null> {
       const result = await bufferClient.hGet<Buffer>(key, hashKey);
-      return result ? unpack(result) : null;
+      if (!result) return null;
+      return safeUnpack<T>(result, () => client.hDel(key, hashKey));
     },
 
     async hGetAll<T>(key: K): Promise<{ [x: string]: T }> {
       const results = await bufferClient.hGetAll<Buffer>(key);
-      return Object.fromEntries(Object.entries(results).map(([k, v]) => [k, v ? unpack(v) : null]));
+      const out: { [x: string]: T } = {};
+      for (const [k, v] of Object.entries(results)) {
+        if (!v) continue;
+        const decoded = safeUnpack<T>(v, () => client.hDel(key, k));
+        if (decoded !== null) out[k] = decoded;
+      }
+      return out;
     },
 
     async hSet<T>(key: K, hashKey: string, value: T): Promise<void> {
@@ -523,7 +561,9 @@ function getClient<K extends RedisKeyTemplates>(type: 'cache' | 'system') {
 
     async hmGet<T>(key: K, hashKeys: string[]): Promise<(T | null)[]> {
       const results = await bufferClient.hmGet<Buffer>(key, hashKeys);
-      return results.map((result) => (result ? unpack(result) : null));
+      return results.map((result, i) =>
+        result ? safeUnpack<T>(result, () => client.hDel(key, hashKeys[i])) : null
+      );
     },
   };
 
@@ -580,6 +620,15 @@ function getClient<K extends RedisKeyTemplates>(type: 'cache' | 'system') {
     if (!Array.isArray(key)) key = [key];
 
     const results = await Promise.all(key.map((k) => originalDel(k)));
+    return results.reduce((sum, count) => sum + count, 0);
+  };
+
+  // Wrap unlink to avoid CROSSSLOT errors - unlink keys individually when array
+  const originalUnlink = baseClient.unlink?.bind(baseClient);
+  client.unlink = async function (key: K | K[]): Promise<number> {
+    if (!Array.isArray(key)) key = [key];
+
+    const results = await Promise.all(key.map((k) => originalUnlink(k)));
     return results.reduce((sum, count) => sum + count, 0);
   };
 
@@ -657,6 +706,15 @@ export const REDIS_SYS_KEYS = {
     BROWSING_SETTING_ADDONS: 'system:browsing-setting-addons',
     LIVE_FEATURE_FLAGS: 'system:live-feature-flags',
     SUSPICIOUS_AUDIT_MATCHES: 'system:suspicious-audit-matches',
+    /*
+      Runtime toggle for the new image ingestion path (createImageIngestionRequest
+      with the expanded mediaRating step). Read by image.service.ts before
+      routing to the new vs legacy scanner. Accepts '1'/'true' to enable,
+      '0'/'false' to disable. If the key is missing, the first call seeds it to
+      'false' so the toggle is discoverable in Redis. Lets ops flip without a
+      deploy.
+     */
+    IMAGE_SCANNER_NEW: 'system:image-scanner-new',
   },
   INDEX_UPDATES: {
     IMAGE_METRIC: 'index-updates:image-metric',
@@ -777,6 +835,12 @@ export const REDIS_SYS_KEYS = {
   },
   CACHES: {
     IMAGE_EXISTS: 'feed:image:exists',
+  },
+  WEBHOOKS: {
+    MODEL_FILE_SCAN_PROCESSED: 'webhooks:model-file-scan:processed',
+  },
+  RETOOL_ENDPOINT: {
+    RATE_LIMIT: 'retool-endpoint:rate-limit',
   },
 } as const;
 

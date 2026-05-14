@@ -6,7 +6,8 @@ import type { UploadTypeUnion } from '~/server/common/enums';
 import { UploadType } from '~/server/common/enums';
 import { withRetries } from '~/utils/errorHandling';
 
-const FILE_CHUNK_SIZE = 100 * 1024 * 1024; // 100 MB
+const FILE_CHUNK_SIZE = 25 * 1024 * 1024; // 25 MB
+const CONCURRENT_PARTS = 4;
 const MAX_PART_ATTEMPTS = 3;
 const MAX_BACKOFF_MS = 60_000;
 const MIN_RETRY_AFTER_MS = 1000;
@@ -196,11 +197,11 @@ export const useS3Upload: UseS3Upload = (options = {}) => {
     } else {
       const { bucket, key, uploadId, urls, backend } = data;
 
-      let currentXhr: XMLHttpRequest;
+      const activeXhrs = new Set<XMLHttpRequest>();
       const abortController = new AbortController();
       const abort = () => {
         abortController.abort();
-        if (currentXhr) currentXhr.abort();
+        for (const x of activeXhrs) x.abort();
       };
       setFiles((x) => {
         if (x.some((y) => y.file === file)) {
@@ -218,26 +219,26 @@ export const useS3Upload: UseS3Upload = (options = {}) => {
         );
       }
 
-      // Upload tracking
+      // Upload tracking - aggregate per-part bytes for concurrent uploads
       const uploadStart = Date.now();
-      let totalUploaded = 0;
-      const updateProgress = ({ loaded }: ProgressEvent) => {
-        const uploaded = totalUploaded + (loaded ?? 0);
-        if (uploaded) {
-          const secondsElapsed = (Date.now() - uploadStart) / 1000;
-          const speed = uploaded / secondsElapsed;
-          const timeRemaining = (size - uploaded) / speed;
-          const progress = size ? (uploaded / size) * 100 : 0;
-          updateFile({
-            progress,
-            uploaded,
-            size,
-            speed,
-            timeRemaining,
-            status: 'uploading',
-            name: file.name,
-          });
-        }
+      const partProgress = new Map<number, number>();
+      const updateProgress = () => {
+        let uploaded = 0;
+        for (const v of partProgress.values()) uploaded += v;
+        if (!uploaded) return;
+        const secondsElapsed = (Date.now() - uploadStart) / 1000;
+        const speed = uploaded / secondsElapsed;
+        const timeRemaining = (size - uploaded) / speed;
+        const progress = size ? (uploaded / size) * 100 : 0;
+        updateFile({
+          progress,
+          uploaded,
+          size,
+          speed,
+          timeRemaining,
+          status: 'uploading',
+          name: file.name,
+        });
       };
 
       // Prepare abort
@@ -282,6 +283,7 @@ export const useS3Upload: UseS3Upload = (options = {}) => {
 
       // Prepare part upload
       const partsCount = urls.length;
+      const parts: { ETag: string; PartNumber: number }[] = [];
       const uploadPart = (url: string, i: number) =>
         new Promise<void>((resolve, reject) => {
           let eTag: string;
@@ -289,14 +291,19 @@ export const useS3Upload: UseS3Upload = (options = {}) => {
           const end = i * FILE_CHUNK_SIZE;
           const part = i === partsCount ? file.slice(start) : file.slice(start, end);
           const xhr = new XMLHttpRequest();
-          xhr.upload.addEventListener('progress', updateProgress);
+          activeXhrs.add(xhr);
+          xhr.upload.addEventListener('progress', ({ loaded }) => {
+            partProgress.set(i, loaded);
+            updateProgress();
+          });
           xhr.upload.addEventListener('loadend', ({ loaded }) => {
-            totalUploaded += loaded;
+            partProgress.set(i, loaded);
           });
           xhr.addEventListener('load', () => {
             eTag = xhr.getResponseHeader('ETag') ?? '';
           });
           xhr.addEventListener('loadend', () => {
+            activeXhrs.delete(xhr);
             if (xhr.readyState !== 4) return;
             if (xhr.status === 200) {
               parts.push({ ETag: eTag, PartNumber: i });
@@ -309,51 +316,75 @@ export const useS3Upload: UseS3Upload = (options = {}) => {
               reject(err);
             }
           });
-          xhr.addEventListener('error', () =>
-            reject({ status: null, networkError: true } as UploadPartError)
-          );
-          xhr.addEventListener('abort', () =>
-            reject({ status: null, aborted: true } as UploadPartError)
-          );
+          xhr.addEventListener('error', () => {
+            activeXhrs.delete(xhr);
+            reject({ status: null, networkError: true } as UploadPartError);
+          });
+          xhr.addEventListener('abort', () => {
+            activeXhrs.delete(xhr);
+            reject({ status: null, aborted: true } as UploadPartError);
+          });
           xhr.open('PUT', url);
           xhr.setRequestHeader('Content-Type', 'application/octet-stream');
           xhr.send(part);
-          currentXhr = xhr;
         });
 
-      // Make part requests
-      const parts: { ETag: string; PartNumber: number }[] = [];
-      for (const { url, partNumber } of urls as { url: string; partNumber: number }[]) {
-        let partError: UploadPartError | null = null;
+      // Worker pool over parts
+      const queue = [...(urls as { url: string; partNumber: number }[])];
+      const fatalErrorRef: { value: UploadPartError | null } = { value: null };
 
-        for (let attempt = 0; attempt < MAX_PART_ATTEMPTS; attempt++) {
+      const runWorker = async () => {
+        while (queue.length > 0 && !fatalErrorRef.value) {
           if (abortController.signal.aborted) {
-            partError = { status: null, aborted: true };
-            break;
+            fatalErrorRef.value = { status: null, aborted: true };
+            return;
           }
-          try {
-            await uploadPart(url, partNumber);
-            partError = null;
-            break;
-          } catch (err) {
-            partError = err as UploadPartError;
-            if (attempt === MAX_PART_ATTEMPTS - 1 || !shouldRetryPartError(partError)) break;
-            await cancellableSleep(getRetryDelay(partError, attempt), abortController.signal);
+          const item = queue.shift();
+          if (!item) return;
+
+          let partError: UploadPartError | null = null;
+          for (let attempt = 0; attempt < MAX_PART_ATTEMPTS; attempt++) {
             if (abortController.signal.aborted) {
               partError = { status: null, aborted: true };
               break;
             }
+            try {
+              await uploadPart(item.url, item.partNumber);
+              partError = null;
+              break;
+            } catch (err) {
+              partError = err as UploadPartError;
+              if (attempt === MAX_PART_ATTEMPTS - 1 || !shouldRetryPartError(partError)) break;
+              await cancellableSleep(getRetryDelay(partError, attempt), abortController.signal);
+              if (abortController.signal.aborted) {
+                partError = { status: null, aborted: true };
+                break;
+              }
+            }
+          }
+          if (partError) {
+            // First failure wins so we don't mask a real error with a later abort
+            if (!fatalErrorRef.value) fatalErrorRef.value = partError;
+            // Cancel any in-flight part xhrs - signal alone won't kill them
+            abort();
+            return;
           }
         }
+      };
 
-        // If we failed to upload, abort the whole thing
-        if (partError) {
-          const status: TrackedFile['status'] = partError.aborted ? 'aborted' : 'error';
-          updateFile({ status, file: undefined });
-          await abortUpload();
-          return { url: null, bucket, key, backend };
-        }
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENT_PARTS, urls.length) }, () => runWorker())
+      );
+
+      if (fatalErrorRef.value) {
+        const status: TrackedFile['status'] = fatalErrorRef.value.aborted ? 'aborted' : 'error';
+        updateFile({ status, file: undefined });
+        await abortUpload();
+        return { url: null, bucket, key, backend };
       }
+
+      // S3 requires parts ordered by PartNumber in CompleteMultipartUpload
+      parts.sort((a, b) => a.PartNumber - b.PartNumber);
 
       // Complete the multipart upload
       const resp = await completeUpload();

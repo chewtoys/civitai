@@ -43,6 +43,7 @@ import { fluxKontextGraph } from './flux-kontext-graph';
 import { zImageGraph } from './z-image-graph';
 import { chromaGraph } from './chroma-graph';
 import { hiDreamGraph } from './hi-dream-graph';
+import { hiDreamO1Graph } from './hi-dream-o1-graph';
 import { ponyV7Graph } from './pony-v7-graph';
 import { viduGraph } from './vidu-graph';
 import { openaiGraph } from './openai-graph';
@@ -260,6 +261,7 @@ export const ecosystemGraph = new DataGraph<
     { values: ['ZImageTurbo', 'ZImageBase'] as const, graph: zImageGraph },
     { values: ['Chroma'] as const, graph: chromaGraph },
     { values: ['HiDream'] as const, graph: hiDreamGraph },
+    { values: ['HiDream-O1'] as const, graph: hiDreamO1Graph },
     { values: ['PonyV7'] as const, graph: ponyV7Graph },
     { values: ['Anima'] as const, graph: animaGraph },
     { values: ['Ernie'] as const, graph: ernieGraph },
@@ -309,7 +311,10 @@ export const ecosystemGraph = new DataGraph<
     },
     ['workflow', 'ecosystem', 'model']
   )
-  // Quantity node - image output only.
+  // Quantity node - shown for image output, plus the small set of video
+  // ecosystems that batch multiple outputs in a single job (currently LTXV23,
+  // which generates extra videos via Seed + slotIndex).
+  //
   // Step: draft=4, BOGO-enabled w/ enhancedCompatibility off=2, else=1.
   // The step=2 path is gated by the `enhancedCompatibilitySdcpp` feature flag and
   // limited to txt2img (matches the `enhancedCompatibility` toggle's visibility).
@@ -324,9 +329,14 @@ export const ecosystemGraph = new DataGraph<
         supportsSdcpp(ctx.ecosystem, modelId) &&
         ctx.enhancedCompatibility !== true;
       const step = isDraft ? 4 : bogoActive ? 2 : 1;
+      const supportsVideoQuantity = ctx.output === 'video' && ctx.ecosystem === 'LTXV23';
+      // LTXV23 uses tier-gated vidQuantity (free=1, bronze=2, silver=3, gold=4)
+      // so the upsell popover can fire when non-gold users try to bump past
+      // their cap. Other ecosystems keep the standard maxQuantity.
+      const max = ctx.ecosystem === 'LTXV23' ? ext.limits.vidQuantity : ext.limits.maxQuantity;
       return {
-        ...quantityNode({ step })(ctx, ext),
-        when: ctx.output === 'image',
+        ...quantityNode({ step, max }),
+        when: ctx.output === 'image' || supportsVideoQuantity,
       };
     },
     ['workflow', 'output', 'ecosystem', 'model', 'enhancedCompatibility']

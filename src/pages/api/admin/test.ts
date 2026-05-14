@@ -77,12 +77,10 @@ export default WebhookEndpoint(async function (req: NextApiRequest, res: NextApi
         });
         if (!user) return res.status(404).json({ error: 'User not found' });
         await userContentOverviewCache.refresh(user.id);
-        return res
-          .status(200)
-          .json({
-            action: input.action,
-            message: `Refreshed content overview cache for user ${user.id}`,
-          });
+        return res.status(200).json({
+          action: input.action,
+          message: `Refreshed content overview cache for user ${user.id}`,
+        });
       }
 
       case 'import-wildcard-set': {

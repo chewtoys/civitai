@@ -21,7 +21,7 @@ function ReportCsamUserPage() {
     .parse(((router.query.userId as string) ?? '').split(','));
   const userCountRef = useRef(userIds.length);
 
-  const { csamReports } = useFeatureFlags();
+  const features = useFeatureFlags();
   const userId = userIds[0];
 
   const handleStepperComplete = () => {
@@ -36,7 +36,7 @@ function ReportCsamUserPage() {
   const { data: user } = trpc.user.getById.useQuery({ id: userId });
   const [currentStep, stepperActions] = useStepper(2);
 
-  if (!csamReports) return <NotFound />;
+  if (!features.csamReports) return <NotFound />;
   if (!user) return <PageLoader />;
 
   const progress = userCountRef.current - userIds.length;

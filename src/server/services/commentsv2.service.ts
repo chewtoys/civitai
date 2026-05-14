@@ -107,6 +107,83 @@ export const deleteComment = ({ id }: { id: number }) => {
   return dbWrite.commentV2.delete({ where: { id } });
 };
 
+export async function bulkDeleteCommentsV2({ ids }: { ids: number[] }) {
+  if (ids.length === 0) return { count: 0 };
+  const result = await dbWrite.commentV2.deleteMany({ where: { id: { in: ids } } });
+  return { count: result.count };
+}
+
+/**
+ * Mirror of the legacy `setTosViolationHandler` flow for CommentV2:
+ * 1) Set `tosViolation = true`
+ * 2) Mark CommentV2Report rows with reason=TOSViolation as Actioned
+ * 3) Reward reporters via reportAcceptedReward
+ * 4) Send 'tos-violation' notification to comment owner
+ */
+export async function bulkSetCommentV2TosViolation({
+  ids,
+  actor,
+}: {
+  ids: number[];
+  actor: { id: number; ip?: string };
+}) {
+  if (ids.length === 0) return { count: 0, notified: 0, rewardedReports: 0 };
+
+  const { v4: uuid } = await import('uuid');
+  const { reportAcceptedReward } = await import('~/server/rewards');
+  const { createNotification } = await import('~/server/services/notification.service');
+  const { NotificationCategory } = await import('~/server/common/enums');
+  const enums = await import('~/shared/utils/prisma/enums');
+
+  let rewardedReports = 0;
+  let notified = 0;
+
+  for (const id of ids) {
+    const updated = await dbWrite.commentV2
+      .update({
+        where: { id },
+        data: { tosViolation: true },
+        select: { id: true, userId: true },
+      })
+      .catch(() => null);
+    if (!updated) continue;
+
+    const reports = await dbWrite.$queryRaw<{ id: number; userId: number }[]>`
+      UPDATE "Report" r SET status = ${enums.ReportStatus.Actioned}::"ReportStatus"
+      FROM "CommentV2Report" c
+      WHERE c."reportId" = r.id
+        AND c."commentV2Id" = ${id}
+        AND r.reason = ${enums.ReportReason.TOSViolation}::"ReportReason"
+        AND r.status <> ${enums.ReportStatus.Actioned}::"ReportStatus"
+      RETURNING id, "userId"
+    `;
+    rewardedReports += reports.length;
+
+    await Promise.allSettled(
+      reports.map((report) =>
+        reportAcceptedReward.apply(
+          { userId: report.userId, reportId: report.id },
+          { ip: actor.ip }
+        )
+      )
+    );
+
+    await createNotification({
+      userId: updated.userId,
+      type: 'tos-violation',
+      category: NotificationCategory.System,
+      key: `tos-violation:commentv2:${uuid()}`,
+      details: { modelName: '', entity: 'comment' },
+    })
+      .then(() => {
+        notified += 1;
+      })
+      .catch(() => {});
+  }
+
+  return { count: ids.length, notified, rewardedReports };
+}
+
 export const getCommentCount = async ({ entityId, entityType, hidden }: CommentConnectorInput) => {
   const thread = await dbRead.thread.findUnique({
     where: { [`${entityType}Id`]: entityId } as unknown as Prisma.ThreadWhereUniqueInput,

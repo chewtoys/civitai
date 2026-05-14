@@ -27,7 +27,10 @@ import {
   refundTransaction,
 } from '~/server/services/buzz.service';
 import { queueImageSearchIndexUpdate, updateNsfwLevel } from '~/server/services/image.service';
-import { updateArticleNsfwLevels } from '~/server/services/nsfwLevels.service';
+import {
+  queueComicsForPanelImage,
+  updateArticleNsfwLevels,
+} from '~/server/services/nsfwLevels.service';
 import { trackModActivity } from '~/server/services/moderator.service';
 import { createNotification } from '~/server/services/notification.service';
 import { bustCachesForPosts } from '~/server/services/post.service';
@@ -595,6 +598,11 @@ export async function resolveEntityAppeal({
               ? SearchIndexUpdateQueueAction.Update
               : SearchIndexUpdateQueueAction.Delete,
           });
+
+          // Either direction (approve/deny) flips `needsReview`/`ingestion`,
+          // both of which the comic search index gates on. Re-queue the
+          // parent comic project so it doesn't keep its old visibility.
+          await queueComicsForPanelImage(appeal.entityId);
 
           // Either direction (approve/deny) changes needsReview; bust so the showcase reflects it.
           if (updated.postId) await bustCachesForPosts(updated.postId);

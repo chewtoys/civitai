@@ -49,12 +49,14 @@ import { getOrchestratorCallbacks } from '~/server/orchestrator/orchestrator.uti
 import { BuzzTypes, type BuzzSpendType } from '~/shared/constants/buzz.constants';
 import { Availability } from '~/shared/utils/prisma/enums';
 import { isDefined } from '~/utils/type-guards';
-import { WORKFLOW_TAGS } from '~/shared/constants/generation.constants';
+import { WORKFLOW_TAGS, VID_QUANTITY_BY_TIER } from '~/shared/constants/generation.constants';
 import { includesPoi } from '~/utils/metadata/audit';
 import { ecosystemByKey } from '~/shared/constants/basemodel.constants';
 import { toStepMetadata } from '~/shared/utils/resource.utils';
 import { maxRandomSeed } from '~/server/common/constants';
 import { auditPromptServer } from '~/server/services/orchestrator/promptAuditing';
+import { createXGuardModerationRequest } from '~/server/services/orchestrator/orchestrator.service';
+import { logToAxiom } from '~/server/logging/client';
 import type { FeatureAccess } from '~/server/services/feature-flags.service';
 import { expandSnippetsToTargets } from '~/server/services/wildcard-set-resolver.service';
 import { parsePromptSnippetReferences } from '~/utils/prompt-helpers';
@@ -226,6 +228,7 @@ export async function buildGenerationContext(
       limits: {
         maxQuantity: limits.quantity,
         maxResources: limits.resources,
+        vidQuantity: VID_QUANTITY_BY_TIER[userTier] ?? 1,
       },
       user: {
         isMember: userTier !== 'free',
@@ -1167,15 +1170,37 @@ export async function generateFromGraph({
   // Audit prompt before generation
   if ('prompt' in data && typeof data.prompt === 'string' && data.prompt.trim()) {
     const negativePrompt = 'negativePrompt' in data ? (data.negativePrompt as string) : undefined;
-    await auditPromptServer({
-      prompt: data.prompt,
-      negativePrompt,
-      userId,
-      isGreen: !!isGreen,
-      isModerator,
-      track,
-      remixOfId,
-    });
+    try {
+      await auditPromptServer({
+        prompt: data.prompt,
+        negativePrompt,
+        userId,
+        isGreen: !!isGreen,
+        isModerator,
+        track,
+        remixOfId,
+      });
+    } catch (err) {
+      // Legacy regex/external audit blocked the prompt. Fire-and-forget an
+      // XGuard scan against the same input so moderators can review whether
+      // XGuard would have agreed — feeds the "should XGuard replace the
+      // legacy gate?" decision. Doesn't gate the rethrow.
+      createXGuardModerationRequest({
+        mode: 'prompt',
+        entityType: 'prompt',
+        positivePrompt: data.prompt,
+        negativePrompt,
+        recordForReview: true,
+      }).catch((e) => {
+        logToAxiom({
+          type: 'error',
+          name: 'generation-xguard-scan',
+          message: (e as Error).message,
+          userId,
+        }).catch();
+      });
+      throw err;
+    }
   }
 
   // Audit ACE Audio creative fields (musicDescription + lyrics). Routed through
@@ -1612,6 +1637,9 @@ type StepWithOutput = WorkflowStep & {
   output?: {
     images?: ImageBlob[];
     video?: VideoBlob;
+    // Extra videos produced by engines that batch multiple outputs in a single
+    // job (e.g. LTX 2.3). Each slot uses Seed + slotIndex.
+    additionalVideos?: VideoBlob[] | null;
     blobs?: ImageBlob[];
     // For aceStepAudio: blob.type is 'audio' (audio-only) or 'video' (audio + cover image).
     blob?: ImageBlob | VideoBlob | AudioBlob;
@@ -1638,7 +1666,14 @@ function normalizeStepOutput(step: StepWithOutput): NormalizedBlobItem[] {
       return output.images?.map((img) => ({ ...img, type: 'image' as const })) ?? [];
     case 'imageUpscaler':
       return output.blob ? [{ ...(output.blob as ImageBlob), type: 'image' as const }] : [];
-    case 'videoGen':
+    case 'videoGen': {
+      // LTX 2.3 batches multiple videos in a single job — primary in `video`,
+      // remainder in `additionalVideos` (each slot uses Seed + slotIndex).
+      const primary = output.video ? [{ ...output.video, type: 'video' as const }] : [];
+      const additional =
+        output.additionalVideos?.map((v) => ({ ...v, type: 'video' as const })) ?? [];
+      return [...primary, ...additional];
+    }
     case 'videoUpscaler':
     case 'videoEnhancement':
     case 'videoInterpolation':

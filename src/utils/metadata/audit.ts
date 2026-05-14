@@ -275,8 +275,36 @@ for (const age of ages) {
 const yearsPattern = templateParts.years.join('|');
 const oldPattern = templateParts.old.join('|');
 
+// Canonical English number words. These require a trailing `\b` so that compound
+// words don't match — e.g. "eight" must not match "eighty" via the {age} {years}
+// template (single-letter "y" year unit), and "seven" must not match "seventy".
+// Truncated/typo variants (eigt, eigh, sevn, sevem, etc.) intentionally skip the
+// boundary so that they still catch ordinal forms via the {age}th birthday
+// template ("eigh" + "th" → "eighth birthday").
+const canonicalNumberWords = new Set([
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten',
+  'eleven',
+  'twelve',
+  'thirteen',
+  'fourteen',
+  'fifteen',
+  'sixteen',
+  'seventeen',
+]);
+const buildAgePattern = (matches: string[]) =>
+  matches.map((m) => (canonicalNumberWords.has(m) ? `${m}\\b` : m)).join('|');
+
 const perAgeRegexes = ages.map((ageEntry) => {
-  const agePattern = ageEntry.matches.join('|');
+  const agePattern = buildAgePattern(ageEntry.matches);
   const regexes = templates.map((template) => {
     let regexStr = template;
     regexStr = regexStr.replace('{age}', `(${agePattern})`);
@@ -293,9 +321,10 @@ const perAgeRegexes = ages.map((ageEntry) => {
 // Legacy: Keep ageRegexes for debugAuditPrompt and highlightMinor (which iterate all templates)
 // These use the combined pattern for detailed match info
 const allAgeMatches = ages.flatMap((x) => x.matches);
+const allAgePattern = buildAgePattern(allAgeMatches);
 const ageRegexes = templates.map((template) => {
   let regexStr = template;
-  regexStr = regexStr.replace('{age}', `(?<age>${allAgeMatches.join('|')})`);
+  regexStr = regexStr.replace('{age}', `(?<age>${allAgePattern})`);
   regexStr = regexStr.replace('{years}', `(?<years>${yearsPattern})`);
   regexStr = regexStr.replace('{old}', `(?<old>${oldPattern})`);
   regexStr = regexStr.replace(/\s+/g, `[^a-zA-Z0-9]{0,3}`);
@@ -340,7 +369,7 @@ export function includesMinorAge(prompt: string | undefined) {
 // #region [inappropriate]
 function prepareWordRegex(word: string, pluralize = false, leet = true) {
   let regexStr = word;
-  regexStr = regexStr.replace(/\s+/g, `[^a-zA-Z0-9]*`);
+  regexStr = regexStr.replace(/\s+/g, `[^a-zA-Z0-9]+`);
   if (leet && !word.includes('[')) {
     regexStr = regexStr
       .replace(/i/g, '[i|l|1]')

@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { CacheTTL } from '~/server/common/constants';
 import { NotificationCategory } from '~/server/common/enums';
 import { dbRead, dbWrite } from '~/server/db/client';
 
@@ -24,6 +25,11 @@ import {
   getCosmeticsForUsers,
   getProfilePicturesForUsers,
 } from '~/server/services/user.service';
+import { queryCache } from '~/server/utils/cache-helpers';
+import {
+  bustRatingTotalsCache,
+  bustRatingTotalsForRows,
+} from '~/server/services/resourceReview.cache';
 import { throwAuthorizationError, throwNotFoundError } from '~/server/utils/errorHandling';
 import { getPagingData } from '~/server/utils/pagination-helpers';
 import type { ResourceReviewCreate } from '~/types/router';
@@ -204,7 +210,7 @@ export const getRatingTotals = async ({ modelVersionId, modelId }: GetRatingTota
   if (modelVersionId) AND.push(Prisma.sql`rr."modelVersionId" = ${modelVersionId}`);
   else AND.push(Prisma.sql`rr."modelId" = ${modelId}`);
 
-  const result = await dbRead.$queryRaw<GetRatingTotalsRow[]>`
+  const query = Prisma.sql`
     SELECT
       rr.rating,
       rr.recommended,
@@ -215,6 +221,14 @@ export const getRatingTotals = async ({ modelVersionId, modelId }: GetRatingTota
       AND rr.recommended -- Only expose recommended reviews
     GROUP BY rr.rating, rr.recommended
   `;
+
+  const cacheable = queryCache(dbRead, 'getRatingTotals', 'v1');
+  const result = await cacheable<GetRatingTotalsRow[]>(query, {
+    ttl: CacheTTL.hour,
+    tag: modelVersionId
+      ? [`rating:modelVersion:${modelVersionId}`]
+      : [`rating:model:${modelId}`],
+  });
 
   const transformed = result.reduce(
     (acc, { rating, recommended, count }) => {
@@ -312,30 +326,89 @@ export const upsertResourceReview = async ({
       select: resourceReviewSelect,
     });
     await createResourceReviewNotification({ ...ret, userId }).catch();
+    await bustRatingTotalsCache({
+      modelId: data.modelId,
+      modelVersionId: data.modelVersionId,
+    }).catch();
     return ret;
   } else {
-    return dbWrite.resourceReview.update({
+    const ret = await dbWrite.resourceReview.update({
       where: { id: data.id },
       data,
-      select: { id: true },
+      select: { id: true, modelId: true, modelVersionId: true },
     });
+    await bustRatingTotalsCache({
+      modelId: ret.modelId,
+      modelVersionId: ret.modelVersionId,
+    }).catch();
+    return ret;
   }
 };
 
-export const deleteResourceReview = ({ id }: GetByIdInput) => {
-  return dbWrite.resourceReview.delete({ where: { id } });
+export const deleteResourceReview = async ({ id }: GetByIdInput) => {
+  // Prisma .delete() returns the full deleted row by default — caller in
+  // resourceReview.controller.ts already relies on this — so we use modelId
+  // and modelVersionId from the returned row rather than pre-fetching.
+  const ret = await dbWrite.resourceReview.delete({ where: { id } });
+  await bustRatingTotalsCache({
+    modelId: ret.modelId,
+    modelVersionId: ret.modelVersionId,
+  }).catch();
+  return ret;
 };
+
+export async function setExcludeResourceReviews({
+  ids,
+  exclude,
+}: {
+  ids: number[];
+  exclude: boolean;
+}) {
+  if (ids.length === 0) return { count: 0 };
+  // Collect affected model/version ids BEFORE the update so we can bust the
+  // rating-totals cache. setExclude flips the `NOT rr.exclude` filter, so the
+  // totals shift even though rating/recommended don't change.
+  const affected = await dbRead.resourceReview.findMany({
+    where: { id: { in: ids } },
+    select: { modelId: true, modelVersionId: true },
+  });
+  const result = await dbWrite.resourceReview.updateMany({
+    where: { id: { in: ids } },
+    data: { exclude },
+  });
+  await bustRatingTotalsForRows(affected).catch();
+  return { count: result.count };
+}
+
+export async function deleteResourceReviews({ ids }: { ids: number[] }) {
+  if (ids.length === 0) return { count: 0 };
+  // Fetch model/version ids BEFORE the delete so we can bust the rating-totals
+  // cache after.
+  const affected = await dbRead.resourceReview.findMany({
+    where: { id: { in: ids } },
+    select: { modelId: true, modelVersionId: true },
+  });
+  const result = await dbWrite.resourceReview.deleteMany({
+    where: { id: { in: ids } },
+  });
+  await bustRatingTotalsForRows(affected).catch();
+  return { count: result.count };
+}
 
 export const createResourceReview = async (
   data: CreateResourceReviewInput & { userId: number }
 ) => {
   const ret = await dbWrite.resourceReview.create({ data, select: resourceReviewSimpleSelect });
   await createResourceReviewNotification({ ...ret, userId: data.userId }).catch();
+  await bustRatingTotalsCache({
+    modelId: data.modelId,
+    modelVersionId: data.modelVersionId,
+  }).catch();
   return ret;
 };
 
-export const updateResourceReview = ({ id, ...data }: UpdateResourceReviewInput) => {
-  return dbWrite.resourceReview.update({
+export const updateResourceReview = async ({ id, ...data }: UpdateResourceReviewInput) => {
+  const ret = await dbWrite.resourceReview.update({
     where: { id },
     data,
     select: {
@@ -347,6 +420,11 @@ export const updateResourceReview = ({ id, ...data }: UpdateResourceReviewInput)
       nsfw: true,
     },
   });
+  await bustRatingTotalsCache({
+    modelId: ret.modelId,
+    modelVersionId: ret.modelVersionId,
+  }).catch();
+  return ret;
 };
 
 type ResourceReviewRow = {
@@ -455,7 +533,7 @@ export const toggleExcludeResourceReview = async ({ id }: GetByIdInput) => {
   const item = await dbRead.resourceReview.findUnique({ where: { id }, select: { exclude: true } });
   if (!item) throw throwNotFoundError();
 
-  return await dbWrite.resourceReview.update({
+  const ret = await dbWrite.resourceReview.update({
     where: { id },
     data: { exclude: !item.exclude },
     select: {
@@ -468,6 +546,11 @@ export const toggleExcludeResourceReview = async ({ id }: GetByIdInput) => {
       exclude: true,
     },
   });
+  await bustRatingTotalsCache({
+    modelId: ret.modelId,
+    modelVersionId: ret.modelVersionId,
+  }).catch();
+  return ret;
 };
 
 export const getUserRatingTotals = async ({ userId }: { userId: number }) => {

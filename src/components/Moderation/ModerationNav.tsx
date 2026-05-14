@@ -15,6 +15,11 @@ export function ModerationNav() {
         { label: 'Strikes', href: '/moderator/strikes', hidden: !features.strikes },
         { label: 'Images', href: '/moderator/images' },
         { label: 'Image Tags', href: '/moderator/image-tags' },
+        {
+          label: 'Comics Review',
+          href: '/moderator/comics-review',
+          hidden: !features.comicCreator,
+        },
         { label: 'Models', href: '/moderator/models' },
         {
           label: 'Training Models',
@@ -29,7 +34,11 @@ export function ModerationNav() {
         { label: 'Articles', href: '/moderator/articles' },
         // { label: 'Tags', href: '/moderator/tags' },
         { label: 'Generation', href: '/moderator/generation' },
-        { label: 'Service Status', href: '/moderator/service-status' },
+        {
+          label: 'Service Status',
+          href: '/moderator/service-status',
+          hidden: !features.serviceStatus,
+        },
         // { label: 'Withdrawal Requests', href: '/moderator/buzz-withdrawal-requests' },
         {
           label: 'Cash Management',
@@ -89,6 +98,10 @@ export function ModerationNav() {
           label: 'Prompt Audit Test',
           href: '/moderator/prompt-audit-test',
           hidden: !features.csamReports,
+        },
+        {
+          label: 'Scanner Audit',
+          href: '/moderator/scanner-audit',
         },
       ]
         .filter((i) => !i.hidden)

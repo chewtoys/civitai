@@ -183,6 +183,17 @@ function GenerationCostPopoverDetail({
       className: classes.tableCell,
     },
     {
+      label: 'License Fees',
+      value: (
+        <Group gap={4} justify="flex-end" wrap="nowrap">
+          {workflowCost.fixed?.licenseFees}
+          <CurrencyIcon currency="BUZZ" size={16} type={buzzAccountType} />
+        </Group>
+      ),
+      visible: !!workflowCost.fixed?.licenseFees,
+      className: classes.tableCell,
+    },
+    {
       label: 'Priority Pricing',
       value: (
         <Group gap={4} justify="flex-end" wrap="nowrap">
