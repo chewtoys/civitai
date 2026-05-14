@@ -192,7 +192,12 @@ type XGuardModerationArgs = {
   entityType?: string;
   entityId?: number;
   labels?: string[];
-  callbackUrl?: string;
+  /** Override the default audit-result callback URL. Omit to use the standard
+   * `/api/webhooks/text-moderation-result` endpoint (which is what makes audit
+   * rows land in `scanner_label_results`). Pass `null` to suppress the
+   * callback entirely — only useful for synchronous-wait callers that handle
+   * the audit write themselves (e.g. `/api/admin/test`). */
+  callbackUrl?: string | null;
   wait?: number;
   priority?: Priority;
   /**
@@ -222,6 +227,15 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
     priority = 'normal',
     recordForReview = false,
   } = args;
+
+  // Default callback fires the standard text-moderation webhook, which is
+  // what triggers `recordXGuardScanFromWorkflow`. Callers can override the URL
+  // or pass `null` to skip the callback entirely.
+  const effectiveCallbackUrl =
+    callbackUrl === undefined
+      ? env.TEXT_MODERATION_CALLBACK ??
+        `${env.NEXTAUTH_URL}/api/webhooks/text-moderation-result?token=${env.WEBHOOK_TOKEN}`
+      : callbackUrl;
 
   const metadata: Record<string, unknown> = {
     mode: args.mode,
@@ -267,10 +281,10 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
           input,
         } as XGuardModerationStepTemplate,
       ],
-      callbacks: callbackUrl
+      callbacks: effectiveCallbackUrl
         ? [
             {
-              url: `${callbackUrl}`,
+              url: effectiveCallbackUrl,
               type: [
                 'workflow:succeeded',
                 'workflow:failed',
