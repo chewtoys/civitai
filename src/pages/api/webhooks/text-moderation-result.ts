@@ -239,9 +239,13 @@ async function handleWildcardCategoryAuditCallback(event: WorkflowEvent): Promis
   });
   if (!data) throw new Error(`could not find workflow: ${event.workflowId}`);
 
-  const categoryId = data.metadata?.wildcardSetCategoryId as number | undefined;
-  if (!categoryId)
-    throw new Error(`missing workflow metadata.wildcardSetCategoryId - ${event.workflowId}`);
+  // `createXGuardModerationRequest` stamps `entityId` on workflow metadata.
+  // For the wildcard flow we passed `entityId: categoryId` at submit time, so
+  // this is the WildcardSetCategory.id. (`entityType` is also stamped as
+  // 'WildcardSetCategory' but we don't need to assert on it — the `?type=`
+  // dispatch above already proved we're in the right branch.)
+  const categoryId = data.metadata?.entityId as number | undefined;
+  if (!categoryId) throw new Error(`missing workflow metadata.entityId - ${event.workflowId}`);
 
   switch (event.status) {
     case 'succeeded': {

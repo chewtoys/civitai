@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { dbRead, dbWrite } from '~/server/db/client';
+import { logToAxiom } from '~/server/logging/client';
 import type {
   DeleteUserSnippetCategoryInput,
   GetWildcardSetsInput,
@@ -10,6 +11,7 @@ import type {
   SaveUserSnippetInput,
   UpdateUserSnippetInput,
 } from '~/server/schema/wildcard-set.schema';
+import { submitWildcardCategoryAudit } from '~/server/services/wildcard-category-audit.service';
 import { importWildcardModelVersion } from '~/server/services/wildcard-set-provisioning.service';
 import { expandSnippetsToTargets } from '~/server/services/wildcard-set-resolver.service';
 import { maxRandomSeed } from '~/server/common/constants';
@@ -18,6 +20,26 @@ import {
   throwBadRequestError,
   throwNotFoundError,
 } from '~/server/utils/errorHandling';
+
+/**
+ * Schedule an XGuard audit for a category whose content just changed. Fire-
+ * and-forget by design: don't block the API response on orchestrator latency,
+ * and never let a failed submit bubble up and fail the user's save. The
+ * periodic `audit-wildcard-set-categories` cron is the safety net for any
+ * silent failures here — categories stay at `auditStatus: 'Pending'` until
+ * the webhook callback lands.
+ */
+function scheduleAudit(categoryId: number): void {
+  submitWildcardCategoryAudit(categoryId).catch((err) =>
+    logToAxiom({
+      type: 'error',
+      name: 'wildcard-set-service',
+      message: 'failed to schedule audit after User-kind mutation',
+      wildcardSetCategoryId: categoryId,
+      error: err instanceof Error ? err.message : String(err),
+    }).catch(() => undefined)
+  );
+}
 
 const DEFAULT_USER_SET_NAME = 'My snippets';
 
@@ -97,14 +119,14 @@ export async function getWildcardSets({
     select: {
       ...wildcardSetSelect,
       categories: {
-        // TEMPORARY: relaxed to `{ not: 'Dirty' }` while the audit pipeline
-        // is still being built. Pending (un-audited) categories pass
-        // through so dev work on the form/picker has data to show. Dirty
-        // categories stay hidden — those are audit-rejected and surfacing
-        // them would defeat the audit guarantee.
-        // TODO(prompt-snippets-v1): tighten back to `'Clean'` once the
-        // audit pipeline is producing verdicts. See prompt-snippets-v1.md.
-        where: { auditStatus: { not: 'Dirty' } },
+        // Strict gate: only Clean categories are surfaced to the picker.
+        // Pending categories aren't ready yet (no verdict, no nsfwLevel) and
+        // Dirty categories failed audit outright. The audit-on-mutation hook
+        // in saveUserSnippet / updateUserSnippet / removeUserSnippet refires
+        // a workflow whenever content changes, so a freshly-edited category
+        // briefly disappears from the picker until its callback lands —
+        // expected behavior.
+        where: { auditStatus: 'Clean' },
         select: wildcardSetCategorySelect,
         orderBy: [{ displayOrder: 'asc' }, { id: 'asc' }],
       },
@@ -139,11 +161,8 @@ export async function getMyUserWildcardSet({ userId }: { userId: number }) {
     select: {
       ...wildcardSetSelect,
       categories: {
-        // TEMPORARY: same `{ not: 'Dirty' }` relaxation as getWildcardSets
-        // while the audit pipeline is being built — see comment above.
-        // TODO(prompt-snippets-v1): tighten back to `'Clean'` once verdicts
-        // are flowing.
-        where: { auditStatus: { not: 'Dirty' as const } },
+        // Strict gate matching getWildcardSets — see the comment there.
+        where: { auditStatus: 'Clean' as const },
         select: wildcardSetCategorySelect,
         orderBy: [{ displayOrder: 'asc' as const }, { id: 'asc' as const }],
       },
@@ -190,7 +209,7 @@ export async function saveUserSnippet({
   userId: number;
   input: SaveUserSnippetInput;
 }) {
-  return dbWrite.$transaction(async (tx) => {
+  const result = await dbWrite.$transaction(async (tx) => {
     // 1. Find or create the user's default User-kind set.
     let set = await tx.wildcardSet.findFirst({
       where: { kind: 'User', ownerUserId: userId },
@@ -254,6 +273,16 @@ export async function saveUserSnippet({
     });
     return { set, category: updated, added: true };
   });
+
+  // Fire audit ONLY when the value was actually added — `added: false` means
+  // the value was a duplicate and the category is unchanged, no re-audit
+  // needed. Runs after the transaction commits so a rolled-back save can't
+  // leak an audit submission for stale state.
+  if (result.added && result.category) {
+    scheduleAudit(result.category.id);
+  }
+
+  return result;
 }
 
 /**
@@ -268,7 +297,7 @@ export async function removeUserSnippet({
   userId: number;
   input: RemoveUserSnippetInput;
 }) {
-  return dbWrite.$transaction(async (tx) => {
+  const result = await dbWrite.$transaction(async (tx) => {
     const category = await loadOwnedUserCategory(tx, { userId, categoryId: input.categoryId });
     const idx = category.values.indexOf(input.value);
     if (idx < 0) throw throwNotFoundError('Snippet value not found in this category');
@@ -291,6 +320,14 @@ export async function removeUserSnippet({
     });
     return { categoryDeleted: false as const, category: updated };
   });
+
+  // Re-audit when the category still has values left. When the last value
+  // was removed the category itself is deleted, so there's nothing to audit.
+  if (!result.categoryDeleted) {
+    scheduleAudit(result.category.id);
+  }
+
+  return result;
 }
 
 /**
@@ -309,7 +346,7 @@ export async function updateUserSnippet({
   if (input.oldValue === input.newValue) {
     throw throwBadRequestError('newValue must differ from oldValue');
   }
-  return dbWrite.$transaction(async (tx) => {
+  const result = await dbWrite.$transaction(async (tx) => {
     const category = await loadOwnedUserCategory(tx, { userId, categoryId: input.categoryId });
     const idx = category.values.indexOf(input.oldValue);
     if (idx < 0) throw throwNotFoundError('Snippet value not found in this category');
@@ -331,6 +368,11 @@ export async function updateUserSnippet({
     });
     return { category: updated };
   });
+
+  // Content changed — always re-audit.
+  scheduleAudit(result.category.id);
+
+  return result;
 }
 
 /**

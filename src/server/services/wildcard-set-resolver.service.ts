@@ -147,14 +147,11 @@ export async function expandSnippetsToTargets({
   //    operator.
   const categoryRows = await dbRead.wildcardSetCategory.findMany({
     where: {
-      // TEMPORARY: relaxed to `{ not: 'Dirty' }` while the audit pipeline is
-      // still being built. Without this, Pending (un-audited) categories
-      // resolve to empty pools and Preview / expansion produce literal
-      // `#name` output everywhere — making the dev form unusable. Dirty
-      // stays excluded.
-      // TODO(prompt-snippets-v1): tighten back to `'Clean'` once verdicts
-      // are flowing. See prompt-snippets-v1.md.
-      auditStatus: { not: 'Dirty' },
+      // Strict gate: only Clean rows resolve. The audit verdict assigns a
+      // non-zero `nsfwLevel` on every Clean category (default PG when no
+      // `nsfw` label triggered), so the bitmask filter below can rely on
+      // a non-zero value without a `=== 0` fallback.
+      auditStatus: 'Clean',
       name: { in: [...uniqueLookupKeys] }, // citext = case-insensitive
       wildcardSet: {
         id: { in: snippets.wildcardSetIds },
@@ -174,14 +171,11 @@ export async function expandSnippetsToTargets({
   // NSFW filtering is bitwise on `nsfwLevel` against an allowed-levels flag:
   //   - SFW context (.com): allow PG + PG13 only
   //   - NSFW context (.red): allow every non-Blocked level
-  // `nsfwLevel = 0` (un-rated) passes through during the audit-status
-  // relaxation window so Pending content stays usable in dev. Once
-  // `auditStatus = 'Clean'` is enforced strictly, Clean rows always carry a
-  // nonzero nsfwLevel and the `=== 0` branch becomes dead code that can be
-  // tightened in the same commit that flips the audit relaxation.
+  // Clean rows always carry a nonzero nsfwLevel (audit-assigned), so no
+  // `=== 0` fallback is needed here.
   const allowedNsfwFlag = isGreen ? sfwBrowsingLevelsFlag : allBrowsingLevelsFlag;
   const filteredCategoryRows = categoryRows.filter(
-    (row) => row.nsfwLevel === 0 || (row.nsfwLevel & allowedNsfwFlag) !== 0
+    (row) => (row.nsfwLevel & allowedNsfwFlag) !== 0
   );
 
   // Group sources per lookup key so per-reference resolution is O(1).

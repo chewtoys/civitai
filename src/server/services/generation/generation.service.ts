@@ -1083,6 +1083,9 @@ export async function getResourceData(
         kind: 'System',
         modelVersionId: { in: wildcardVersionIds },
         isInvalidated: false,
+        // Strict gate: Mixed sets stay visible (they have at least one
+        // Clean category), Dirty sets hide. Matches the resolver and the
+        // picker read paths.
         auditStatus: { not: 'Dirty' },
       },
       select: { id: true, modelVersionId: true, nsfwLevel: true },
@@ -1091,13 +1094,11 @@ export async function getResourceData(
     const visibleSetIdByVersionId = new Map<number, number>();
     for (const set of wildcardSets) {
       if (!set.modelVersionId) continue;
-      // `nsfwLevel === 0` fallback covers the audit-relaxation window: a set
-      // whose categories are still all Pending has nsfwLevel=0 (the rollup
-      // is over non-Dirty categories, but Pending rows contribute their
-      // default-0 nsfwLevel). Once audit verdicts are flowing strictly,
-      // Clean categories always carry a nonzero nsfwLevel and the `=== 0`
-      // branch becomes dead code — tighten it alongside the audit flip.
-      const isVisible = set.nsfwLevel === 0 || (set.nsfwLevel & allowedNsfwFlag) !== 0;
+      // Set-level nsfwLevel rollup is bitwise OR across non-Dirty categories.
+      // Once audit verdicts are landing on every category (PG default when
+      // no nsfw label triggered), every Clean/Mixed set carries a nonzero
+      // nsfwLevel — no `=== 0` fallback needed.
+      const isVisible = (set.nsfwLevel & allowedNsfwFlag) !== 0;
       if (isVisible) visibleSetIdByVersionId.set(set.modelVersionId, set.id);
     }
     for (const resource of filtered) {

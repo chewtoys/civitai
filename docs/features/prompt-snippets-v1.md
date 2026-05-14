@@ -246,12 +246,12 @@ Independently shippable. Backend phases first.
 
 ## 5. Open questions / TODOs (carried over)
 
-- **🚧 Re-tighten audit filters before v1 ships.** While the audit pipeline is being built, the read API and resolver are temporarily relaxed from `auditStatus = 'Clean'` to `auditStatus != 'Dirty'` so Pending (un-audited) content is usable in dev — otherwise everything stays empty and the form/picker have nothing to show. Three call sites carry the temporary relaxation:
+- **✅ Audit filters tightened to `auditStatus = 'Clean'`.** The read API and resolver now reject Pending/Dirty content. Audit fires on every User-kind value mutation (`saveUserSnippet`, `updateUserSnippet`, `removeUserSnippet`) and at import time for System-kind sets, with the hourly cron as the safety net. Three call sites carry the strict gate:
   - `getWildcardSets` — `categories.where` in [src/server/services/wildcard-set.service.ts](../../src/server/services/wildcard-set.service.ts)
   - `getMyUserWildcardSet` — same file
   - `expandSnippetsToTargets` — `categoryRows` query in [src/server/services/wildcard-set-resolver.service.ts](../../src/server/services/wildcard-set-resolver.service.ts)
 
-  Each is tagged with a `TODO(prompt-snippets-v1)` comment. Before v1 reaches users, flip all three back to `'Clean'`. Dirty stays excluded throughout — relaxation only lets Pending through.
+  Paired `nsfwLevel === 0` fallbacks (which let Pending content through during the relaxation window) were dropped from the resolver and `getResourceData`'s Wildcards visibility check at the same time — Clean categories always carry a non-zero `nsfwLevel` (PG default when no `nsfw` label triggered) so the bitmask check stands on its own.
 - **System default wildcard set** — mechanism for "first-time user" experience. Phase 8 of the long-term plan; not in v1.
 - **`getResourceData` integration** — when adding a `Wildcard` model via the resource picker, return the matching `WildcardSet.id` so the form's snippets node can pick it up. v1 adds the equivalent via the "create" button flow on the wildcard model page; the resource-picker integration is a Phase-2 polish.
 - **Audit-failure user notification** — when a wildcard model the user has loaded gets invalidated, do we notify them? v1 just reflects it on next page load (set details show "invalidated" via the auto-prune flow); explicit notifications are post-v1.

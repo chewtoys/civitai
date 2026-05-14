@@ -1,15 +1,27 @@
-import type { XGuardModerationOutput, XGuardModerationStepTemplate } from '@civitai/client';
-import { submitWorkflow } from '@civitai/client';
-import { Prisma } from '@prisma/client';
+import type { XGuardModerationOutput } from '@civitai/client';
+import type { Prisma } from '@prisma/client';
 import { env } from '~/env/server';
 import { NsfwLevel } from '~/server/common/enums';
 import { dbRead, dbWrite } from '~/server/db/client';
 import { logToAxiom } from '~/server/logging/client';
-import { internalOrchestratorClient } from '~/server/services/orchestrator/client';
 import {
+  hashContent,
+  recordEntityModerationFailure,
+  recordEntityModerationSuccess,
+  upsertEntityModerationPending,
+} from '~/server/services/entity-moderation.service';
+import { createXGuardModerationRequest } from '~/server/services/orchestrator/orchestrator.service';
+import {
+  EntityModerationStatus,
   WildcardSetAuditStatus,
   WildcardSetCategoryAuditStatus,
 } from '~/shared/utils/prisma/enums';
+
+// Entity type stamped onto every wildcard-category audit workflow's metadata
+// via `createXGuardModerationRequest`. The webhook reads this (plus the
+// `?type=wildcardCategoryValue` query param on the callback URL) to dispatch
+// to the wildcard handler instead of the default entity-moderation flow.
+const WILDCARD_CATEGORY_ENTITY_TYPE = 'WildcardSetCategory';
 
 // XGuard labels that flip a category to Dirty when triggered. These are the
 // hard-fail policy violations — content matching any of these is unusable
@@ -34,7 +46,7 @@ const WILDCARD_AUDIT_FAIL_LABELS = [
 // a .red user preferenced "show R and above" sees these wildcards while a
 // "X-only" user wouldn't — the conservative default when severity is
 // genuinely unknown).
-const WILDCARD_AUDIT_LEVEL_LABELS = ['nsfw'] as const;
+const WILDCARD_AUDIT_LEVEL_LABELS = ['nsfw', 'r', 'x', 'xxx'] as const;
 
 // Bit assigned when a level label triggers, keyed by the XGuard label name.
 // When tuning improves and we re-introduce pg/pg13/r/x/xxx, fall back to
@@ -91,16 +103,24 @@ function buildCallbackUrl(): string {
 }
 
 /**
- * Submit one wildcard category for XGuard audit. The category's `values` are
- * joined with newlines into a single text-mode xGuardModeration step; the
- * workflow ID is stamped onto `category.metadata.workflowId` so the cron can
- * tell what's in flight.
+ * Submit one wildcard category for XGuard audit via the shared
+ * `createXGuardModerationRequest` helper. The category's `values` are joined
+ * with newlines into the text payload; `entityType` / `entityId` flow through
+ * the helper onto workflow metadata so the webhook can look the category up.
+ * The callback URL carries `?type=wildcardCategoryValue` so the webhook
+ * dispatches to the wildcard handler instead of the default entity-moderation
+ * flow (Wildcards have their own audit table, not EntityModeration).
+ *
+ * The workflow ID is stamped onto `category.metadata.workflowId` so:
+ *   - the cron can tell what's in flight,
+ *   - stale callbacks (from a previous workflow that got superseded by a
+ *     newer mutation) get rejected in `applyWildcardCategoryAuditSuccess`.
  *
  * Returns the workflow ID on a successful submission. Returns `null` when:
- *   - the category no longer exists
- *   - the category has no values (caller should mark Clean directly)
+ *   - the category no longer exists,
+ *   - the category has no values (caller should mark Clean directly),
  *   - the orchestrator submission silently failed (caller may retry on the
- *     next cron tick)
+ *     next cron tick).
  */
 export async function submitWildcardCategoryAudit(categoryId: number): Promise<string | null> {
   const category = await dbRead.wildcardSetCategory.findUnique({
@@ -111,56 +131,59 @@ export async function submitWildcardCategoryAudit(categoryId: number): Promise<s
   if (!category.values || category.values.length === 0) return null;
 
   const text = category.values.join('\n');
-  const callbackUrl = buildCallbackUrl();
-  const metadata = { wildcardSetCategoryId: categoryId };
+  const contentHash = hashContent(text);
 
-  const { data, error, response } = await submitWorkflow({
-    client: internalOrchestratorClient,
-    body: {
-      metadata,
-      currencies: [],
-      steps: [
-        {
-          $type: 'xGuardModeration',
-          name: 'textModeration',
-          metadata,
-          priority: 'low',
-          input: {
-            text,
-            mode: 'text',
-            // Submit both fail labels (hard policy violations → Dirty) and
-            // level labels (PG..XXX → bitwise nsfwLevel classification). We
-            // ignore XGuard's top-level `blocked` field in the callback and
-            // recompute Dirty ourselves from per-label results, so including
-            // level labels here can't accidentally flip the audit verdict.
-            labels: [...WILDCARD_AUDIT_FAIL_LABELS, ...WILDCARD_AUDIT_LEVEL_LABELS],
-            storeFullResponse: false,
-          },
-        } as XGuardModerationStepTemplate,
-      ],
-      callbacks: [
-        {
-          url: callbackUrl,
-          type: ['workflow:succeeded', 'workflow:failed', 'workflow:expired', 'workflow:canceled'],
-        },
-      ],
-    },
+  // Persist an EntityModeration row Pending BEFORE submitting so a silent
+  // orchestrator failure still leaves a row for `retry-failed-text-moderation`
+  // to pick up. Mirrors the pattern in `submitTextModeration` for Article.
+  // The row is keyed on (entityType, entityId) which matches what the webhook
+  // will use to find it via the workflow metadata.
+  await upsertEntityModerationPending({
+    entityType: WILDCARD_CATEGORY_ENTITY_TYPE,
+    entityId: categoryId,
+    workflowId: null,
+    contentHash,
   });
 
-  if (!data?.id) {
+  // Submit both fail labels (hard policy violations → Dirty) and level
+  // labels (currently just `nsfw` → bitwise nsfwLevel = R). We ignore
+  // XGuard's top-level `blocked` field in the callback and recompute Dirty
+  // ourselves from per-label results, so including level labels here can't
+  // accidentally flip the audit verdict.
+  const workflow = await createXGuardModerationRequest({
+    mode: 'text',
+    entityType: WILDCARD_CATEGORY_ENTITY_TYPE,
+    entityId: categoryId,
+    content: text,
+    labels: [...WILDCARD_AUDIT_FAIL_LABELS, ...WILDCARD_AUDIT_LEVEL_LABELS],
+    priority: 'low',
+    callbackUrl: buildCallbackUrl(),
+  });
+
+  if (!workflow?.id) {
     logToAxiom({
       type: 'error',
       name: 'wildcard-category-audit',
-      message: 'orchestrator submitWorkflow returned no workflow id',
+      message: 'createXGuardModerationRequest returned no workflow id',
       wildcardSetCategoryId: categoryId,
-      responseStatus: response?.status,
-      error,
     }).catch(() => undefined);
     return null;
   }
 
-  await mergeCategoryMetadata(categoryId, { workflowId: data.id });
-  return data.id;
+  // Stamp the workflow id onto BOTH the wildcard category metadata (used by
+  // the wildcard cron's "is this in-flight?" check) and the EntityModeration
+  // row (used by `recordEntityModerationSuccess`/`Failure` to gate stale
+  // callbacks, and by `retry-failed-text-moderation` to dispatch retries).
+  await mergeCategoryMetadata(categoryId, { workflowId: workflow.id });
+  await dbWrite.entityModeration.updateMany({
+    where: {
+      entityType: WILDCARD_CATEGORY_ENTITY_TYPE,
+      entityId: categoryId,
+      status: EntityModerationStatus.Pending,
+    },
+    data: { workflowId: workflow.id },
+  });
+  return workflow.id;
 }
 
 /**
@@ -412,6 +435,17 @@ export async function applyWildcardCategoryAuditSuccess(opts: {
     },
   });
 
+  // Mirror the success onto the EntityModeration row so the retry job sees
+  // a Succeeded row and stops trying. Stale callbacks (workflowId mismatch)
+  // are filtered inside `recordEntityModerationSuccess` itself — we don't
+  // need to gate again here.
+  await recordEntityModerationSuccess({
+    entityType: WILDCARD_CATEGORY_ENTITY_TYPE,
+    entityId: categoryId,
+    workflowId,
+    output: opts.output,
+  });
+
   await recomputeWildcardSetAuditStatus(current.wildcardSetId);
 }
 
@@ -419,13 +453,19 @@ export async function applyWildcardCategoryAuditSuccess(opts: {
  * Webhook handler: terminal-failure callback. Bumps `retryCount` on the
  * category metadata so the cron can stop retrying after `MAX_RETRY`
  * consecutive failures. Status stays `Pending`.
+ *
+ * Also mirrors the failure onto the EntityModeration row so the
+ * `retry-failed-text-moderation` job can pick it up for resubmission — the
+ * wildcard-side cron only handles Pending categories with cleared workflowIds
+ * (i.e. ones we already gave up on after orchestrator failure), while the
+ * EntityModeration retry handles Failed/Expired/Canceled rows specifically.
  */
 export async function applyWildcardCategoryAuditFailure(opts: {
   categoryId: number;
   workflowId: string;
   status: 'failed' | 'expired' | 'canceled';
 }): Promise<void> {
-  const { categoryId, workflowId } = opts;
+  const { categoryId, workflowId, status } = opts;
 
   const current = await dbRead.wildcardSetCategory.findUnique({
     where: { id: categoryId },
@@ -445,6 +485,22 @@ export async function applyWildcardCategoryAuditFailure(opts: {
   await dbWrite.wildcardSetCategory.update({
     where: { id: categoryId },
     data: { metadata: serializeMetadata(nextMetadata) },
+  });
+
+  // Mirror onto the EntityModeration row. The status maps directly to
+  // `EntityModerationStatus`'s capitalized values via the same helper Article
+  // uses, so the retry job's predicates (Failed/Expired/Canceled + updatedAt
+  // > 1hr) trigger correctly.
+  const entityStatus = {
+    failed: EntityModerationStatus.Failed,
+    expired: EntityModerationStatus.Expired,
+    canceled: EntityModerationStatus.Canceled,
+  }[status];
+  await recordEntityModerationFailure({
+    entityType: WILDCARD_CATEGORY_ENTITY_TYPE,
+    entityId: categoryId,
+    workflowId,
+    status: entityStatus,
   });
 }
 
