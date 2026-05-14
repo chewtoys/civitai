@@ -53,7 +53,9 @@ export const createAnimaInput = defineHandler<AnimaCtx, [ImageGenStepTemplate]>(
         outputFormat: data.outputFormat,
         loras: Object.keys(loras).length > 0 ? loras : undefined,
         diffuserModel,
-      }) as AnimaCreateImageGenInput,
+        // TODO: remove `as any` once @civitai/client ships updated AnimaCreateImageGenInput
+        // (current published type still declares engine: 'sdcpp', upstream switched to 'comfy').
+      }) as any as AnimaCreateImageGenInput,
     },
   ];
 });
