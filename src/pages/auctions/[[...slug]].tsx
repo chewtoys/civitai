@@ -27,6 +27,7 @@ import { Meta } from '~/components/Meta/Meta';
 import { ScrollArea } from '~/components/ScrollArea/ScrollArea';
 import { useTourContext } from '~/components/Tours/ToursProvider';
 import { useIsMobile } from '~/hooks/useIsMobile';
+import { useFeatureFlags } from '~/providers/FeatureFlagsProvider';
 import { createServerSideProps } from '~/server/utils/server-side-helpers';
 import { getLoginLink } from '~/utils/login-helpers';
 import { trpc } from '~/utils/trpc';
@@ -104,6 +105,7 @@ export default function Auctions({
   const pathname = usePathname();
   const { runTour, running } = useTourContext();
   const isMobile = useIsMobile({ breakpoint: 'md' });
+  const features = useFeatureFlags();
   useAuctionTopicListener(selectedAuction?.id);
 
   const {
@@ -186,6 +188,7 @@ export default function Auctions({
                   <Tooltip label="Min bid currently required to place">
                     <CurrencyBadge
                       currency="BUZZ"
+                      type={features.isGreen ? 'green' : 'yellow'}
                       unitAmount={a.lowestBidRequired}
                       displayCurrency={false}
                       radius="md"
