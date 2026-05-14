@@ -50,7 +50,10 @@ import { fromJson, toJson } from '~/utils/json-helpers';
 import { removeNulls } from '~/utils/object-helpers';
 import { parseAIR, stringifyAIR } from '~/shared/utils/air';
 import { Flags } from '~/shared/utils/flags';
-import { sfwBrowsingLevelsFlag } from '~/shared/constants/browsingLevel.constants';
+import {
+  allBrowsingLevelsFlag,
+  sfwBrowsingLevelsFlag,
+} from '~/shared/constants/browsingLevel.constants';
 import { isDefined } from '~/utils/type-guards';
 import { getVeo3ProcessFromAir } from '~/server/orchestrator/veo3/veo3.schema';
 import type { BaseModelGroup } from '~/shared/constants/basemodel.constants';
@@ -1048,9 +1051,68 @@ export async function getResourceData(
   }
 
   // TODO - check if resource id is in "EcosystemCheckpoint" table
-  return generation
+  // Note: `hasGenerationSupport` returns false for Wildcards-type baseModels
+  // (Wildcards aren't generation resources), so the `generation: true` filter
+  // here strips them out unless the caller is asking for unfiltered data
+  // (e.g. the model detail page wants to render a Wildcards model's
+  // "Generate" button enabled when the wildcard set is visible).
+  const filtered = generation
     ? resources.filter((resource) => hasGenerationSupport(resource.baseModel))
     : resources;
+
+  // Wildcards-type entries are NOT generation resources — they're handles to
+  // System-kind WildcardSets. We:
+  //   - Stamp `wildcardSetId` so consumers (form hydration when loading a
+  //     preset/remix; the "Generate" button on a Wildcards model page) can
+  //     route the id into `snippets.wildcardSetIds`.
+  //   - Override `canGenerate` to reflect "does this set have content visible
+  //     at the current site context?" — the standard `getResourceCanGenerate`
+  //     path returns false because Wildcards baseModels aren't generation-
+  //     supported, but a published wildcard set should enable the model
+  //     page's Generate button.
+  //
+  // Visibility uses the set-level `nsfwLevel` rollup (bitwise OR of every
+  // non-Dirty category's nsfwLevel, maintained by the audit verdict path).
+  // No category sub-query needed — a single-table bitmask check decides it.
+  // See docs/features/prompt-snippets-v1.md §"Wildcards models vs generation
+  // resources".
+  const wildcardVersionIds = filtered.filter((r) => r.model.type === 'Wildcards').map((r) => r.id);
+  if (wildcardVersionIds.length > 0) {
+    const wildcardSets = await dbRead.wildcardSet.findMany({
+      where: {
+        kind: 'System',
+        modelVersionId: { in: wildcardVersionIds },
+        isInvalidated: false,
+        auditStatus: { not: 'Dirty' },
+      },
+      select: { id: true, modelVersionId: true, nsfwLevel: true },
+    });
+    const allowedNsfwFlag = sfwOnly ? sfwBrowsingLevelsFlag : allBrowsingLevelsFlag;
+    const visibleSetIdByVersionId = new Map<number, number>();
+    for (const set of wildcardSets) {
+      if (!set.modelVersionId) continue;
+      // `nsfwLevel === 0` fallback covers the audit-relaxation window: a set
+      // whose categories are still all Pending has nsfwLevel=0 (the rollup
+      // is over non-Dirty categories, but Pending rows contribute their
+      // default-0 nsfwLevel). Once audit verdicts are flowing strictly,
+      // Clean categories always carry a nonzero nsfwLevel and the `=== 0`
+      // branch becomes dead code — tighten it alongside the audit flip.
+      const isVisible = set.nsfwLevel === 0 || (set.nsfwLevel & allowedNsfwFlag) !== 0;
+      if (isVisible) visibleSetIdByVersionId.set(set.modelVersionId, set.id);
+    }
+    for (const resource of filtered) {
+      if (resource.model.type !== 'Wildcards') continue;
+      const setId = visibleSetIdByVersionId.get(resource.id);
+      if (setId != null) {
+        (resource as GenerationResource).wildcardSetId = setId;
+        resource.canGenerate = true;
+      }
+      // else: wildcardSetId stays undefined, canGenerate stays whatever
+      // getResourceCanGenerate returned (false for Wildcards baseModels).
+    }
+  }
+
+  return filtered;
 }
 
 // =============================================================================

@@ -171,10 +171,47 @@ Consequences:
 
 The persisted `workflow.metadata.params.snippets.targets` (above) is a different map: it's the orchestrator's parsed-refs snapshot for THIS submission, with empty entries stripped. Graph state's `targets` = "editors that accept snippets right now"; persisted `targets` = "editors that had refs to substitute in this submission."
 
+### Wildcards models vs generation resources
+
+A `Wildcards`-type ModelVersion is **not** a generation resource. The generator never consumes it directly the way it consumes a Checkpoint or LoRA; its only role is as the published source for a System-kind `WildcardSet`, and at submit time what matters is the `WildcardSet.id` (which the resolver reads from), not the ModelVersion id (which a handler would otherwise wire as a generation resource).
+
+This creates a normalization rule: anywhere a `Wildcards`-type ModelVersion shows up — as a resource the user picked, as a preset's resource entry, as a remixed generation's resource list, or as the source of a "Generate" click on a wildcard-model detail page — the entry's `wildcardSetId` is routed into `snippets.wildcardSetIds`, never into the generator's `resources[]` array. By the time the orchestrator runs, `resources[]` contains only generation resources (Checkpoints, LoRAs, VAEs, etc.) — Wildcards never reach it.
+
+**Two layers of server-side support; the client owns the routing.**
+
+1. **`getResourceData` stamps `wildcardSetId` and computes `canGenerate`.** When enriching a list of ModelVersion ids, any row whose `model.type === 'Wildcards'` gets:
+   - `wildcardSetId?: number` stamped on the returned `GenerationResource`, resolved to the corresponding System-kind `WildcardSet.id`.
+   - `canGenerate` overridden to reflect WildcardSet visibility at the request's site context. A non-invalidated set with `auditStatus != 'Dirty'` AND `(nsfwLevel & allowedFlag) != 0` (SFW flag on `.com`, all-levels flag on `.red`) is `canGenerate: true`. The standard `getResourceCanGenerate` path returns false for Wildcards baseModels (they're not on the generation-supported list), so this override is what lets the model detail page enable its "Generate" button for a published, visible wildcard set. The visibility check is a single-table query against `WildcardSet` columns — see "Set-level rollups" below for why this avoids a category sub-query.
+
+2. **Resource picker filters by `hasGenerationSupport`.** The form's resource picker passes `generation: true` to `getResourceData`, which strips out anything whose baseModel isn't generation-supported — Wildcards models are filtered out at this gate. Users can't add a Wildcards model to the `resources` array through the picker; it never shows up as an option.
+
+**Client-side routing.** When a wildcard enters the form (via the "Add wildcard set" button, the wildcard model detail page's "Generate" click, or a preset / remix that carries a `wildcardSetId`-stamped resource), the form reads the `wildcardSetId` field and appends it to `snippets.wildcardSetIds`. The wildcard never lives in the `resources` graph node.
+
+**Edge case — active subgraph doesn't support snippets.** Some workflows (`vid2vid:upscale`, `img2img:remove-background`, video interpolation) don't merge `snippetsGraph` and have no `snippets` node in ctx. A preset loaded into such a workflow with wildcards present **silently drops** the wildcard entries (matching how ecosystem-incompatible resources already vanish today). A soft warning surfaces in the UI so the user understands their wildcards aren't active.
+
+**Preset save shape.** Presets serialize wildcards as `wildcardSetIds: number[]` on `GenerationPreset.values`, NOT as Wildcards entries inside `resources`. The routing layer above is only for legacy data and external paths — anything saved through the form's own preset flow already has the canonical shape.
+
+**Set-level rollups.** `WildcardSet` carries two aggregates maintained by the audit verdict path so visibility checks don't need to JOIN to `WildcardSetCategory`:
+
+- `auditStatus` (`Pending | Clean | Mixed | Dirty`) — buckets the set based on its categories. `Dirty` = nothing usable, everywhere else = at least one Clean (or Pending) category exists.
+- `nsfwLevel` (Int, bitwise) — OR of every non-Dirty category's `nsfwLevel`. Single-table bitmask test answers "does this set have any content visible at the current site context?"
+
+Both aggregates are recomputed in `recomputeWildcardSetAuditStatus` whenever any category's `auditStatus` or `nsfwLevel` changes. This means hot-path checks like the model detail page's Generate button gate (`auditStatus != 'Dirty' && (nsfwLevel & allowedFlag) != 0`) hit one row, no JOIN.
+
+**Implementation status.**
+
+- ✅ `getResourceData` stamping + canGenerate override — see `src/server/services/generation/generation.service.ts`.
+- ✅ Set-level `nsfwLevel` rollup — `WildcardSet.nsfwLevel` column + `recomputeWildcardSetAuditStatus` maintenance + backfill in the migration.
+- 🚧 Form-side routing — TODO. After the form fetches enriched resources via `ResourceDataProvider`, entries with `wildcardSetId` should be dispatched into `snippets.wildcardSetIds` rather than appended to `resources`. Handled at the form's hydration boundary (preset load, remix, model-detail-page "Generate" handoff). Without this, a `wildcardSetId`-stamped resource that arrives via a preset would sit visible in the resources list until the user re-renders.
+
 ### Provisioning + audit
 
 - **Provisioning job** (see [prompt-snippets-provisioning-job.md](./prompt-snippets-provisioning-job.md)) creates `WildcardSet` (kind: System) + `WildcardSetCategory` rows when a wildcard-type model version is published. Reconciliation job catches missed publishes. Backfill on initial deploy.
-- **Audit pipeline** runs per-category. On creation (System-kind import; User-kind value mutation), category is `Pending` until the audit job processes it. Verdict is `Clean` or `Dirty`; `nsfwLevel` is set on `Clean`. Re-runs on rule-version bumps. **No transitive propagation** through nested refs in v1.
+- **Audit pipeline** runs per-category. On creation (System-kind import; User-kind value mutation), category is `Pending` until the audit job processes it. The XGuard request carries two label sets:
+  - **Fail labels** (`csam, urine, diaper, scat, menstruation, bestiality`): any triggered → category goes `Dirty`. Hard policy violations regardless of site context.
+  - **Level labels** — restricted to `nsfw` for v1. When triggered, the category's `nsfwLevel` is set to `NsfwLevel.R` (the lowest NSFW bit); when not triggered, it defaults to `NsfwLevel.PG`. The fine-grained `pg/pg13/r/x/xxx` evaluators aren't well-tuned for text moderation yet, so we restrict to the binary `nsfw` signal for now. The schema is already bitwise (`nsfwLevel: Int`), so re-introducing severity classification later is a code-only change — no migration.
+  - The callback recomputes Dirty from the per-label results — it deliberately ignores XGuard's top-level `blocked` field because that field counts level labels as triggers, which would falsely mark ordinary NSFW content as Dirty.
+- Re-runs on rule-version bumps. Set-level `auditStatus` AND `nsfwLevel` aggregates are recomputed via `recomputeWildcardSetAuditStatus` after each verdict — the rollup is bitwise OR across non-Dirty categories, so a set's `nsfwLevel` always reflects "what content this set can surface." **No transitive propagation** through nested refs in v1.
 
 ### Implementation phases
 

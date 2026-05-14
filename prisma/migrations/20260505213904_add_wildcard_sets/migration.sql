@@ -20,6 +20,7 @@ CREATE TABLE "WildcardSet" (
     "auditStatus" "WildcardSetAuditStatus" NOT NULL DEFAULT 'Pending',
     "auditRuleVersion" TEXT,
     "auditedAt" TIMESTAMP(3),
+    "nsfwLevel" INTEGER NOT NULL DEFAULT 0,
     "isInvalidated" BOOLEAN NOT NULL DEFAULT false,
     "invalidationReason" TEXT,
     "invalidatedAt" TIMESTAMP(3),
@@ -71,6 +72,13 @@ CREATE INDEX "WildcardSet_auditStatus_idx" ON "WildcardSet"("auditStatus");
 
 -- CreateIndex
 CREATE INDEX "WildcardSet_isInvalidated_idx" ON "WildcardSet"("isInvalidated");
+
+-- CreateIndex
+-- Set-level nsfwLevel rollup (bitwise OR of every non-Dirty category's
+-- nsfwLevel, maintained by recomputeWildcardSetAuditStatus). Indexed so
+-- visibility checks like `(nsfwLevel & ${sfwFlag}) != 0` on the .com side
+-- gate can avoid a sub-query into WildcardSetCategory.
+CREATE INDEX "WildcardSet_nsfwLevel_idx" ON "WildcardSet"("nsfwLevel");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "WildcardSetCategory_wildcardSetId_name_key" ON "WildcardSetCategory"("wildcardSetId", "name");

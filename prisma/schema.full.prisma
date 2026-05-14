@@ -5553,6 +5553,13 @@ model WildcardSet {
   auditRuleVersion String?
   auditedAt        DateTime?
 
+  // Bitwise OR of every non-Dirty category's `nsfwLevel`. Lets a caller (e.g.
+  // the model detail page's "Generate" button) decide whether a wildcard set
+  // has content visible at the request's site context (`.com` vs `.red`)
+  // without sub-querying categories. Maintained by the audit verdict path —
+  // recomputed whenever a category's nsfwLevel or auditStatus changes.
+  nsfwLevel Int @default(0)
+
   isInvalidated      Boolean   @default(false)
   invalidationReason String?
   invalidatedAt      DateTime?
@@ -5572,6 +5579,7 @@ model WildcardSet {
   @@index([ownerUserId])
   @@index([auditStatus])
   @@index([isInvalidated])
+  @@index([nsfwLevel])
 }
 
 model WildcardSetCategory {

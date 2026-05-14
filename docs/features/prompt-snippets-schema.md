@@ -99,6 +99,18 @@ model WildcardSet {
   auditRuleVersion    String?
   auditedAt           DateTime?
 
+  // Set-level nsfwLevel rollup — bitwise OR of every non-Dirty category's
+  // nsfwLevel. Lets callers (the model detail page's "Generate" button gate,
+  // the resource picker, etc.) decide whether a set has content visible at
+  // the request's site context (.com SFW vs .red NSFW) without sub-querying
+  // categories. Maintained by the audit verdict path: recomputed in
+  // `recomputeWildcardSetAuditStatus` whenever any category's auditStatus
+  // or nsfwLevel changes. A set with `nsfwLevel = 0` either has no audited
+  // content yet (Pending) or had its only Clean content classified at the
+  // unrated `PG`-base level — visibility check treats 0 as a permissive
+  // fallback during the audit-relaxation window.
+  nsfwLevel           Int                  @default(0)
+
   // Invalidation — flagged if a System-kind set's source model is unpublished for policy reasons,
   // or if a User-kind set's content is administratively suspended. Pointers remain but the set
   // is excluded from generation pools.
@@ -120,6 +132,7 @@ model WildcardSet {
   @@index([ownerUserId])
   @@index([auditStatus])
   @@index([isInvalidated])
+  @@index([nsfwLevel])
 }
 
 enum WildcardSetKind {
@@ -203,7 +216,7 @@ enum CategoryAuditStatus {
 - `name` uses the PostgreSQL `citext` type — case-insensitive comparisons and unique constraint automatically. Stores the source filename's casing as-is; the picker can render it directly, and prompts match it regardless of how the user types `#Character` vs `#character`. Removes the need for a separate `displayName` column.
 - `values` is a Postgres `text[]`, e.g. `{"fire","water","earth", ...}` for `elemental_types`, or `{"{3.0::serious|3.0::determined|...}"}` for a single-line weighted-alternation file. Empty source lines are dropped at import. Order is preserved via array position. Identifier for re-edit / metadata uses the literal value string, not the array index — index isn't stable under reorder.
 - **Audit is one verdict per category, not per value.** If any line in the category fails audit, the whole category becomes `Dirty` and is excluded from resolution. Authors curate categories as cohesive lists; partial use after a partial-audit-fail isn't a workflow we want to support, and per-line audit columns aren't needed.
-- `nsfwLevel` follows the existing Civitai bitwise NSFW convention so the site router can filter categories using the same logic it already uses for images, models, etc. A category with `nsfwLevel = 0` (unrated) is treated as not-yet-available pending classification.
+- `nsfwLevel` follows the existing Civitai bitwise NSFW convention so the site router can filter categories using the same logic it already uses for images, models, etc. The audit pipeline classifies severity by submitting the `nsfw` label as an XGuard evaluator alongside the hard-fail labels (`csam, urine, …`); triggered → `nsfwLevel = NsfwLevel.R`, otherwise `NsfwLevel.PG`. The finer-grained `pg/pg13/r/x/xxx` evaluators aren't well-tuned for text yet, so v1 restricts to the binary `nsfw` signal — when those evaluators stabilize, the audit code expands to OR multiple bits with NO schema migration (the column is already an Int). A category with `nsfwLevel = 0` is treated as not-yet-audited (the Pending state).
 - `valueCount` is denormalized for picker headers — derivable from `array_length(values, 1)` but cached to avoid the function call on hot reads.
 - Cascades from `WildcardSet` — deleting a set deletes its categories.
 
@@ -447,7 +460,14 @@ FOR each WildcardSetCategory WHERE wildcardSetId = ?
   UPDATE WildcardSet SET auditStatus, auditRuleVersion, auditedAt
 ```
 
-The audit service produces both the pass/fail verdict and the `nsfwLevel` classification in one pass. A category that fails outright is marked `Dirty` (excluded everywhere); a category that passes gets a `nsfwLevel` reflecting its content rating, and the site router decides where it shows. Runs as a background worker, ~one category per regex pass — finishes a typical 60-category set well under a minute.
+The audit service produces both the pass/fail verdict and the `nsfwLevel` classification in one pass. Implementation submits a single XGuard text-moderation workflow per category with two label sets in the request:
+
+- **Fail labels** (`csam, urine, diaper, scat, menstruation, bestiality`): any triggered → category goes `Dirty` (excluded everywhere). Hard policy violations regardless of site context.
+- **Level labels** (`nsfw` for v1): triggered → `nsfwLevel = NsfwLevel.R`. Falls back to `NsfwLevel.PG` when not triggered (purely textual content with no NSFW signal sits at the most permissive level). v1 restricts to the binary `nsfw` evaluator because the finer-grained `pg/pg13/r/x/xxx` labels aren't well-tuned for text yet — the schema is already bitwise, so re-introducing those is a code-only change.
+
+The callback (`applyWildcardCategoryAuditSuccess` in `wildcard-category-audit.service.ts`) recomputes Dirty from the per-label results — deliberately ignoring XGuard's top-level `blocked` field, which counts level labels as triggers and would otherwise mark ordinary NSFW content as Dirty.
+
+Runs as a background worker, one category per workflow — finishes a typical 60-category set well under a minute.
 
 ### 6.4 Set invalidation
 

@@ -4238,6 +4238,7 @@ export interface WildcardSet {
   auditStatus: WildcardSetAuditStatus;
   auditRuleVersion: string | null;
   auditedAt: Date | null;
+  nsfwLevel: number;
   isInvalidated: boolean;
   invalidationReason: string | null;
   invalidatedAt: Date | null;
