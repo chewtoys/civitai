@@ -14,6 +14,7 @@
 import { Anchor, Badge, Group, HoverCard, Text, ThemeIcon } from '@mantine/core';
 import { IconAlertTriangle, IconBan, IconLock, IconShield } from '@tabler/icons-react';
 import type { ReactNode } from 'react';
+import { CurrencyBadge } from '~/components/Currency/CurrencyBadge';
 import { EdgeMedia2 } from '~/components/EdgeMedia/EdgeMedia';
 import { NumberSlider } from '~/libs/form/components/NumberSlider';
 import { useAppContext } from '~/providers/AppProvider';
@@ -215,15 +216,34 @@ export function ResourceItemContent({
           )}
           {/* Version name + warnings — second line */}
           <Group gap={4} wrap="nowrap">
-            {resource.name && resource.model.name && resource.model.name.toLowerCase() !== resource.name.toLowerCase() && (
-              <Text size="xs" c="dimmed" className="shrink-0">
-                ({resource.name})
-              </Text>
-            )}
+            {resource.name &&
+              resource.model.name &&
+              resource.model.name.toLowerCase() !== resource.name.toLowerCase() && (
+                <Text size="xs" c="dimmed" className="shrink-0">
+                  ({resource.name})
+                </Text>
+              )}
             {epochDetails?.epochNumber && (
               <Badge size="sm" color="dark.5" variant="filled" className="shrink-0">
                 Epoch {epochDetails.epochNumber}
               </Badge>
+            )}
+            {!!resource.licensingFee && resource.licensingFee > 0 && (
+              <HoverCard position="bottom" withArrow width={220}>
+                <HoverCard.Target>
+                  <CurrencyBadge
+                    unitAmount={resource.licensingFee}
+                    currency="BUZZ"
+                    size="xs"
+                    className="shrink-0 cursor-help"
+                  />
+                </HoverCard.Target>
+                <HoverCard.Dropdown>
+                  <Text size="sm">
+                    License fee charged per image when using this resource for generation.
+                  </Text>
+                </HoverCard.Dropdown>
+              </HoverCard>
             )}
             {isSfwOnly && (
               <HoverCard position="bottom" withArrow width={200}>
