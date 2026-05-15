@@ -14,13 +14,13 @@ export const threadUrlMap = ({ threadType, threadParentId, ...details }: any) =>
   return {
     model: `/models/${threadParentId}?dialog=commentThread&${queryString}`,
     image: `/images/${threadParentId}?${queryString}`,
-    post: `/posts/${threadParentId}?${queryString}#comments`,
-    article: `/articles/${threadParentId}?${queryString}#comments`,
+    post: `/posts/${threadParentId}?${queryString}`,
+    article: `/articles/${threadParentId}?${queryString}`,
     review: `/reviews/${threadParentId}?${queryString}`,
-    bounty: `/bounties/${threadParentId}?${queryString}#comments`,
-    bountyEntry: `/bounties/entries/${threadParentId}?${queryString}#comments`,
-    challenge: `/challenges/${threadParentId}?${queryString}#comments`,
-    comicChapter: `/comics/${threadParentId}?${queryString}#comments`,
+    bounty: `/bounties/${threadParentId}?${queryString}`,
+    bountyEntry: `/bounties/entries/${threadParentId}?${queryString}`,
+    challenge: `/challenges/${threadParentId}?${queryString}`,
+    comicChapter: `/comics/${threadParentId}?${queryString}`,
     // question: `/questions/${threadParentId}?highlight=${details.commentId}#comments`,
     // answer: `/questions/${threadParentId}?highlight=${details.commentId}#answer-`,
   }[threadType as string] as string;
@@ -453,7 +453,7 @@ export const commentNotifications = createNotificationProcessor({
       details && !isEmpty(details)
         ? {
             message: `${details.username} commented on your article: "${details.articleTitle}"`,
-            url: `/articles/${details.articleId}?highlight=${details.commentId}#comments`,
+            url: `/articles/${details.articleId}?highlight=${details.commentId}`,
           }
         : undefined,
     prepareQuery: ({ lastSent }) => `
@@ -490,7 +490,7 @@ export const commentNotifications = createNotificationProcessor({
     category: NotificationCategory.Comment,
     prepareMessage: ({ details }) => ({
       message: `${details.username} commented on your bounty: "${details.bountyTitle}"`,
-      url: `/bounties/${details.bountyId}?highlight=${details.commentId}#comments`,
+      url: `/bounties/${details.bountyId}?highlight=${details.commentId}`,
     }),
     prepareQuery: ({ lastSent }) => `
       WITH new_bounty_comment AS (
@@ -527,7 +527,7 @@ export const commentNotifications = createNotificationProcessor({
     category: NotificationCategory.Comment,
     prepareMessage: ({ details }) => ({
       message: `${details.username} commented on your challenge: "${details.challengeTitle}"`,
-      url: `/challenges/${details.challengeId}?highlight=${details.commentId}#comments`,
+      url: `/challenges/${details.challengeId}?highlight=${details.commentId}`,
     }),
     prepareQuery: ({ lastSent }) => `
       WITH new_challenge_comment AS (

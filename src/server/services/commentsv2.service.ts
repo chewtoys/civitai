@@ -486,6 +486,7 @@ export async function getCommentsInfinite({
   sort = ThreadSort.Oldest,
   hidden = false,
   cursor,
+  targetCommentId,
   excludedUserIds = [],
 }: GetCommentsInfiniteInput & { excludedUserIds?: number[] }) {
   return withSpan('commentv2:getInfinite', async () => {
@@ -520,13 +521,36 @@ export async function getCommentsInfinite({
       hidden,
     });
 
-    // 4. Determine next cursor and hasMore
+    // 4. If a target comment was requested (notification deep-link) and it isn't already
+    //    in this first-page batch, fetch it separately so the client can render + scroll
+    //    to it without forcing the user to click "Load More" until they hit it.
+    let targetComment: CommentV2Model | null = null;
+    if (!cursor && targetCommentId) {
+      const alreadyIncluded =
+        pinnedComments.some((c) => c.id === targetCommentId) ||
+        regularComments.some((c) => c.id === targetCommentId);
+      if (!alreadyIncluded) {
+        const candidate = await dbRead.commentV2.findFirst({
+          where: {
+            id: targetCommentId,
+            threadId: mainThread.id,
+            hidden,
+            userId: excludedUserIds.length ? { notIn: excludedUserIds } : undefined,
+          },
+          select: commentV2Select,
+        });
+        if (candidate) targetComment = candidate as CommentV2Model;
+      }
+    }
+
+    // 5. Determine next cursor and hasMore
     const nextCursor =
       regularComments.length === limit ? regularComments[regularComments.length - 1].id : undefined;
 
     return {
       comments: !cursor ? [...pinnedComments, ...regularComments] : regularComments,
       nextCursor,
+      targetComment,
     };
   });
 }

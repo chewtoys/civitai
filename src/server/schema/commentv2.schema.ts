@@ -66,4 +66,7 @@ export const getCommentsInfiniteSchema = commentConnectorSchema.extend({
   limit: z.number().min(1).max(100).default(20),
   sort: z.enum(ThreadSort).default(ThreadSort.Oldest),
   cursor: z.number().optional(),
+  // If set on the first page, the server will include this comment in the response when
+  // it belongs to the thread but isn't in the initial batch (e.g. notification deep-links).
+  targetCommentId: z.number().optional(),
 });

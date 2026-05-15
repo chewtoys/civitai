@@ -109,7 +109,20 @@ export function CommentContent({
   useEffect(() => {
     if (!isHighlighted) return;
     const elem = document.getElementById(`comment-${comment.id}`);
-    if (elem) elem.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
+    if (!elem) return;
+    const center = () => elem.scrollIntoView({ behavior: 'auto', block: 'center' });
+    const recenterIfDrifted = () => {
+      const rect = elem.getBoundingClientRect();
+      if (rect.top < 0 || rect.bottom > window.innerHeight) center();
+    };
+    // Initial scroll, then retry as layout settles (images, late mounts, paginated batches)
+    center();
+    const t1 = window.setTimeout(recenterIfDrifted, 100);
+    const t2 = window.setTimeout(recenterIfDrifted, 500);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
   }, [isHighlighted, comment.id]);
 
   const isExpanded = !viewOnly && expanded.includes(comment.id);
