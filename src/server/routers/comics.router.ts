@@ -35,7 +35,11 @@ import { getOrchestratorToken } from '~/server/orchestrator/get-orchestrator-tok
 import { pollIterationWorkflow } from '~/server/services/orchestrator/poll-iteration';
 import { createImageGen } from '~/server/services/orchestrator/imageGen/imageGen';
 import { assertCanGenerate, getUserQueueStatus } from '~/server/services/orchestrator/queue-limits';
-import { getWorkflow, submitWorkflow, updateWorkflow } from '~/server/services/orchestrator/workflows';
+import {
+  getWorkflow,
+  submitWorkflow,
+  updateWorkflow,
+} from '~/server/services/orchestrator/workflows';
 import { formatGenerationResponse2 } from '~/server/services/orchestrator/orchestration-new.service';
 import { WorkflowData } from '~/shared/orchestrator/workflow-data';
 import { colorDomainNames, type ColorDomain } from '~/shared/constants/domain.constants';
@@ -243,6 +247,7 @@ async function submitComicGeneration({
   features,
   isGreen,
   allowMatureContent,
+  track,
 }: {
   prompt: string;
   width: number;
@@ -257,6 +262,7 @@ async function submitComicGeneration({
   features: FeatureAccess;
   isGreen?: boolean;
   allowMatureContent?: boolean;
+  track?: any; // Tracker class from createContext
 }) {
   // Audit prompt before submitting to orchestrator (same as generateFromGraph)
   await auditPromptServer({
@@ -265,6 +271,7 @@ async function submitComicGeneration({
     userId: user.id,
     isGreen: !!isGreen,
     isModerator: user.isModerator,
+    track,
   });
 
   const versionId = versionIdOverride ?? modelConfig.versionId;
@@ -385,7 +392,7 @@ function sendComicPanelSignal(
     imageUrl?: string | null;
   }
 ) {
-  signalClient.send({ userId, target: SignalMessages.ComicPanelUpdate, data }).catch(() => {}); // Fire-and-forget
+  signalClient.send({ userId, target: SignalMessages.ComicPanelUpdate, data }).catch(() => null); // Fire-and-forget
 }
 
 // Middleware to check project ownership
@@ -892,6 +899,7 @@ async function createSinglePanel(args: {
       features: ctx.features,
       isGreen: ctx.features.isGreen,
       allowMatureContent: ctx.domain === 'green' ? false : undefined,
+      track: ctx.track,
     });
 
     const updated = await dbWrite.comicPanel.update({
@@ -1104,9 +1112,7 @@ export const comicsRouter = router({
         // Published (currently hidden) and Draft (will be hidden when
         // published) cases.
         let hiddenReason: 'tosViolation' | 'reviewPending' | null = null;
-        const readyPanels = chapter.panels.filter(
-          (p) => p.status === ComicPanelStatus.Ready
-        );
+        const readyPanels = chapter.panels.filter((p) => p.status === ComicPanelStatus.Ready);
         const hasTosImage = readyPanels.some((p) => p.image?.tosViolation === true);
         const hasReviewImage = readyPanels.some(
           (p) =>
@@ -1135,8 +1141,7 @@ export const comicsRouter = router({
       // chapter reads, followers, hides, tips. Same cache the public
       // listing uses, so a creator opening their workspace right after
       // publishing typically hits a warm Redis key.
-      const metrics =
-        (await comicMetricsCache.fetch(project.id))[project.id] ?? null;
+      const metrics = (await comicMetricsCache.fetch(project.id))[project.id] ?? null;
 
       const { chapters: _chapters, ...projectRest } = project;
       return {
@@ -1463,7 +1468,7 @@ export const comicsRouter = router({
       // sorts we fetch the ID order via `$queryRaw` and let findMany hydrate
       // with the full visibility WHERE intact. `Newest` stays on the pure
       // Prisma path.
-      let orderBy: any[] = [{ updatedAt: 'desc' }, { id: 'desc' }];
+      const orderBy: any[] = [{ updatedAt: 'desc' }, { id: 'desc' }];
       let prefilteredIds: number[] | null = null;
 
       // Prefiltered sorts also carry the rank_value back so we can build
@@ -1693,9 +1698,10 @@ export const comicsRouter = router({
       // subsequent pages are pure Redis. Fall back to the PG engagement
       // count for `followerCount` until the watcher has fully backfilled.
       const projectIds = projects.map((p) => p.id);
-      const metricsByProject = projectIds.length > 0
-        ? await comicMetricsCache.fetch(projectIds)
-        : ({} as Record<string, Awaited<ReturnType<typeof comicMetricsCache.fetch>>[string]>);
+      const metricsByProject =
+        projectIds.length > 0
+          ? await comicMetricsCache.fetch(projectIds)
+          : ({} as Record<string, Awaited<ReturnType<typeof comicMetricsCache.fetch>>[string]>);
 
       const items = projects.map((p) => {
         const readyPanelCount = p.chapters.reduce((sum, ch) => sum + ch._count.panels, 0);
@@ -1961,7 +1967,7 @@ export const comicsRouter = router({
           ch.earlyAccessEndsAt > now
       );
 
-      let accessMap = new Map<number, boolean>();
+      const accessMap = new Map<number, boolean>();
       if (eaChapters.length > 0 && !canViewDrafts) {
         const eaChapterIds = eaChapters.map((ch) => ch.id);
         const accessResults = await hasEntityAccess({
@@ -3157,6 +3163,7 @@ export const comicsRouter = router({
           features: ctx.features,
           isGreen: ctx.features.isGreen,
           allowMatureContent: ctx.domain === 'green' ? false : undefined,
+          track: ctx.track,
         });
 
         // Atomically set status to Generating and store workflow ID
@@ -3262,7 +3269,7 @@ export const comicsRouter = router({
       ingestImageById({ id: image.id }).catch((e) =>
         console.error(`Failed to ingest sketch edit image ${image.id}:`, e)
       );
-      updateComicNsfwLevels([panel.chapter.project.id]).catch(() => {});
+      updateComicNsfwLevels([panel.chapter.project.id]).catch(() => null);
 
       return updated;
     }),
@@ -3475,9 +3482,7 @@ export const comicsRouter = router({
       const hasLockedCandidate = persistedCandidates.some(
         (c) => c && (c as any).requiresUnlock === true
       );
-      const panelBlockedReason = (panel.metadata as any)?.blockedReason as
-        | string
-        | undefined;
+      const panelBlockedReason = (panel.metadata as any)?.blockedReason as string | undefined;
       if (
         !panel.workflowId ||
         panel.status === ComicPanelStatus.Ready ||
@@ -3583,8 +3588,11 @@ export const comicsRouter = router({
           // Per-index transient blurred preview URLs returned to the owner
           // through the poll response only.
           const blurredPreviews: Array<string | null> = [];
-          const { s3: s3Multi, bucket: multiBucket, backend: multiBackend } =
-            await getImageUploadBackend();
+          const {
+            s3: s3Multi,
+            bucket: multiBucket,
+            backend: multiBackend,
+          } = await getImageUploadBackend();
 
           for (let i = 0; i < rawOutputs.length; i++) {
             const candidateImg = rawOutputs[i];
@@ -3592,9 +3600,7 @@ export const comicsRouter = router({
             // picker can blur mature candidates by default. Without this,
             // mature outputs that aren't `blockedReason`'d (e.g. on red with
             // nsfwEnabled+allowMatureContent) flow to the picker uncensored.
-            const nsfwLevel = normalizeCandidateNsfwLevel(
-              (candidateImg as any)?.nsfwLevel
-            );
+            const nsfwLevel = normalizeCandidateNsfwLevel((candidateImg as any)?.nsfwLevel);
 
             // Locked candidate: marker only. The orchestrator MAY provide a
             // blurred preview URL (we forward it transiently in the response)
@@ -3628,8 +3634,8 @@ export const comicsRouter = router({
                 ...(typeof prev.nsfwLevel === 'number'
                   ? { nsfwLevel: prev.nsfwLevel }
                   : nsfwLevel != null
-                    ? { nsfwLevel }
-                    : {}),
+                  ? { nsfwLevel }
+                  : {}),
               });
               blurredPreviews.push(null);
               continue;
@@ -3687,12 +3693,8 @@ export const comicsRouter = router({
           // Idempotent persist: only write when the candidate set or status
           // actually changes. Subsequent polls just refresh the transient
           // preview URLs for any still-locked entries.
-          const metadataChanged =
-            JSON.stringify(previousByIndex) !== JSON.stringify(newCandidates);
-          if (
-            metadataChanged ||
-            panel.status !== ComicPanelStatus.AwaitingSelection
-          ) {
+          const metadataChanged = JSON.stringify(previousByIndex) !== JSON.stringify(newCandidates);
+          if (metadataChanged || panel.status !== ComicPanelStatus.AwaitingSelection) {
             await dbWrite.comicPanel.update({
               where: { id: panel.id },
               data: {
@@ -3744,8 +3746,8 @@ export const comicsRouter = router({
             blockedReason === 'siteRestricted'
               ? 'This generation produced mature content that cannot be viewed on this site.'
               : blockedReason === 'canUpgrade'
-                ? 'This generation produced mature content. Unlock with yellow Buzz to keep the result.'
-                : `Generation blocked: ${blockedReason}.`;
+              ? 'This generation produced mature content. Unlock with yellow Buzz to keep the result.'
+              : `Generation blocked: ${blockedReason}.`;
 
           if (
             panel.status !== ComicPanelStatus.RequireUnlock ||
@@ -4099,8 +4101,11 @@ export const comicsRouter = router({
         | { key: string; nsfwLevel?: number }
         | { requiresUnlock: true; blockedReason: string; nsfwLevel?: number }
       > = [];
-      const { s3: s3Multi, bucket: multiBucket, backend: multiBackend } =
-        await getImageUploadBackend();
+      const {
+        s3: s3Multi,
+        bucket: multiBucket,
+        backend: multiBackend,
+      } = await getImageUploadBackend();
 
       for (let i = 0; i < outputs.length; i++) {
         const out = outputs[i];
@@ -4113,8 +4118,8 @@ export const comicsRouter = router({
             ...(typeof prev.nsfwLevel === 'number'
               ? { nsfwLevel: prev.nsfwLevel }
               : slotNsfwLevel != null
-                ? { nsfwLevel: slotNsfwLevel }
-                : {}),
+              ? { nsfwLevel: slotNsfwLevel }
+              : {}),
           });
           continue;
         }
@@ -4243,11 +4248,7 @@ export const comicsRouter = router({
       // are markers without a URL — they must be unlocked first via
       // `unlockPanelGeneration`, which re-runs the poll and downloads the
       // now-clean URL into a real key.
-      if (
-        !candidates.some(
-          (c) => typeof c.key === 'string' && c.key === input.selectedImageKey
-        )
-      ) {
+      if (!candidates.some((c) => typeof c.key === 'string' && c.key === input.selectedImageKey)) {
         throw throwBadRequestError(
           'Selected image is not among the available (unlocked) candidates'
         );
@@ -4408,6 +4409,7 @@ export const comicsRouter = router({
         features: ctx.features,
         isGreen: ctx.features.isGreen,
         allowMatureContent: ctx.domain === 'green' ? false : undefined,
+        track: ctx.track,
       });
 
       return {
@@ -4461,6 +4463,7 @@ export const comicsRouter = router({
         features: ctx.features,
         isGreen: ctx.features.isGreen,
         allowMatureContent: ctx.domain === 'green' ? false : undefined,
+        track: ctx.track,
       });
 
       return {
@@ -5761,6 +5764,7 @@ export const comicsRouter = router({
           features: ctx.features,
           isGreen: ctx.features.isGreen,
           allowMatureContent: ctx.domain === 'green' ? false : undefined,
+          track: ctx.track,
         });
 
         const updated = await dbWrite.comicPanel.update({
@@ -5821,7 +5825,7 @@ export const comicsRouter = router({
         orderBy: { position: 'desc' },
         select: { position: true },
       });
-      let nextPosition = (lastPanel?.position ?? -1) + 1;
+      const nextPosition = (lastPanel?.position ?? -1) + 1;
 
       // Get all user's ready references (needed for generated panels)
       const allUserRefs = await dbRead.comicReference.findMany({
@@ -6045,6 +6049,7 @@ export const comicsRouter = router({
               features: ctx.features,
               isGreen: ctx.features.isGreen,
               allowMatureContent: ctx.domain === 'green' ? false : undefined,
+              track: ctx.track,
             });
 
             const updated = await dbWrite.comicPanel.update({
