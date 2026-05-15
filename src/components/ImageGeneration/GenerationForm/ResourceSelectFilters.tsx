@@ -189,9 +189,9 @@ export function ResourceSelectFiltersDropdown() {
           onClose={() => setOpened(false)}
           size="90%"
           position="bottom"
+          zIndex={400}
           styles={{
             content: {
-              zIndex: 400,
               height: 'auto',
               maxHeight: 'calc(100dvh - var(--header-height))',
               overflowY: 'auto',
