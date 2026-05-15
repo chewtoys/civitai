@@ -53,9 +53,15 @@ class FreshdeskCaller extends HttpCaller {
   }
 
   async closeAsSpam(ticketId: number) {
-    return this.put<FreshdeskTicket>(`/tickets/${ticketId}`, {
-      payload: { status: 5, spam: true },
+    // Freshdesk API v2 has no `spam` field on the ticket update endpoint and no dedicated
+    // "mark as spam" route. Emulate the UI action: tag "spam", close, then trash.
+    const ticket = await this.getTicket(ticketId);
+    const existingTags = ticket.ok && ticket.data ? ticket.data.tags ?? [] : [];
+    const tags = Array.from(new Set([...existingTags, 'spam']));
+    await this.put<FreshdeskTicket>(`/tickets/${ticketId}`, {
+      payload: { status: 5, tags },
     });
+    return this.delete(`/tickets/${ticketId}`);
   }
 
   async searchTickets(query: string) {
@@ -142,7 +148,6 @@ export type FreshdeskTicketUpdate = {
   group_id?: number;
   responder_id?: number;
   custom_fields?: Record<string, unknown>;
-  spam?: boolean;
 };
 
 export type FreshdeskConversation = {

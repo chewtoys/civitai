@@ -188,9 +188,7 @@ async function bulkInsertMetrics<T extends readonly string[]>(
     }
     if (offenders.length > 0) {
       log(
-        `⚠️  out-of-range ${options.logName} (${offenders.length}) batch ${i + 1}/${
-          tasks.length
-        }:`,
+        `⚠️  out-of-range ${options.logName} (${offenders.length}) batch ${i + 1}/${tasks.length}:`,
         JSON.stringify(offenders)
       );
     }
@@ -309,15 +307,20 @@ async function getDownloadTasks(ctx: ModelMetricContext) {
 const injectedVersionIds = allInjectableResourceIds;
 
 async function getGenerationTasks(ctx: ModelMetricContext) {
-  // Guard against corrupt rows in daily_resource_generation_counts: future
-  // dates, ids <= 0, and counts that overflow PG INT4 (2_147_483_647).
+  // Pull versions touched since lastUpdate from `orchestration.jobs` directly.
+  // The `daily_resource_generation_counts` MV is bucketed by Date, so filtering
+  // it by `toDate(lastUpdate)` returned every version generated since 00:00 UTC
+  // — growing linearly through the day and resetting at midnight UTC. That
+  // produced a daily ramp of search-index update volume into Meili.
   const generated = await ctx.ch.$query<{ modelVersionId: number }>`
     SELECT DISTINCT modelVersionId
-    FROM orchestration.daily_resource_generation_counts
-    WHERE createdDate >= toDate(${ctx.lastUpdate})
-      AND createdDate <= today()
-      AND modelVersionId > 0
-      AND count <= 2147483647
+    FROM (
+      SELECT arrayJoin(resourcesUsed) AS modelVersionId
+      FROM orchestration.jobs
+      WHERE createdAt >= ${ctx.lastUpdate}
+        AND length(resourcesUsed) > 0
+    )
+    WHERE modelVersionId > 0
   `;
   const affected = generated
     .map((x) => x.modelVersionId)

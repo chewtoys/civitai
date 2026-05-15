@@ -179,6 +179,11 @@ export function CommentsProvider({
     entityType,
   });
 
+  // Notification deep-links pass ?highlight=<commentId>. Forward it to the server so the
+  // target comment is included in the first page even when it would otherwise be past the
+  // cursor — otherwise the highlight scroll never fires.
+  const highlighted = parseNumericString(router.query.highlight);
+
   // Use infinite query with cursor-based pagination for comments
   const { data, isLoading, isRefetching, fetchNextPage, hasNextPage, isFetchingNextPage } =
     trpc.commentv2.getInfinite.useInfiniteQuery(
@@ -188,6 +193,7 @@ export function CommentsProvider({
         limit: initialLimit,
         sort,
         hidden: hidden ?? false,
+        targetCommentId: highlighted,
       },
       {
         enabled: initialCount === undefined || initialCount > 0,
@@ -195,13 +201,30 @@ export function CommentsProvider({
       }
     );
 
-  // Flatten all pages into single comments array
-  const comments = useMemo(() => data?.pages.flatMap((page) => page?.comments ?? []) ?? [], [data]);
+  // Flatten pages, prepending the deep-link target (when present) and deduping by id so a
+  // later cursor page that naturally contains the target doesn't render it twice.
+  const comments = useMemo(() => {
+    if (!data) return [] as CommentV2Model[];
+    const seen = new Set<number>();
+    const result: CommentV2Model[] = [];
+    const target = data.pages[0]?.targetComment;
+    if (target) {
+      seen.add(target.id);
+      result.push(target);
+    }
+    for (const page of data.pages) {
+      for (const c of page?.comments ?? []) {
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        result.push(c);
+      }
+    }
+    return result;
+  }, [data]);
 
   // Get thread metadata from dedicated query (includes locked status and hiddenCount)
   const threadMeta = threadDetails;
   const hiddenCount = threadMeta?.hiddenCount ?? 0;
-  const highlighted = parseNumericString(router.query.highlight);
 
   const createdComments = useMemo(
     () => created.filter((x) => !comments?.some((comment) => comment.id === x.id)),

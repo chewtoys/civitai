@@ -193,10 +193,12 @@ async function resolveScanContent(
       negativePrompt?: string | null;
     };
     // Per-label modelReason — used by the focused review UI in place of
-    // the column that used to live in ClickHouse.
+    // the column that used to live in ClickHouse. Key by lowercase label to
+    // match the canonical form stored in ClickHouse (writer lowercases on
+    // insert), so page lookups by `item.label` resolve.
     const labelReasons: Record<string, string> = {};
     for (const r of step.output?.results ?? []) {
-      if (r.modelReason) labelReasons[r.label] = r.modelReason;
+      if (r.modelReason) labelReasons[r.label.toLowerCase()] = r.modelReason;
     }
     if (item.scanner === 'xguard_text') {
       const inputKeys = Object.keys(input ?? {});

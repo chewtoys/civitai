@@ -352,6 +352,7 @@ const SectionBidInfo = ({
   slugHref?: AuctionBaseData;
 }) => {
   const mobile = useIsMobile({ breakpoint: 'md' });
+  const features = useFeatureFlags();
 
   return (
     <Stack
@@ -375,6 +376,7 @@ const SectionBidInfo = ({
         <Tooltip label={currencyTooltip} disabled={!currencyTooltip}>
           <CurrencyBadge
             currency={Currency.BUZZ}
+            type={features.isGreen ? 'green' : 'yellow'}
             unitAmount={amount}
             displayCurrency={false}
             radius="sm"

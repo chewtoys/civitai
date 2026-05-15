@@ -986,7 +986,7 @@ export const ecosystemSettings: EcosystemSettings[] = [
   {
     ecosystemId: ECO.Anima,
     defaults: {
-      model: { id: 2836417 },
+      model: { id: 2945208 },
     },
   },
   {

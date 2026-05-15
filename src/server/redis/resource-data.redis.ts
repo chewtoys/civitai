@@ -30,6 +30,7 @@ export const resourceDataCache = createCachedArray({
          LIMIT 1) AS "vaeId",
         mv."status",
         mv."usageControl",
+        mv."licensingFee",
         (CASE WHEN mv."availability" = 'EarlyAccess' AND mv."earlyAccessEndsAt" >= NOW() THEN mv."earlyAccessConfig" END) as "earlyAccessConfig",
         gc."covered",
         FALSE AS "hasAccess",
@@ -82,6 +83,7 @@ export type GenerationResourceDataModel = {
   covered: boolean | null;
   status: ModelStatus;
   usageControl?: string;
+  licensingFee: number | null;
   hasAccess: boolean;
   epochNumber?: number;
   model: {

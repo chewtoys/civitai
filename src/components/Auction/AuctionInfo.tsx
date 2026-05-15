@@ -705,7 +705,13 @@ export const AuctionInfo = () => {
                     // label="Buzz"
                     // labelProps={{ sx: { fontSize: 12, fontWeight: 590 } }}
                     placeholder="Enter Buzz..."
-                    leftSection={<CurrencyIcon currency={Currency.BUZZ} size={18} />}
+                    leftSection={
+                      <CurrencyIcon
+                        currency={Currency.BUZZ}
+                        type={features.isGreen ? 'green' : 'yellow'}
+                        size={18}
+                      />
+                    }
                     value={bidPrice}
                     min={1}
                     max={buzzConstants.maxChargeAmount}

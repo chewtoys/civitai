@@ -28,7 +28,7 @@ import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants'
 // =============================================================================
 
 /** Anima default model version ID */
-const animaVersionId = 2836417;
+const animaVersionId = 2945208;
 
 // =============================================================================
 // Sampler & Schedule Options
@@ -74,7 +74,7 @@ export const animaGraph = new DataGraph<{ ecosystem: string; workflow: string },
   .node('seed', seedNode())
   .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node('cfgScale', sliderNode({ min: 1, max: 20, defaultValue: 7, step: 0.5 }))
-  .node('steps', sliderNode({ min: 10, max: 50, defaultValue: 25 }))
+  .node('steps', sliderNode({ min: 8, max: 50, defaultValue: 25 }))
   .node(
     'sampler',
     samplerNode({ options: animaSamplers, defaultValue: 'euler_a', presets: animaSamplerPresets })
