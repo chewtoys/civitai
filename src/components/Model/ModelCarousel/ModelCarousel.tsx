@@ -1,6 +1,8 @@
 import { Card, Center, Indicator, Loader, Stack } from '@mantine/core';
 import { IconBrush, IconInfoCircle } from '@tabler/icons-react';
 import { BrowsingLevelProvider } from '~/components/BrowsingLevel/BrowsingLevelProvider';
+import { HiddenPreferencesProvider } from '~/components/HiddenPreferences/HiddenPreferencesProvider';
+import { publicBrowsingLevelsFlag } from '~/shared/constants/browsingLevel.constants';
 import HoverActionButton from '~/components/Cards/components/HoverActionButton';
 import { RoutedDialogLink } from '~/components/Dialog/RoutedDialogLink';
 import { ImageContextMenu } from '~/components/Image/ContextMenu/ImageContextMenu';
@@ -26,9 +28,15 @@ import clsx from 'clsx';
 
 export function ModelCarousel(props: Props) {
   return (
-    <BrowsingLevelProvider>
+    <BrowsingLevelProvider forcedBrowsingLevel={props.minor ? publicBrowsingLevelsFlag : undefined}>
       <BrowsingSettingsAddonsProvider>
-        <ModelCarouselContent {...props} />
+        {props.minor ? (
+          <HiddenPreferencesProvider>
+            <ModelCarouselContent {...props} />
+          </HiddenPreferencesProvider>
+        ) : (
+          <ModelCarouselContent {...props} />
+        )}
       </BrowsingSettingsAddonsProvider>
     </BrowsingLevelProvider>
   );
@@ -191,4 +199,5 @@ type Props = {
   modelId: number;
   modelUserId: number;
   limit?: number;
+  minor?: boolean;
 };

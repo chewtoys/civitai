@@ -67,8 +67,11 @@ export const BrowsingSettingsAddonsProvider = ({ children }: { children: React.R
           }
 
           if (apply) {
-            acc.disablePoi = elem.disablePoi || acc.disablePoi;
-            acc.disableMinor = elem.disableMinor || acc.disableMinor;
+            // booleans: last-explicit-wins. arrays: accumulate. A later rule
+            // setting disablePoi/disableMinor=false cannot undo excludedTagIds
+            // pushed by an earlier rule — scope rules narrowly instead.
+            if (elem.disablePoi !== undefined) acc.disablePoi = elem.disablePoi;
+            if (elem.disableMinor !== undefined) acc.disableMinor = elem.disableMinor;
             acc.excludedTagIds.push(...(elem.excludedTagIds ?? []));
             acc.excludedFooterLinks.push(...(elem.excludedFooterLinks ?? []));
             acc.generationDefaultValues = {
