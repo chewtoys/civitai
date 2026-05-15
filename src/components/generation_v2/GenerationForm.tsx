@@ -947,7 +947,7 @@ export function GenerationForm() {
                         const triggerWords = value as string[] | undefined;
                         if (!triggerWords || triggerWords.length === 0) return null;
                         return (
-                          <div className="mb-1 flex flex-col gap-2">
+                          <div className="mb-1 flex flex-col gap-2 px-2">
                             <Divider />
                             <Text c="dimmed" className="text-xs font-semibold">
                               Trigger words

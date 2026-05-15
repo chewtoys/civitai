@@ -44,31 +44,19 @@ function scheduleAudit(categoryId: number): void {
 const DEFAULT_USER_SET_NAME = 'My snippets';
 
 /**
- * Find the caller's User-kind `WildcardSet` and return its id, lazy-creating
- * the row if the user doesn't have one yet. The set itself is keyed only on
- * `(kind = 'User', ownerUserId)`; there's no schema-level unique constraint
- * on that pair, so concurrent first-time callers can both fall through to
- * the create — wrapping callers in a transaction lets the second-in line
- * see the first's row in its own `findFirst` re-check and avoid duplicate
- * inserts. Returns just the id; callers re-query for whatever payload
- * shape they need.
+ * Find the caller's User-kind `WildcardSet` and return its id, or `null` if
+ * the user doesn't have one. v1 deliberately does NOT lazy-create here —
+ * "Save to my snippets" and the auto-created "My snippets" set are deferred
+ * post-v1 (System-kind sets imported from Wildcards models are the only
+ * supported path in v1). Callers that need a set throw a friendly error
+ * when this returns null.
  */
-async function getOrCreateUserSetId(tx: Prisma.TransactionClient, userId: number): Promise<number> {
+async function findUserSetId(tx: Prisma.TransactionClient, userId: number): Promise<number | null> {
   const existing = await tx.wildcardSet.findFirst({
     where: { kind: 'User', ownerUserId: userId },
     select: { id: true },
   });
-  if (existing) return existing.id;
-  const created = await tx.wildcardSet.create({
-    data: {
-      kind: 'User',
-      ownerUserId: userId,
-      name: DEFAULT_USER_SET_NAME,
-      auditStatus: 'Pending',
-    },
-    select: { id: true },
-  });
-  return created.id;
+  return existing?.id ?? null;
 }
 
 const wildcardSetSelect = {
@@ -170,21 +158,14 @@ export async function getWildcardSets({
 }
 
 /**
- * Return the caller's User-kind WildcardSet, lazy-creating one on first call
- * if the user doesn't have one yet. Per the v1 spec ([prompt-snippets-v1.md]
- * §"On form mount"): "Fetch the user's own User-kind set ID via
- * `getMyUserWildcardSet()` (lazy-creates on first call)." A returning user
- * always sees the same row; a first-time user gets an empty "My snippets"
- * row created right here.
- *
- * Lazy-create is wrapped in a write transaction with a re-check so two
- * concurrent first-time fetches from the same user converge on a single
- * row (there's no `(kind, ownerUserId)` unique constraint at the schema
- * level, so this needs to be enforced in app code). Subsequent calls
- * short-circuit on the cheap `dbRead.findFirst` before touching dbWrite.
+ * Return the caller's User-kind WildcardSet, or `null` if they don't have
+ * one. v1 doesn't lazy-create — User-kind sets ("Save to my snippets") are
+ * deferred post-v1, so a first-time form mount always sees `null` here and
+ * shouldn't render any User-kind affordance. The form hook handles `null`
+ * by surfacing only System-kind sets the user has explicitly added.
  */
 export async function getMyUserWildcardSet({ userId }: { userId: number }) {
-  const findOptions = {
+  return dbRead.wildcardSet.findFirst({
     where: { kind: 'User' as const, ownerUserId: userId },
     select: {
       ...wildcardSetSelect,
@@ -195,18 +176,6 @@ export async function getMyUserWildcardSet({ userId }: { userId: number }) {
         orderBy: [{ displayOrder: 'asc' as const }, { id: 'asc' as const }],
       },
     },
-  };
-
-  // Hot path: existing row, no write needed.
-  const existing = await dbRead.wildcardSet.findFirst(findOptions);
-  if (existing) return existing;
-
-  // First-time call: lazy-create inside a transaction so two concurrent
-  // first-time callers converge on a single row, then re-read with the
-  // full select shape so the response matches the already-exists branch.
-  return dbWrite.$transaction(async (tx) => {
-    await getOrCreateUserSetId(tx, userId);
-    return tx.wildcardSet.findFirst(findOptions);
   });
 }
 
@@ -228,7 +197,15 @@ export async function saveUserSnippet({
   input: SaveUserSnippetInput;
 }) {
   const result = await dbWrite.$transaction(async (tx) => {
-    const setId = await getOrCreateUserSetId(tx, userId);
+    const setId = await findUserSetId(tx, userId);
+    if (setId === null) {
+      // v1 deliberately doesn't lazy-create User-kind sets. "Save to my
+      // snippets" is deferred post-v1, so this path should be unreachable
+      // from the v1 UI — throwing is the safety net for a stale client.
+      throw throwBadRequestError(
+        'Saving personal snippets is not available yet — only imported wildcard sets are supported in this release.'
+      );
+    }
 
     // Find or create the category, then append the value if not present.
     const existingCategory = await tx.wildcardSetCategory.findUnique({

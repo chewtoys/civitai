@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import type { SnippetCategoryItem } from './SnippetCategoryList';
 import { trpc } from '~/utils/trpc';
 import { useGraph, useGraphSubscription } from '~/libs/data-graph/react/DataGraphProvider';
@@ -86,11 +86,43 @@ export function useSnippetCategories() {
   // either the very first fetch is in flight, or the user just added a set
   // and we're waiting on the refetch. Rendered as loading placeholders in
   // the snippet sources strip.
+  //
+  // Once the current query key has resolved (`isPreviousData === false`),
+  // any allIds missing from the response were silently dropped by the
+  // server (unauthorized, deleted, never existed) — not loading. The
+  // effect below prunes those out of the graph's `wildcardSetIds` so this
+  // hook converges to `[]` instead of leaving permanent skeleton chips.
   const loadingSetIds = useMemo(() => {
-    const data = setsQuery.data ?? [];
-    const have = new Set(data.map((s) => s.id));
+    if (setsQuery.data === undefined) return allIds;
+    if (!setsQuery.isPreviousData) return [];
+    const have = new Set(setsQuery.data.map((s) => s.id));
     return allIds.filter((id) => !have.has(id));
-  }, [setsQuery.data, allIds]);
+  }, [setsQuery.data, setsQuery.isPreviousData, allIds]);
+
+  // After the current query resolves (not previous-data), drop any
+  // wildcardSetIds the server didn't return. They're either unauthorized,
+  // deleted, or never existed — keeping them in graph state would (a)
+  // re-trigger the same dropped fetch every time `allIds` recomputes and
+  // (b) leave permanent skeleton chips in the sources strip. ownSetId is
+  // intentionally excluded from the prune — it's tracked separately via
+  // `getMyUserSet` and isn't carried in `wildcardSetIds`.
+  useEffect(() => {
+    if (setsQuery.data === undefined || setsQuery.isPreviousData) return;
+    if (wildcardSetIds.length === 0) return;
+    const returned = new Set(setsQuery.data.map((s) => s.id));
+    const orphans = wildcardSetIds.filter((id) => !returned.has(id));
+    if (orphans.length === 0) return;
+    const snap = graph.getSnapshot() as { snippets?: SnippetsNodeValue };
+    const current = snap.snippets;
+    if (!current) return;
+    const orphanSet = new Set(orphans);
+    graph.set({
+      snippets: {
+        ...current,
+        wildcardSetIds: current.wildcardSetIds.filter((id) => !orphanSet.has(id)),
+      },
+    } as Parameters<typeof graph.set>[0]);
+  }, [setsQuery.data, setsQuery.isPreviousData, wildcardSetIds, graph]);
 
   const categories = useMemo<SnippetCategoryItem[]>(() => {
     if (loadedSets.length === 0) return [];

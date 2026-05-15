@@ -52,7 +52,7 @@ Three new tables, three enums, one CHECK constraint, citext extension. See [prom
 - **The chip is always minimal in v1** — `#character`, no verbose form, no popup, no drawer. Just the reference token.
 - **Snippets node in the generation graph.** Carries `wildcardSetIds`, `mode`, `batchCount`, `targets`, optional `seed`. Each editor node has a dependency on the snippets node and reads its slice (`snippets.targets[<editorNodeName>]`) to render chips.
 - **On form mount:**
-  1. Fetch the user's own User-kind set ID via `getMyUserWildcardSet()` (lazy-creates on first call). Auto-prepend to `wildcardSetIds`.
+  1. Fetch the user's own User-kind set ID via `getMyUserWildcardSet()`. Returns `null` in v1 (User-kind sets are deferred — see "Deferred from v1" below). When non-null, auto-prepend to `wildcardSetIds`.
   2. Read additional `wildcardSetIds` from localStorage (set IDs added via "create" clicks on wildcard model pages).
   3. Fetch full set details via `getWildcardSets({ ids })`. Server filters out IDs the user can't access (e.g. invalid User-kind ownership). Pruned IDs silently drop from form state.
   4. Render any chip in the prompts referencing a category that no longer resolves with a **red badge state** ("orphaned" — source set removed or category gone).
@@ -228,6 +228,7 @@ Independently shippable. Backend phases first.
 
 ## 4. Out of scope for v1 (deferred to v2 / v3)
 
+- **User-kind `WildcardSet` creation flow ("Save to my snippets").** Originally Phase 3 above, but deferred from v1. The schema, service, and tRPC endpoints all exist and accept User-kind data, but the v1 UI doesn't expose any affordance to create one and `getMyUserWildcardSet()` no longer lazy-creates on first call (it returns `null`). `saveUserSnippet` is gated behind a friendly error so a stale client can't reach it accidentally. Re-enabling the flow post-v1 is a UI-only change plus restoring the lazy-create helper. The rationale for deferral: the v1 form was getting stuck in a perpetual loading state whenever the only loaded set was the auto-created (empty) User-kind one, since the empty set provides no chip targets and the UI had no clean "no content yet" affordance.
 - **Nested wildcard resolution.** Values containing `#name` / `__name__` references that should recursively expand. Currently substituted literally. **When this lands (v2/v3), both `#name` and `__name__` syntaxes will be supported in nested positions** — `#name` for content authored in our system, `__name__` for compatibility with imported wildcard models that ship with the older Dynamic Prompts convention. See [prompt-snippets-nested-resolution.md](./prompt-snippets-nested-resolution.md) for the design.
 - **Per-value selection UI** — drawer, popup, or otherwise. The `in`/`ex` shape exists in the schema but the picker UI to populate them is post-v1. v1 always uses full pools.
 - **Mobile R2 + desktop V8 picker designs.** These represent the post-v1 picker UX (multi-source grouped popover, slim bottom drawer on mobile). The v1 chip is minimal — no popover, no drawer, no progressive disclosure.
