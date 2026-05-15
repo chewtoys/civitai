@@ -34,6 +34,7 @@ const WILDCARD_AUDIT_FAIL_LABELS = [
   'menstruation',
   'bestiality',
 ] as const;
+const FAIL_LABEL_SET = new Set<string>(WILDCARD_AUDIT_FAIL_LABELS);
 
 // XGuard label(s) that classify content severity. Restricted to `nsfw` for
 // now — the fine-grained `pg/pg13/r/x/xxx` evaluators aren't well-tuned for
@@ -47,6 +48,7 @@ const WILDCARD_AUDIT_FAIL_LABELS = [
 // "X-only" user wouldn't — the conservative default when severity is
 // genuinely unknown).
 const WILDCARD_AUDIT_LEVEL_LABELS = ['nsfw', 'r', 'x', 'xxx'] as const;
+const LEVEL_LABEL_SET = new Set<string>(WILDCARD_AUDIT_LEVEL_LABELS);
 
 // Bit assigned when a level label triggers, keyed by the XGuard label name.
 // When tuning improves and we re-introduce pg/pg13/r/x/xxx, fall back to
@@ -364,19 +366,19 @@ export async function applyWildcardCategoryAuditSuccess(opts: {
   // the trigger check makes the code resilient to results that ship without
   // the explicit `triggered` flag set.
   const results = output.results ?? [];
-  const failLabelSet = new Set<string>(WILDCARD_AUDIT_FAIL_LABELS);
-  const levelLabelSet = new Set<string>(WILDCARD_AUDIT_LEVEL_LABELS);
   const isTriggered = (r: (typeof results)[number]) =>
     r.triggered || (typeof r.score === 'number' && r.score >= r.threshold);
 
-  const triggeredFailLabels = results
-    .filter((r) => failLabelSet.has(r.label) && isTriggered(r))
-    .map((r) => r.label);
+  // Cache the fail-result subset since we use it twice — once to derive the
+  // triggered labels (for the audit note) and again to extract matched terms
+  // (for the forensic metadata on Dirty rows).
+  const triggeredFailResults = results.filter((r) => FAIL_LABEL_SET.has(r.label) && isTriggered(r));
+  const triggeredFailLabels = triggeredFailResults.map((r) => r.label);
   const triggeredLevelLabels = results
-    .filter((r) => levelLabelSet.has(r.label) && isTriggered(r))
+    .filter((r) => LEVEL_LABEL_SET.has(r.label) && isTriggered(r))
     .map((r) => r.label);
 
-  const blocked = triggeredFailLabels.length > 0;
+  const blocked = triggeredFailResults.length > 0;
 
   // OR the triggered level labels into a bitwise nsfwLevel. PG fallback when
   // nothing triggered — purely textual content with no NSFW signal sits at
@@ -395,8 +397,7 @@ export async function applyWildcardCategoryAuditSuccess(opts: {
   const triggeredTerms = blocked
     ? Array.from(
         new Set(
-          results
-            .filter((r) => failLabelSet.has(r.label) && isTriggered(r))
+          triggeredFailResults
             .flatMap((r) => r.matchedTerms?.text ?? [])
             .filter((t): t is string => typeof t === 'string' && t.length > 0)
         )

@@ -43,6 +43,34 @@ function scheduleAudit(categoryId: number): void {
 
 const DEFAULT_USER_SET_NAME = 'My snippets';
 
+/**
+ * Find the caller's User-kind `WildcardSet` and return its id, lazy-creating
+ * the row if the user doesn't have one yet. The set itself is keyed only on
+ * `(kind = 'User', ownerUserId)`; there's no schema-level unique constraint
+ * on that pair, so concurrent first-time callers can both fall through to
+ * the create — wrapping callers in a transaction lets the second-in line
+ * see the first's row in its own `findFirst` re-check and avoid duplicate
+ * inserts. Returns just the id; callers re-query for whatever payload
+ * shape they need.
+ */
+async function getOrCreateUserSetId(tx: Prisma.TransactionClient, userId: number): Promise<number> {
+  const existing = await tx.wildcardSet.findFirst({
+    where: { kind: 'User', ownerUserId: userId },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+  const created = await tx.wildcardSet.create({
+    data: {
+      kind: 'User',
+      ownerUserId: userId,
+      name: DEFAULT_USER_SET_NAME,
+      auditStatus: 'Pending',
+    },
+    select: { id: true },
+  });
+  return created.id;
+}
+
 const wildcardSetSelect = {
   id: true,
   kind: true,
@@ -173,21 +201,11 @@ export async function getMyUserWildcardSet({ userId }: { userId: number }) {
   const existing = await dbRead.wildcardSet.findFirst(findOptions);
   if (existing) return existing;
 
-  // First-time call: create the default set, then re-read with the full
-  // select shape so the response matches the already-exists branch. The
-  // transaction re-checks for a row first to converge on a single set when
-  // two concurrent requests both fall through to the create path.
+  // First-time call: lazy-create inside a transaction so two concurrent
+  // first-time callers converge on a single row, then re-read with the
+  // full select shape so the response matches the already-exists branch.
   return dbWrite.$transaction(async (tx) => {
-    const racedExisting = await tx.wildcardSet.findFirst(findOptions);
-    if (racedExisting) return racedExisting;
-    await tx.wildcardSet.create({
-      data: {
-        kind: 'User',
-        ownerUserId: userId,
-        name: DEFAULT_USER_SET_NAME,
-        auditStatus: 'Pending',
-      },
-    });
+    await getOrCreateUserSetId(tx, userId);
     return tx.wildcardSet.findFirst(findOptions);
   });
 }
@@ -210,37 +228,22 @@ export async function saveUserSnippet({
   input: SaveUserSnippetInput;
 }) {
   const result = await dbWrite.$transaction(async (tx) => {
-    // 1. Find or create the user's default User-kind set.
-    let set = await tx.wildcardSet.findFirst({
-      where: { kind: 'User', ownerUserId: userId },
-      select: { id: true },
-    });
-    if (!set) {
-      set = await tx.wildcardSet.create({
-        data: {
-          kind: 'User',
-          ownerUserId: userId,
-          name: DEFAULT_USER_SET_NAME,
-          auditStatus: 'Pending',
-        },
-        select: { id: true },
-      });
-    }
+    const setId = await getOrCreateUserSetId(tx, userId);
 
-    // 2. Find or create the category, then append the value if not present.
+    // Find or create the category, then append the value if not present.
     const existingCategory = await tx.wildcardSetCategory.findUnique({
-      where: { wildcardSetId_name: { wildcardSetId: set.id, name: input.category } },
+      where: { wildcardSetId_name: { wildcardSetId: setId, name: input.category } },
       select: { id: true, values: true, valueCount: true },
     });
 
     if (!existingCategory) {
       const maxDisplayOrder = await tx.wildcardSetCategory.aggregate({
-        where: { wildcardSetId: set.id },
+        where: { wildcardSetId: setId },
         _max: { displayOrder: true },
       });
       const created = await tx.wildcardSetCategory.create({
         data: {
-          wildcardSetId: set.id,
+          wildcardSetId: setId,
           name: input.category,
           values: [input.value],
           valueCount: 1,
@@ -250,7 +253,7 @@ export async function saveUserSnippet({
         },
         select: wildcardSetCategorySelect,
       });
-      return { set, category: created, added: true };
+      return { set: { id: setId }, category: created, added: true };
     }
 
     if (existingCategory.values.includes(input.value)) {
@@ -259,7 +262,7 @@ export async function saveUserSnippet({
         where: { id: existingCategory.id },
         select: wildcardSetCategorySelect,
       });
-      return { set, category, added: false };
+      return { set: { id: setId }, category, added: false };
     }
 
     const updated = await tx.wildcardSetCategory.update({
@@ -271,7 +274,7 @@ export async function saveUserSnippet({
       },
       select: wildcardSetCategorySelect,
     });
-    return { set, category: updated, added: true };
+    return { setId, category: updated, added: true };
   });
 
   // Fire audit ONLY when the value was actually added — `added: false` means
