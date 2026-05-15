@@ -304,6 +304,14 @@ export function snippetsNode() {
  * No target list is needed — each text editor registers itself as a target
  * via an effect from `createTextEditorGraph` when this graph is also merged.
  *
+ * Gated behind the `wildcards` feature flag: when the flag is off, the node
+ * is hidden (`when: false`) and never appears in validated workflow data.
+ * Downstream consumers degrade cleanly — the editor's snippets-registration
+ * effect short-circuits on missing ctx, the orchestrator's
+ * `getSnippetOverlays` returns the trivial `[{}]` overlay (no fan-out),
+ * and the form's autocomplete-on-`#` simply never fires because there's no
+ * snippets meta to drive it.
+ *
  * Workflows without any snippet-eligible text editor (vid2vid:upscale,
  * img2img:remove-background, etc.) deliberately omit this merge so the
  * validated workflow data doesn't carry an unused snippets node.
@@ -318,7 +326,14 @@ export function snippetsNode() {
 // merge-side intersection to collapse to `never`) lets it merge cleanly into
 // any parent graph regardless of that parent's own keys.
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export const snippetsGraph = new DataGraph<{}, GenerationCtx>().node('snippets', snippetsNode());
+export const snippetsGraph = new DataGraph<{}, GenerationCtx>().node(
+  'snippets',
+  (_ctx, ext) => ({
+    ...snippetsNode(),
+    when: !!ext.flags?.wildcards,
+  }),
+  []
+);
 
 // =============================================================================
 // Select Node Builders

@@ -794,11 +794,25 @@ export async function getResourceData(
     generation = false,
     withPreview = false,
     sfwOnly = false,
+    wildcardsEnabled = false,
   }: {
     user?: { id?: number; isModerator?: boolean };
     generation?: boolean;
     withPreview?: boolean;
     sfwOnly?: boolean;
+    /**
+     * Mirrors the `wildcards` Flipt flag. When false (default), Wildcards-
+     * type ModelVersions skip the `wildcardSetId` stamp + `canGenerate`
+     * override below — they stay at the default `canGenerate: false` that
+     * `getResourceCanGenerate` returns for non-generation baseModels.
+     * Callers serving snippets-aware surfaces (the model detail page's
+     * Generate button, the form's resource hydration, the orchestrator's
+     * submit-time validation) pass `features.wildcards`; everyone else
+     * leaves it at false. Same flag the snippets graph node gates on, so
+     * the user-visible "can use this wildcard" signal stays consistent
+     * with whether the snippets node actually exists in the form's graph.
+     */
+    wildcardsEnabled?: boolean;
   } = {}
 ): Promise<(GenerationResource & { air: string })[]> {
   if (!versionIds.length) return [];
@@ -1061,7 +1075,15 @@ export async function getResourceData(
     : resources;
 
   // Wildcards-type entries are NOT generation resources — they're handles to
-  // System-kind WildcardSets. We:
+  // System-kind WildcardSets. Gated on the `wildcards` Flipt flag (passed in
+  // via `wildcardsEnabled`): when off, skip the stamping + canGenerate
+  // override entirely so a wildcard model's Generate button stays disabled,
+  // the orchestrator's canGenerate check rejects any Wildcards entry that
+  // somehow leaked into a submission, and the rest of the platform behaves
+  // as if the feature doesn't exist. The same flag governs the snippets
+  // graph node, keeping UI and validation aligned.
+  //
+  // When the flag IS on:
   //   - Stamp `wildcardSetId` so consumers (form hydration when loading a
   //     preset/remix; the "Generate" button on a Wildcards model page) can
   //     route the id into `snippets.wildcardSetIds`.
@@ -1076,7 +1098,9 @@ export async function getResourceData(
   // No category sub-query needed — a single-table bitmask check decides it.
   // See docs/features/prompt-snippets-v1.md §"Wildcards models vs generation
   // resources".
-  const wildcardVersionIds = filtered.filter((r) => r.model.type === 'Wildcards').map((r) => r.id);
+  const wildcardVersionIds = wildcardsEnabled
+    ? filtered.filter((r) => r.model.type === 'Wildcards').map((r) => r.id)
+    : [];
   if (wildcardVersionIds.length > 0) {
     const wildcardSets = await dbRead.wildcardSet.findMany({
       where: {

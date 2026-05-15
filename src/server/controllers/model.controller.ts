@@ -234,6 +234,7 @@ export const getModelHandler = async ({
       ) ?? [];
     const generationResources = await getResourceData(regularResourceIds, {
       user: ctx?.user,
+      wildcardsEnabled: ctx?.features.wildcards,
     });
 
     // Batch-fetch file data for linked components to enrich sizeKB/fileName at read time

@@ -80,6 +80,14 @@ export type GenerationContext = {
   experimental?: boolean;
   allowMatureContent?: boolean;
   isGreen?: boolean;
+  /**
+   * Mirrors `ctx.features.wildcards`. Routed through from the tRPC layer so
+   * the orchestrator can gate the Wildcards-resource `canGenerate` override
+   * inside `getResourceData`. When false, Wildcards entries that leak into
+   * `resources[]` fail validation cleanly instead of reaching a handler
+   * that doesn't know how to consume them.
+   */
+  wildcardsEnabled?: boolean;
   currencies?: BuzzSpendType[];
   isModerator?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -308,7 +316,8 @@ type ResourceValidationResult = {
  */
 async function validateAndEnrichResources(
   resourceRefs: ResourceRef[],
-  user?: { id?: number; isModerator?: boolean }
+  user?: { id?: number; isModerator?: boolean },
+  wildcardsEnabled = false
 ): Promise<ResourceValidationResult> {
   if (resourceRefs.length === 0) {
     return {
@@ -318,7 +327,7 @@ async function validateAndEnrichResources(
     };
   }
 
-  const resources = await getResourceData(resourceRefs, { user });
+  const resources = await getResourceData(resourceRefs, { user, wildcardsEnabled });
 
   // Check for private/epoch resources requiring subscription
   const hasPrivateOrEpoch = resources.some(
@@ -795,6 +804,7 @@ export async function createWorkflowStepsFromGraph({
   sourceMetadataMap,
   remixOfId,
   isGreen,
+  wildcardsEnabled = false,
 }: {
   data: GenerationGraphOutput;
   /**
@@ -814,6 +824,14 @@ export async function createWorkflowStepsFromGraph({
    * NSFW content to SFW users.
    */
   isGreen?: boolean;
+  /**
+   * Mirrors the `wildcards` Flipt flag. When false, `getResourceData` skips
+   * the Wildcards-type `canGenerate` override + `wildcardSetId` stamping, so
+   * a Wildcards entry that somehow leaked into `resources[]` fails the
+   * canGenerate validation gate and the submission errors out cleanly
+   * instead of reaching a handler that doesn't know what to do with it.
+   */
+  wildcardsEnabled?: boolean;
 }): Promise<{
   steps: WorkflowStepTemplate[];
   workflowMetadata?: Record<string, unknown>;
@@ -828,7 +846,7 @@ export async function createWorkflowStepsFromGraph({
   // Validate and enrich resources
   const resourceIds = collectResourceIds(data);
   const { enrichedResources, isPrivateGeneration, hasPoiResource } =
-    await validateAndEnrichResources(resourceIds, user);
+    await validateAndEnrichResources(resourceIds, user, wildcardsEnabled);
 
   // Check for POI in prompt
   const prompt = 'prompt' in data ? (data.prompt as string) : undefined;
@@ -1155,6 +1173,7 @@ export async function generateFromGraph({
   isModerator,
   experimental,
   isGreen,
+  wildcardsEnabled,
   allowMatureContent,
   currencies,
   civitaiTip,
@@ -1232,6 +1251,7 @@ export async function generateFromGraph({
     sourceMetadataMap,
     remixOfId,
     isGreen,
+    wildcardsEnabled,
   });
 
   // Determine workflow tags

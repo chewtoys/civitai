@@ -128,6 +128,7 @@ export const generationRouter = router({
         user: ctx.user,
         withPreview: true,
         sfwOnly: ctx.features.isGreen,
+        wildcardsEnabled: ctx.features.wildcards,
       })
     ),
   resolveImageMeta: publicProcedure
