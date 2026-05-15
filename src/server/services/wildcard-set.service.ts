@@ -89,7 +89,7 @@ const wildcardSetCategorySelect = {
   wildcardSetId: true,
   name: true,
   valueCount: true,
-  nsfwLevel: true,
+  nsfw: true,
   displayOrder: true,
 } as const;
 
@@ -136,7 +136,7 @@ export async function getWildcardSets({
       ...wildcardSetSelect,
       categories: {
         // Strict gate: only Clean categories are surfaced to the picker.
-        // Pending categories aren't ready yet (no verdict, no nsfwLevel) and
+        // Pending categories aren't ready yet (no verdict, nsfw unknown) and
         // Dirty categories failed audit outright. The audit-on-mutation hook
         // in saveUserSnippet / updateUserSnippet / removeUserSnippet refires
         // a workflow whenever content changes, so a freshly-edited category
@@ -226,7 +226,7 @@ export async function saveUserSnippet({
           valueCount: 1,
           displayOrder: (maxDisplayOrder._max.displayOrder ?? -1) + 1,
           auditStatus: 'Pending',
-          nsfwLevel: 0,
+          nsfw: false,
         },
         select: wildcardSetCategorySelect,
       });
@@ -517,7 +517,7 @@ export async function previewSnippetExpansion({
   input,
 }: {
   userId: number;
-  /** Site context — `.com` (SFW) vs `.red` (NSFW). Filters category nsfwLevel. */
+  /** Site context — `.com` (SFW) vs `.red` (NSFW). Filters categories by `nsfw`. */
   isGreen: boolean;
   input: PreviewSnippetExpansionInput;
 }) {

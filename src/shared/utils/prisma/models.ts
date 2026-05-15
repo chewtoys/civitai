@@ -4240,7 +4240,7 @@ export interface WildcardSet {
   auditStatus: WildcardSetAuditStatus;
   auditRuleVersion: string | null;
   auditedAt: Date | null;
-  nsfwLevel: number;
+  nsfw: boolean;
   isInvalidated: boolean;
   invalidationReason: string | null;
   invalidatedAt: Date | null;
@@ -4261,7 +4261,7 @@ export interface WildcardSetCategory {
   auditRuleVersion: string | null;
   auditedAt: Date | null;
   auditNote: string | null;
-  nsfwLevel: number;
+  nsfw: boolean;
   metadata: JsonValue | null;
   displayOrder: number;
   createdAt: Date;

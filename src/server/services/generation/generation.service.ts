@@ -50,10 +50,7 @@ import { fromJson, toJson } from '~/utils/json-helpers';
 import { removeNulls } from '~/utils/object-helpers';
 import { parseAIR, stringifyAIR } from '~/shared/utils/air';
 import { Flags } from '~/shared/utils/flags';
-import {
-  allBrowsingLevelsFlag,
-  sfwBrowsingLevelsFlag,
-} from '~/shared/constants/browsingLevel.constants';
+import { sfwBrowsingLevelsFlag } from '~/shared/constants/browsingLevel.constants';
 import { isDefined } from '~/utils/type-guards';
 import { getVeo3ProcessFromAir } from '~/server/orchestrator/veo3/veo3.schema';
 import type { BaseModelGroup } from '~/shared/constants/basemodel.constants';
@@ -1093,10 +1090,12 @@ export async function getResourceData(
   //     supported, but a published wildcard set should enable the model
   //     page's Generate button.
   //
-  // Visibility uses the set-level `nsfwLevel` rollup (bitwise OR of every
-  // non-Dirty category's nsfwLevel, maintained by the audit verdict path).
-  // No category sub-query needed — a single-table bitmask check decides it.
-  // See docs/features/prompt-snippets-v1.md §"Wildcards models vs generation
+  // Visibility uses the set-level `nsfw` rollup (boolean OR of every
+  // non-Dirty category's `nsfw`, maintained by the audit verdict path). On
+  // `.com` (sfwOnly), NSFW-flagged sets are hidden; on `.red`, every Clean/
+  // Mixed set is visible. Boolean, not bitwise nsfwLevel — XGuard's text
+  // classifiers can't reliably bucket PG / R / X for arbitrary text. See
+  // docs/features/prompt-snippets-v1.md §"Wildcards models vs generation
   // resources".
   const wildcardVersionIds = wildcardsEnabled
     ? filtered.filter((r) => r.model.type === 'Wildcards').map((r) => r.id)
@@ -1111,19 +1110,15 @@ export async function getResourceData(
         // Clean category), Dirty sets hide. Matches the resolver and the
         // picker read paths.
         auditStatus: { not: 'Dirty' },
+        // .com hides any set containing NSFW content; .red surfaces both.
+        ...(sfwOnly ? { nsfw: false } : {}),
       },
-      select: { id: true, modelVersionId: true, nsfwLevel: true },
+      select: { id: true, modelVersionId: true },
     });
-    const allowedNsfwFlag = sfwOnly ? sfwBrowsingLevelsFlag : allBrowsingLevelsFlag;
     const visibleSetIdByVersionId = new Map<number, number>();
     for (const set of wildcardSets) {
       if (!set.modelVersionId) continue;
-      // Set-level nsfwLevel rollup is bitwise OR across non-Dirty categories.
-      // Once audit verdicts are landing on every category (PG default when
-      // no nsfw label triggered), every Clean/Mixed set carries a nonzero
-      // nsfwLevel — no `=== 0` fallback needed.
-      const isVisible = (set.nsfwLevel & allowedNsfwFlag) !== 0;
-      if (isVisible) visibleSetIdByVersionId.set(set.modelVersionId, set.id);
+      visibleSetIdByVersionId.set(set.modelVersionId, set.id);
     }
     for (const resource of filtered) {
       if (resource.model.type !== 'Wildcards') continue;

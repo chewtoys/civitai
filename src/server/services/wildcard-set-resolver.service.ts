@@ -1,9 +1,5 @@
 import { dbRead } from '~/server/db/client';
 import { parsePromptSnippetReferences } from '~/utils/prompt-helpers';
-import {
-  allBrowsingLevelsFlag,
-  sfwBrowsingLevelsFlag,
-} from '~/shared/constants/browsingLevel.constants';
 
 // Per-reference selections live on the workflow metadata under
 // `params.snippets.targets[<targetKey>][i]`. `selections: []` = default to
@@ -86,10 +82,10 @@ const HARD_BATCH_CAP = 10;
  * fail the predicate are silently dropped (matches the resolver query in
  * schema doc §6.2 — the form may carry a stale id from localStorage).
  *
- * NSFW filtering: rows whose `nsfwLevel` doesn't fit the request's site
- * context are filtered out at the DB query. `.com` (isGreen=true) only
- * surfaces SFW levels (PG, PG13); `.red` (isGreen=false) surfaces every
- * non-Blocked level. Blocked content is excluded everywhere.
+ * NSFW filtering: rows flagged `nsfw = true` are dropped on `.com`
+ * (isGreen=true). `.red` (isGreen=false) surfaces everything Clean,
+ * NSFW or not. Boolean rather than bitwise because XGuard's text
+ * classifiers can't reliably bucket PG / R / X for arbitrary text.
  *
  * v1 scope: top-level `#category` references only. Tokens that appear inside
  * a category's value text (whether `#name` or `__name__`) are passed through
@@ -108,9 +104,9 @@ export async function expandSnippetsToTargets({
   seed: number;
   userId: number;
   /**
-   * Site context — `.com` (SFW) vs `.red` (NSFW). Filters category rows by
-   * `nsfwLevel` so SFW users never see NSFW content even when an SFW set
-   * happens to be loaded into the form alongside an NSFW set.
+   * Site context — `.com` (SFW) vs `.red` (NSFW). On `.com`, category rows
+   * flagged `nsfw = true` are dropped so SFW users never see NSFW content
+   * even when an NSFW set happens to be loaded alongside an SFW set.
    */
   isGreen: boolean;
 }): Promise<ExpandSnippetsResult> {
@@ -142,16 +138,16 @@ export async function expandSnippetsToTargets({
 
   // 2. Bulk-fetch all category rows that match (a) any of the loaded sets the
   //    user is authorized for and (b) any of the referenced category names.
-  //    Single round-trip across both targets. The NSFW-level filter happens
-  //    in application code below since Prisma's `where` has no clean bitwise
-  //    operator.
+  //    The `.com` NSFW gate folds into the `where` clause as a simple boolean
+  //    predicate — Prisma can't express a bitwise `&` cleanly, but a boolean
+  //    column is trivial.
   const categoryRows = await dbRead.wildcardSetCategory.findMany({
     where: {
-      // Strict gate: only Clean rows resolve. The audit verdict assigns a
-      // non-zero `nsfwLevel` on every Clean category (default PG when no
-      // `nsfw` label triggered), so the bitmask filter below can rely on
-      // a non-zero value without a `=== 0` fallback.
+      // Strict gate: only Clean rows resolve. Pending/Dirty are never
+      // surfaced regardless of site context.
       auditStatus: 'Clean',
+      // .com hides any NSFW-flagged category; .red surfaces everything Clean.
+      ...(isGreen ? { nsfw: false } : {}),
       name: { in: [...uniqueLookupKeys] }, // citext = case-insensitive
       wildcardSet: {
         id: { in: snippets.wildcardSetIds },
@@ -163,24 +159,13 @@ export async function expandSnippetsToTargets({
       id: true,
       name: true,
       values: true,
-      nsfwLevel: true,
       wildcardSet: { select: { id: true, kind: true } },
     },
   });
 
-  // NSFW filtering is bitwise on `nsfwLevel` against an allowed-levels flag:
-  //   - SFW context (.com): allow PG + PG13 only
-  //   - NSFW context (.red): allow every non-Blocked level
-  // Clean rows always carry a nonzero nsfwLevel (audit-assigned), so no
-  // `=== 0` fallback is needed here.
-  const allowedNsfwFlag = isGreen ? sfwBrowsingLevelsFlag : allBrowsingLevelsFlag;
-  const filteredCategoryRows = categoryRows.filter(
-    (row) => (row.nsfwLevel & allowedNsfwFlag) !== 0
-  );
-
   // Group sources per lookup key so per-reference resolution is O(1).
   const sourcesByLookupKey = new Map<string, { categoryId: number; values: string[] }[]>();
-  for (const row of filteredCategoryRows) {
+  for (const row of categoryRows) {
     const key = row.name.toLowerCase();
     let bucket = sourcesByLookupKey.get(key);
     if (!bucket) {

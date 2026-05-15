@@ -5555,12 +5555,17 @@ model WildcardSet {
   auditRuleVersion String?
   auditedAt        DateTime?
 
-  // Bitwise OR of every non-Dirty category's `nsfwLevel`. Lets a caller (e.g.
+  // Boolean OR of every non-Dirty category's `nsfw` flag. Lets a caller (e.g.
   // the model detail page's "Generate" button) decide whether a wildcard set
-  // has content visible at the request's site context (`.com` vs `.red`)
-  // without sub-querying categories. Maintained by the audit verdict path —
-  // recomputed whenever a category's nsfwLevel or auditStatus changes.
-  nsfwLevel Int @default(0)
+  // has any NSFW content at all (hidden on `.com`, visible on `.red`) without
+  // sub-querying categories. Maintained by the audit verdict path —
+  // recomputed whenever a category's `nsfw` or `auditStatus` changes.
+  //
+  // Deliberately a boolean, not the bitwise `nsfwLevel` bucket that images and
+  // models use: XGuard's text classifiers can't reliably distinguish PG / R /
+  // X for arbitrary text, so a boolean is the only honest representation of
+  // the signal we actually have.
+  nsfw Boolean @default(false)
 
   isInvalidated      Boolean   @default(false)
   invalidationReason String?
@@ -5581,7 +5586,7 @@ model WildcardSet {
   @@index([ownerUserId])
   @@index([auditStatus])
   @@index([isInvalidated])
-  @@index([nsfwLevel])
+  @@index([nsfw])
 }
 
 model WildcardSetCategory {
@@ -5598,7 +5603,9 @@ model WildcardSetCategory {
   auditedAt        DateTime?
   auditNote        String?
 
-  nsfwLevel Int @default(0)
+  // Set to true iff the XGuard audit triggered any of `WILDCARD_AUDIT_LEVEL_LABELS`
+  // (currently just `nsfw`). See WildcardSet.nsfw for why this isn't bitwise.
+  nsfw Boolean @default(false)
 
   // Open-ended container for category-scoped audit data we don't want to model
   // as columns yet. Shape today (see WildcardCategoryMetadata in

@@ -766,7 +766,7 @@ export async function importWildcardModelVersion(
             valueCount: category.lines.length,
             displayOrder: index,
             auditStatus: 'Pending',
-            nsfwLevel: 0,
+            nsfw: false,
           })),
         });
 

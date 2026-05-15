@@ -1,7 +1,6 @@
 import type { XGuardModerationOutput } from '@civitai/client';
 import type { Prisma } from '@prisma/client';
 import { env } from '~/env/server';
-import { NsfwLevel } from '~/server/common/enums';
 import { dbRead, dbWrite } from '~/server/db/client';
 import { logToAxiom } from '~/server/logging/client';
 import {
@@ -25,9 +24,11 @@ const WILDCARD_CATEGORY_ENTITY_TYPE = 'WildcardSetCategory';
 
 // XGuard labels that flip a category to Dirty when triggered. These are the
 // hard-fail policy violations — content matching any of these is unusable
-// regardless of site context.
+// regardless of site context. `csam` isn't in this list because XGuard's
+// text classifiers don't ship a dedicated CSAM label; instead the verdict
+// path treats a `young` + `sexual` co-trigger from the level-label set as
+// synthetic CSAM and flips the category Dirty.
 const WILDCARD_AUDIT_FAIL_LABELS = [
-  'csam',
   'urine',
   'diaper',
   'scat',
@@ -39,29 +40,12 @@ const FAIL_LABEL_SET = new Set<string>(WILDCARD_AUDIT_FAIL_LABELS);
 // XGuard label(s) that classify content severity. Restricted to `nsfw` for
 // now — the fine-grained `pg/pg13/r/x/xxx` evaluators aren't well-tuned for
 // text yet, and pasting them in would just produce noisy classifications.
-// Once those evaluators stabilize, expand this constant and the audit will
-// start storing finer bitwise levels with NO schema change (we already use
-// bitwise `nsfwLevel`).
-//
-// Current mapping: `nsfw` triggered → `NsfwLevel.R` (the lowest NSFW bit, so
-// a .red user preferenced "show R and above" sees these wildcards while a
-// "X-only" user wouldn't — the conservative default when severity is
-// genuinely unknown).
-const WILDCARD_AUDIT_LEVEL_LABELS = ['nsfw', 'r', 'x', 'xxx'] as const;
+// Triggering any of these labels flips the category's `nsfw` boolean to
+// true; nothing finer is recorded. If/when XGuard's text classifiers can
+// reliably bucket severity, we can switch to a bitwise nsfwLevel column —
+// for now boolean is the only honest representation.
+const WILDCARD_AUDIT_LEVEL_LABELS = ['nsfw', 'young', 'sexual'] as const;
 const LEVEL_LABEL_SET = new Set<string>(WILDCARD_AUDIT_LEVEL_LABELS);
-
-// Bit assigned when a level label triggers, keyed by the XGuard label name.
-// When tuning improves and we re-introduce pg/pg13/r/x/xxx, fall back to
-// `orchestratorNsfwLevelMap` for those.
-const NSFW_LABEL_TO_LEVEL: Record<string, NsfwLevel> = {
-  nsfw: NsfwLevel.R,
-};
-
-// Default level when XGuard completes the audit but no level label triggered
-// — most commonly happens for purely textual content with no NSFW signal at
-// all. PG is the safest assumption (visible on every site context). Distinct
-// from `nsfwLevel = 0` which indicates "not yet audited."
-const DEFAULT_AUDITED_NSFW_LEVEL = NsfwLevel.PG;
 
 // Discriminator on the shared text-moderation callback URL so this subsystem's
 // results don't bleed into the entity-moderation flow used by Articles.
@@ -148,7 +132,7 @@ export async function submitWildcardCategoryAudit(categoryId: number): Promise<s
   });
 
   // Submit both fail labels (hard policy violations → Dirty) and level
-  // labels (currently just `nsfw` → bitwise nsfwLevel = R). We ignore
+  // labels (currently just `nsfw` → boolean `nsfw = true`). We ignore
   // XGuard's top-level `blocked` field in the callback and recompute Dirty
   // ourselves from per-label results, so including level labels here can't
   // accidentally flip the audit verdict.
@@ -314,14 +298,16 @@ export async function submitPendingWildcardCategoryAudits(opts?: { limit?: numbe
  * recompute the parent set's aggregate. Two derived values come out of the
  * per-label results:
  *
- *   - `auditStatus`: Dirty iff any of `WILDCARD_AUDIT_FAIL_LABELS` triggered.
- *     Computed from per-label `triggered` flags — we deliberately ignore
- *     `output.blocked` because it counts triggered level labels (pg/r/x/…)
- *     too, which would falsely flip Dirty for ordinary NSFW content.
- *   - `nsfwLevel`: bitwise OR of every triggered `WILDCARD_AUDIT_LEVEL_LABELS`
- *     mapped via `orchestratorNsfwLevelMap` (pg → NsfwLevel.PG, etc.). When
- *     no level label triggered, defaults to PG — purely textual content
- *     with no NSFW signal lands at the most permissive level.
+ *   - `auditStatus`: Dirty iff any of `WILDCARD_AUDIT_FAIL_LABELS` triggered,
+ *     OR if `young` + `sexual` co-triggered (synthetic CSAM — XGuard's text
+ *     classifiers don't ship a dedicated `csam` label, so we infer it from
+ *     the co-trigger). Computed from per-label `triggered` flags — we
+ *     deliberately ignore `output.blocked` because it counts triggered level
+ *     labels too, which would falsely flip Dirty for ordinary NSFW content.
+ *   - `nsfw`: true iff any `WILDCARD_AUDIT_LEVEL_LABELS` triggered. Boolean,
+ *     not a bitwise nsfwLevel — XGuard's text classifiers can't reliably
+ *     bucket PG / R / X severity for arbitrary text, so a single "is NSFW"
+ *     signal is the honest representation of what we can measure.
  *
  * Idempotent: stale callbacks (workflow ID doesn't match the stored
  * in-flight ID) are dropped so a slow-arriving callback can't clobber a
@@ -362,8 +348,8 @@ export async function applyWildcardCategoryAuditSuccess(opts: {
   }
 
   // Partition the per-label results: fail labels drive Dirty; level labels
-  // contribute bits to nsfwLevel. Falling back to score-vs-threshold for
-  // the trigger check makes the code resilient to results that ship without
+  // drive the `nsfw` boolean. Falling back to score-vs-threshold for the
+  // trigger check makes the code resilient to results that ship without
   // the explicit `triggered` flag set.
   const results = output.results ?? [];
   const isTriggered = (r: (typeof results)[number]) =>
@@ -374,30 +360,40 @@ export async function applyWildcardCategoryAuditSuccess(opts: {
   // (for the forensic metadata on Dirty rows).
   const triggeredFailResults = results.filter((r) => FAIL_LABEL_SET.has(r.label) && isTriggered(r));
   const triggeredFailLabels = triggeredFailResults.map((r) => r.label);
-  const triggeredLevelLabels = results
-    .filter((r) => LEVEL_LABEL_SET.has(r.label) && isTriggered(r))
-    .map((r) => r.label);
 
-  const blocked = triggeredFailResults.length > 0;
+  // Synthetic CSAM: XGuard's text classifiers don't ship a dedicated `csam`
+  // label, but `young` + `sexual` co-triggered is the policy equivalent.
+  // Treat that combination as a hard fail (Dirty), same as an explicit CSAM
+  // match. Either label alone just contributes to the `nsfw` flag below.
+  const youngResult = results.find((r) => r.label === 'young' && isTriggered(r));
+  const sexualResult = results.find((r) => r.label === 'sexual' && isTriggered(r));
+  const syntheticCsamResults =
+    youngResult && sexualResult ? [youngResult, sexualResult] : [];
+  const syntheticCsam = syntheticCsamResults.length > 0;
 
-  // OR the triggered level labels into a bitwise nsfwLevel. PG fallback when
-  // nothing triggered — purely textual content with no NSFW signal sits at
-  // the most permissive level (visible everywhere). Distinct from
-  // `nsfwLevel = 0` which means "not yet audited."
-  let nsfwLevel = 0;
-  for (const label of triggeredLevelLabels) {
-    const bit = NSFW_LABEL_TO_LEVEL[label];
-    if (bit !== undefined) nsfwLevel |= bit;
-  }
-  if (nsfwLevel === 0) nsfwLevel = DEFAULT_AUDITED_NSFW_LEVEL;
+  const blocked = triggeredFailResults.length > 0 || syntheticCsam;
 
-  // Terms that the (fail-label) results matched on — only kept for Dirty
-  // categories so a moderator can see what triggered. Level-label matches
-  // aren't surfaced as terms; their signal is already captured in nsfwLevel.
+  // Boolean OR across triggered level labels. False when nothing triggered —
+  // purely textual content with no NSFW signal is treated as SFW. Distinct
+  // from auditStatus = Pending (which means "not yet audited").
+  const nsfw = results.some((r) => LEVEL_LABEL_SET.has(r.label) && isTriggered(r));
+
+  // Labels surfaced to moderators on Dirty rows. Synthetic CSAM gets its own
+  // pseudo-label so the audit note reads "Blocked: csam (young+sexual)"
+  // instead of looking empty when no real fail label fired on its own.
+  const blockingLabels = syntheticCsam
+    ? [...triggeredFailLabels, 'csam (young+sexual)']
+    : triggeredFailLabels;
+
+  // Terms that any blocking result matched — fail labels plus the
+  // young+sexual co-trigger. Only kept for Dirty categories so a moderator
+  // can see what triggered. Level-label matches that didn't co-fire as CSAM
+  // aren't surfaced; their signal is already captured in `nsfw`.
+  const blockingResults = [...triggeredFailResults, ...syntheticCsamResults];
   const triggeredTerms = blocked
     ? Array.from(
         new Set(
-          triggeredFailResults
+          blockingResults
             .flatMap((r) => r.matchedTerms?.text ?? [])
             .filter((t): t is string => typeof t === 'string' && t.length > 0)
         )
@@ -408,21 +404,22 @@ export async function applyWildcardCategoryAuditSuccess(opts: {
     ? WildcardSetCategoryAuditStatus.Dirty
     : WildcardSetCategoryAuditStatus.Clean;
   const auditNote = blocked
-    ? `Blocked: ${triggeredFailLabels.join(', ') || 'unspecified labels'}; ${
+    ? `Blocked: ${blockingLabels.join(', ') || 'unspecified labels'}; ${
         triggeredTerms.length
       } term(s) triggered`
     : null;
 
   // Persist forensics only when Dirty — Clean categories drop them so we
   // don't keep stale matched terms from prior audits. `triggeredLabels`
-  // here records the FAIL labels that fired (not level labels) since the
-  // level classification is already captured in `nsfwLevel`.
+  // records the blocking labels (real fail labels + the synthetic
+  // `csam (young+sexual)` entry) since the level classification is already
+  // captured in `nsfw`.
   const nextMetadata: WildcardCategoryMetadata = {
     ...meta,
     workflowId: undefined,
     retryCount: undefined,
     triggeredTerms: blocked ? triggeredTerms : undefined,
-    triggeredLabels: blocked ? triggeredFailLabels : undefined,
+    triggeredLabels: blocked ? blockingLabels : undefined,
   };
 
   await dbWrite.wildcardSetCategory.update({
@@ -431,7 +428,7 @@ export async function applyWildcardCategoryAuditSuccess(opts: {
       auditStatus,
       auditedAt: new Date(),
       auditNote,
-      nsfwLevel,
+      nsfw,
       metadata: serializeMetadata(nextMetadata),
     },
   });
@@ -506,10 +503,10 @@ export async function applyWildcardCategoryAuditFailure(opts: {
 }
 
 /**
- * Recompute a wildcard set's aggregate audit status and nsfwLevel rollup
- * from its categories. Called after every category-level transition that
- * could shift the set's bucket (Pending → Clean/Dirty/Mixed) or any
- * category's nsfwLevel.
+ * Recompute a wildcard set's aggregate audit status and `nsfw` rollup from
+ * its categories. Called after every category-level transition that could
+ * shift the set's bucket (Pending → Clean/Dirty/Mixed) or any category's
+ * `nsfw` flag.
  *
  * Aggregation rules (auditStatus):
  *   - any category Pending → set Pending
@@ -517,10 +514,9 @@ export async function applyWildcardCategoryAuditFailure(opts: {
  *   - any Dirty AND any Clean → set Mixed
  *   - all Dirty → set Dirty
  *
- * Aggregation rule (nsfwLevel): bitwise OR of every non-Dirty category's
- * nsfwLevel. Lets visibility checks ("does this set have content fitting
- * the .com SFW context?") run as a single-table bitmask test, avoiding a
- * category sub-query on every check.
+ * Aggregation rule (nsfw): boolean OR of every non-Dirty category's `nsfw`
+ * flag. Lets visibility checks (".com hides any set with NSFW content") run
+ * as a single-column predicate, avoiding a category sub-query on every check.
  *
  * Set-level reads (`getWildcardSets`) hide `Dirty` sets entirely; `Mixed`
  * sets are visible with their Dirty categories filtered at the picker layer.
@@ -528,25 +524,23 @@ export async function applyWildcardCategoryAuditFailure(opts: {
 export async function recomputeWildcardSetAuditStatus(setId: number): Promise<void> {
   const categories = await dbRead.wildcardSetCategory.findMany({
     where: { wildcardSetId: setId },
-    select: { auditStatus: true, nsfwLevel: true },
+    select: { auditStatus: true, nsfw: true },
   });
 
   const nextStatus = aggregateSetStatus(categories.map((c) => c.auditStatus));
-  // bit_or across non-Dirty categories. Dirty rows are excluded from the
+  // Boolean OR across non-Dirty categories. Dirty rows are excluded from the
   // rollup because their content isn't usable at any site context — a Dirty
-  // category contributing its nsfwLevel would falsely advertise "this set
-  // has content at level X" when it really doesn't.
-  let nextNsfwLevel = 0;
-  for (const c of categories) {
-    if (c.auditStatus === WildcardSetCategoryAuditStatus.Dirty) continue;
-    nextNsfwLevel |= c.nsfwLevel;
-  }
+  // category contributing `nsfw = true` would falsely advertise "this set
+  // has NSFW content" when it really doesn't have any usable NSFW content.
+  const nextNsfw = categories.some(
+    (c) => c.auditStatus !== WildcardSetCategoryAuditStatus.Dirty && c.nsfw
+  );
 
   await dbWrite.wildcardSet.update({
     where: { id: setId },
     data: {
       auditStatus: nextStatus,
-      nsfwLevel: nextNsfwLevel,
+      nsfw: nextNsfw,
       auditedAt: nextStatus === WildcardSetAuditStatus.Pending ? null : new Date(),
     },
   });

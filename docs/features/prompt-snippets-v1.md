@@ -24,7 +24,7 @@ Users reference reusable prompt content in their generator prompts via `#categor
 - **WildcardSet** — global content table. Two kinds:
   - `kind = System`: imported from a Civitai wildcard-type model. Globally cached, shared across all users. Pre-provisioned on publish via the provisioning job (see [prompt-snippets-provisioning-job.md](./prompt-snippets-provisioning-job.md)). Immutable.
   - `kind = User`: owned by one user. Created lazily on first "save to my snippets." Mutable (CRUD on values, with re-audit on every change).
-- **WildcardSetCategory** — categories within a set (e.g. `character`, `setting`). Each holds a `text[]` of value strings. Per-category audit + `nsfwLevel`.
+- **WildcardSetCategory** — categories within a set (e.g. `character`, `setting`). Each holds a `text[]` of value strings. Per-category audit + boolean `nsfw` flag.
 - **No `UserWildcardSet` join table.** The user's own User-kind set is queryable by `ownerUserId`. Additional wildcard sets the user has loaded live in the form's localStorage (graph node state). Loaded-set IDs are validated server-side at submit time (System-kind = public; User-kind = `ownerUserId == submitter`).
 - **`snippets` node in the generation-graph.** Inside `input` (the serialized graph), alongside the existing prompt, negativePrompt, resources, sampler, etc. nodes. Carries the user's wildcard-set IDs, mode, batchCount, and per-target reference state.
 - **Single reference syntax.** `#category` everywhere. Imported wildcard files have source-file `__name__` rewritten to `#name` at import time.
@@ -40,7 +40,7 @@ Three new tables, three enums, one CHECK constraint, citext extension. See [prom
 | Table | Purpose |
 |---|---|
 | `WildcardSet` | Global content. `kind: System \| User` discriminator. System-kind has `modelVersionId` FK; User-kind has `ownerUserId` FK + user-given `name`. Audit aggregate, `isInvalidated` flag. |
-| `WildcardSetCategory` | Categories within a set. `name CITEXT`, `values text[]`, per-category `auditStatus` and `nsfwLevel`. System-kind is immutable; User-kind is mutable with re-audit on each change. |
+| `WildcardSetCategory` | Categories within a set. `name CITEXT`, `values text[]`, per-category `auditStatus` and boolean `nsfw`. System-kind is immutable; User-kind is mutable with re-audit on each change. |
 | `PromptSnippet` | (Existing in feature plan, but *not in v1* — see §4.) Skipped: User-kind WildcardSet covers the same purpose. |
 
 **Not in v1:** `UserWildcardSet` (deferred, see §4).
@@ -142,7 +142,7 @@ When the resolver did fire, the orchestrator overwrites `snippets.targets` with 
 ### Server resolution
 
 - For each `#category` reference in each target's template:
-  1. Look up matching categories across `wildcardSetIds`. Filter by `auditStatus = 'Clean'` and `nsfwLevel` matching the request site context.
+  1. Look up matching categories across `wildcardSetIds`. Filter by `auditStatus = 'Clean'`; on `.com` (SFW), also filter `nsfw = false`.
   2. If `selections` is empty, use the full merged pool from those categories.
   3. If `selections` is non-empty, apply `in`/`ex` per source category to filter.
 - Resolve mode:
@@ -181,7 +181,7 @@ This creates a normalization rule: anywhere a `Wildcards`-type ModelVersion show
 
 1. **`getResourceData` stamps `wildcardSetId` and computes `canGenerate`.** When enriching a list of ModelVersion ids, any row whose `model.type === 'Wildcards'` gets:
    - `wildcardSetId?: number` stamped on the returned `GenerationResource`, resolved to the corresponding System-kind `WildcardSet.id`.
-   - `canGenerate` overridden to reflect WildcardSet visibility at the request's site context. A non-invalidated set with `auditStatus != 'Dirty'` AND `(nsfwLevel & allowedFlag) != 0` (SFW flag on `.com`, all-levels flag on `.red`) is `canGenerate: true`. The standard `getResourceCanGenerate` path returns false for Wildcards baseModels (they're not on the generation-supported list), so this override is what lets the model detail page enable its "Generate" button for a published, visible wildcard set. The visibility check is a single-table query against `WildcardSet` columns — see "Set-level rollups" below for why this avoids a category sub-query.
+   - `canGenerate` overridden to reflect WildcardSet visibility at the request's site context. A non-invalidated set with `auditStatus != 'Dirty'` AND (on `.com`) `nsfw = false` — or any non-Dirty set on `.red` — is `canGenerate: true`. The standard `getResourceCanGenerate` path returns false for Wildcards baseModels (they're not on the generation-supported list), so this override is what lets the model detail page enable its "Generate" button for a published, visible wildcard set. The visibility check is a single-table query against `WildcardSet` columns — see "Set-level rollups" below for why this avoids a category sub-query.
 
 2. **Resource picker filters by `hasGenerationSupport`.** The form's resource picker passes `generation: true` to `getResourceData`, which strips out anything whose baseModel isn't generation-supported — Wildcards models are filtered out at this gate. Users can't add a Wildcards model to the `resources` array through the picker; it never shows up as an option.
 
@@ -194,24 +194,24 @@ This creates a normalization rule: anywhere a `Wildcards`-type ModelVersion show
 **Set-level rollups.** `WildcardSet` carries two aggregates maintained by the audit verdict path so visibility checks don't need to JOIN to `WildcardSetCategory`:
 
 - `auditStatus` (`Pending | Clean | Mixed | Dirty`) — buckets the set based on its categories. `Dirty` = nothing usable, everywhere else = at least one Clean (or Pending) category exists.
-- `nsfwLevel` (Int, bitwise) — OR of every non-Dirty category's `nsfwLevel`. Single-table bitmask test answers "does this set have any content visible at the current site context?"
+- `nsfw` (Boolean) — true iff any non-Dirty category's `nsfw` flag is set. Single-column predicate answers "does this set contain any NSFW content?" Deliberately boolean rather than the bitwise `nsfwLevel` bucket used by images/models: XGuard's text classifiers can't reliably distinguish PG / R / X for arbitrary text, so the boolean is the only honest representation of the signal we actually have.
 
-Both aggregates are recomputed in `recomputeWildcardSetAuditStatus` whenever any category's `auditStatus` or `nsfwLevel` changes. This means hot-path checks like the model detail page's Generate button gate (`auditStatus != 'Dirty' && (nsfwLevel & allowedFlag) != 0`) hit one row, no JOIN.
+Both aggregates are recomputed in `recomputeWildcardSetAuditStatus` whenever any category's `auditStatus` or `nsfw` changes. This means hot-path checks like the model detail page's Generate button gate (`auditStatus != 'Dirty' && (sfwOnly ? !nsfw : true)`) hit one row, no JOIN.
 
 **Implementation status.**
 
 - ✅ `getResourceData` stamping + canGenerate override — see `src/server/services/generation/generation.service.ts`.
-- ✅ Set-level `nsfwLevel` rollup — `WildcardSet.nsfwLevel` column + `recomputeWildcardSetAuditStatus` maintenance + backfill in the migration.
+- ✅ Set-level `nsfw` rollup — `WildcardSet.nsfw` column + `recomputeWildcardSetAuditStatus` maintenance + backfill in the migration.
 - 🚧 Form-side routing — TODO. After the form fetches enriched resources via `ResourceDataProvider`, entries with `wildcardSetId` should be dispatched into `snippets.wildcardSetIds` rather than appended to `resources`. Handled at the form's hydration boundary (preset load, remix, model-detail-page "Generate" handoff). Without this, a `wildcardSetId`-stamped resource that arrives via a preset would sit visible in the resources list until the user re-renders.
 
 ### Provisioning + audit
 
 - **Provisioning job** (see [prompt-snippets-provisioning-job.md](./prompt-snippets-provisioning-job.md)) creates `WildcardSet` (kind: System) + `WildcardSetCategory` rows when a wildcard-type model version is published. Reconciliation job catches missed publishes. Backfill on initial deploy.
 - **Audit pipeline** runs per-category. On creation (System-kind import; User-kind value mutation), category is `Pending` until the audit job processes it. The XGuard request carries two label sets:
-  - **Fail labels** (`csam, urine, diaper, scat, menstruation, bestiality`): any triggered → category goes `Dirty`. Hard policy violations regardless of site context.
-  - **Level labels** — restricted to `nsfw` for v1. When triggered, the category's `nsfwLevel` is set to `NsfwLevel.R` (the lowest NSFW bit); when not triggered, it defaults to `NsfwLevel.PG`. The fine-grained `pg/pg13/r/x/xxx` evaluators aren't well-tuned for text moderation yet, so we restrict to the binary `nsfw` signal for now. The schema is already bitwise (`nsfwLevel: Int`), so re-introducing severity classification later is a code-only change — no migration.
+  - **Fail labels** (`urine, diaper, scat, menstruation, bestiality`): any triggered → category goes `Dirty`. Hard policy violations regardless of site context. `csam` is not in this list because XGuard's text classifiers don't ship a dedicated CSAM label; instead the callback treats a `young` + `sexual` co-trigger from the level-label set as synthetic CSAM and flips Dirty (with a `csam (young+sexual)` pseudo-label recorded on the audit note).
+  - **Level labels** (`nsfw, young, sexual`): if any of these trigger, the category's `nsfw` flag flips to `true`; otherwise it stays `false`. The fine-grained `pg/pg13/r/x/xxx` evaluators aren't well-tuned for text moderation yet, so we restrict to a binary NSFW signal and store it as an honest boolean rather than pretending we have severity-bucket information we don't. If text classifiers later improve, switching to a bitwise `nsfwLevel` is a (small) migration. `young` and `sexual` are submitted primarily so the synthetic-CSAM rule has signal to combine; either firing alone is treated as ordinary NSFW (the `nsfw` flag flips, no Dirty verdict).
   - The callback recomputes Dirty from the per-label results — it deliberately ignores XGuard's top-level `blocked` field because that field counts level labels as triggers, which would falsely mark ordinary NSFW content as Dirty.
-- Re-runs on rule-version bumps. Set-level `auditStatus` AND `nsfwLevel` aggregates are recomputed via `recomputeWildcardSetAuditStatus` after each verdict — the rollup is bitwise OR across non-Dirty categories, so a set's `nsfwLevel` always reflects "what content this set can surface." **No transitive propagation** through nested refs in v1.
+- Re-runs on rule-version bumps. Set-level `auditStatus` AND `nsfw` aggregates are recomputed via `recomputeWildcardSetAuditStatus` after each verdict — the rollup is boolean OR across non-Dirty categories, so a set's `nsfw` always reflects "does this set surface any NSFW content?" **No transitive propagation** through nested refs in v1.
 
 ### Implementation phases
 
@@ -252,7 +252,7 @@ Independently shippable. Backend phases first.
   - `getMyUserWildcardSet` — same file
   - `expandSnippetsToTargets` — `categoryRows` query in [src/server/services/wildcard-set-resolver.service.ts](../../src/server/services/wildcard-set-resolver.service.ts)
 
-  Paired `nsfwLevel === 0` fallbacks (which let Pending content through during the relaxation window) were dropped from the resolver and `getResourceData`'s Wildcards visibility check at the same time — Clean categories always carry a non-zero `nsfwLevel` (PG default when no `nsfw` label triggered) so the bitmask check stands on its own.
+  Paired `nsfwLevel === 0` fallbacks (which let Pending content through during the relaxation window) were dropped from the resolver and `getResourceData`'s Wildcards visibility check at the same time — Clean categories always carry a definitive boolean `nsfw` flag (false unless the audit's `nsfw` label triggered) so the predicate stands on its own.
 - **System default wildcard set** — mechanism for "first-time user" experience. Phase 8 of the long-term plan; not in v1.
 - **`getResourceData` integration** — when adding a `Wildcard` model via the resource picker, return the matching `WildcardSet.id` so the form's snippets node can pick it up. v1 adds the equivalent via the "create" button flow on the wildcard model page; the resource-picker integration is a Phase-2 polish.
 - **Audit-failure user notification** — when a wildcard model the user has loaded gets invalidated, do we notify them? v1 just reflects it on next page load (set details show "invalidated" via the auto-prune flow); explicit notifications are post-v1.
@@ -272,6 +272,6 @@ See [prompt-snippets-schema.md §9](./prompt-snippets-schema.md) for the full op
 - A "preview" button shows the user how the prompt would resolve before submit.
 - All snippet expansion happens server-side; steps look identical to no-snippet steps.
 - Workflow metadata records which sets contributed and what mode/count was used; the `wildcards` tag flags snippet-using submissions.
-- Per-category audit + `nsfwLevel` keep dirty content out of generation pools and route by site context.
+- Per-category audit + boolean `nsfw` flag keep dirty content out of generation pools and route NSFW content away from `.com`.
 
 What v1 doesn't ship: per-value picker UI, nested wildcard resolution, cross-device library sync, mobile drawer / desktop popover picker designs (those are V2 / future-target).
