@@ -94,7 +94,10 @@ function ScannerAuditTablePage() {
   return (
     <>
       <Meta title="Scanner Audit" deIndex />
-      <ScannerAuditLayout activeMode={mode} rightAction={<ExportButton view={view} mode={mode} filters={filters} />}>
+      <ScannerAuditLayout
+        activeMode={mode}
+        rightAction={<ExportButton view={view} mode={mode} filters={filters} />}
+      >
         <Group align="end">
           <TextInput
             label="Label"
@@ -161,83 +164,79 @@ function ScannerAuditTablePage() {
             <LoadingOverlay visible={isFetching} zIndex={5} overlayProps={{ blur: 1 }} />
             <Stack gap="sm">
               <Table striped withTableBorder highlightOnHover>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Label</Table.Th>
-                  <Table.Th>Score</Table.Th>
-                  <Table.Th>Threshold</Table.Th>
-                  <Table.Th>Occurrences</Table.Th>
-                  <Table.Th>Policy</Table.Th>
-                  <Table.Th>Status</Table.Th>
-                  <Table.Th>Last seen</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {data?.rows.map((r) => (
-                  <Table.Tr key={`${r.contentHash}::${r.version}::${r.label}`}>
-                    <Table.Td>
-                      <Link
-                        href={`/moderator/scanner-audit/${mode}/${encodeURIComponent(r.label)}`}
-                        style={{ color: 'inherit', textDecoration: 'none' }}
-                      >
-                        <code style={{ textDecoration: 'underline', cursor: 'pointer' }}>
-                          {r.label}
-                        </code>
-                      </Link>
-                      {r.labelValue && (
-                        <Text size="xs" c="dimmed" component="span" ml={4}>
-                          = {r.labelValue}
-                        </Text>
-                      )}
-                    </Table.Td>
-                    <Table.Td>{r.score.toFixed(3)}</Table.Td>
-                    <Table.Td>{r.threshold !== null ? r.threshold.toFixed(2) : '—'}</Table.Td>
-                    <Table.Td>
-                      <Text size="sm">{r.occurrences.toLocaleString()}</Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Tooltip label={r.version || '(none)'}>
-                        <Text size="xs" c="dimmed" ff="monospace">
-                          {r.version ? `${r.version.slice(0, 10)}…` : '—'}
-                        </Text>
-                      </Tooltip>
-                    </Table.Td>
-                    <Table.Td>
-                      <Group gap={4}>
-                        {r.myVerdict && (
-                          <Badge size="xs" color={verdictColor(r.myVerdict)}>
-                            {verdictShort(r.myVerdict)}
-                          </Badge>
-                        )}
-                        {!r.myVerdict && r.anyVerdict && (
-                          <Tooltip label="Verdict from another moderator">
-                            <Badge
-                              size="xs"
-                              color={verdictColor(r.anyVerdict)}
-                              variant="outline"
-                            >
-                              {verdictShort(r.anyVerdict)}
-                            </Badge>
-                          </Tooltip>
-                        )}
-                      </Group>
-                    </Table.Td>
-                    <Table.Td>
-                      <Text size="xs" c="dimmed">
-                        {new Date(r.lastSeenAt).toLocaleString()}
-                      </Text>
-                    </Table.Td>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>Label</Table.Th>
+                    <Table.Th>Score</Table.Th>
+                    <Table.Th>Threshold</Table.Th>
+                    <Table.Th>Occurrences</Table.Th>
+                    <Table.Th>Policy</Table.Th>
+                    <Table.Th>Status</Table.Th>
+                    <Table.Th>Last seen</Table.Th>
                   </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
+                </Table.Thead>
+                <Table.Tbody>
+                  {data?.rows.map((r) => (
+                    <Table.Tr key={`${r.contentHash}::${r.version}::${r.label}`}>
+                      <Table.Td>
+                        <Link
+                          href={`/moderator/scanner-audit/${mode}/${encodeURIComponent(r.label)}`}
+                          style={{ color: 'inherit', textDecoration: 'none' }}
+                        >
+                          <code style={{ textDecoration: 'underline', cursor: 'pointer' }}>
+                            {r.label}
+                          </code>
+                        </Link>
+                        {r.labelValue && (
+                          <Text size="xs" c="dimmed" component="span" ml={4}>
+                            = {r.labelValue}
+                          </Text>
+                        )}
+                      </Table.Td>
+                      <Table.Td>{r.score.toFixed(3)}</Table.Td>
+                      <Table.Td>{r.threshold !== null ? r.threshold.toFixed(2) : '—'}</Table.Td>
+                      <Table.Td>
+                        <Text size="sm">{r.occurrences.toLocaleString()}</Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Tooltip label={r.version || '(none)'}>
+                          <Text size="xs" c="dimmed" ff="monospace">
+                            {r.version ? `${r.version.slice(0, 10)}…` : '—'}
+                          </Text>
+                        </Tooltip>
+                      </Table.Td>
+                      <Table.Td>
+                        <Group gap={4}>
+                          {r.myVerdict && (
+                            <Badge size="xs" color={verdictColor(r.myVerdict)}>
+                              {verdictShort(r.myVerdict)}
+                            </Badge>
+                          )}
+                          {!r.myVerdict && r.anyVerdict && (
+                            <Tooltip label="Verdict from another moderator">
+                              <Badge size="xs" color={verdictColor(r.anyVerdict)} variant="outline">
+                                {verdictShort(r.anyVerdict)}
+                              </Badge>
+                            </Tooltip>
+                          )}
+                        </Group>
+                      </Table.Td>
+                      <Table.Td>
+                        <Text size="xs" c="dimmed">
+                          {new Date(r.lastSeenAt).toLocaleString()}
+                        </Text>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
 
-            <Group justify="space-between">
-              <Text size="xs" c="dimmed">
-                {data ? `${data.total.toLocaleString()} matching decisions` : '—'}
-              </Text>
-              <Pagination value={page} onChange={setPage} total={totalPages} size="sm" />
-            </Group>
+              <Group justify="space-between">
+                <Text size="xs" c="dimmed">
+                  {data ? `${data.total.toLocaleString()} matching decisions` : '—'}
+                </Text>
+                <Pagination value={page} onChange={setPage} total={totalPages} size="sm" />
+              </Group>
             </Stack>
           </Box>
         )}
