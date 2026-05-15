@@ -47,6 +47,11 @@ export const scanContentBodySchema = z.object({
    * resolved lazily for the focused-review UI; snapshotted here so it survives
    * the orchestrator's 30-day TTL once a mod has touched the item. */
   labelReasons: z.record(z.string(), z.string()).optional(),
+  /** Submitting user id when known. Same pattern as labelReasons — pulled
+   * from workflow metadata and snapshotted on verdict so it survives the
+   * orchestrator's TTL. Surfaced in the focused-review UI for moderator
+   * follow-up. */
+  userId: z.number().int().optional(),
 });
 export type ScanContentBody = z.infer<typeof scanContentBodySchema>;
 

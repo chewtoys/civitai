@@ -191,6 +191,10 @@ type XGuardModerationArgs = {
    */
   entityType?: string;
   entityId?: number;
+  /** Optional. When present, the moderator-review UI can link the scanned
+   * content to a user for follow-up investigation. Travels on workflow
+   * metadata only — not stored in the ClickHouse audit table. */
+  userId?: number;
   labels?: string[];
   /** Override the default audit-result callback URL. Omit to use the standard
    * `/api/webhooks/text-moderation-result` endpoint (which is what makes audit
@@ -221,6 +225,7 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
   const {
     entityType,
     entityId,
+    userId,
     labels,
     callbackUrl,
     wait,
@@ -244,6 +249,7 @@ export async function createXGuardModerationRequest(args: XGuardModerationArgs) 
   };
   if (entityType) metadata.entityType = entityType;
   if (entityId !== undefined) metadata.entityId = entityId;
+  if (userId !== undefined) metadata.userId = userId;
 
   // Pass `labels` through as a filter so the orchestrator only evaluates the
   // ones we ask about. Policies + thresholds + actions are owned orchestrator-

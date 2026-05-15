@@ -959,6 +959,7 @@ export async function generateFromGraph({
         entityType: 'prompt',
         positivePrompt: data.prompt,
         negativePrompt,
+        userId,
         recordForReview: true,
       }).catch((e) => {
         logToAxiom({

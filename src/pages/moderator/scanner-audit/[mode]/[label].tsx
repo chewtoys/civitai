@@ -230,6 +230,7 @@ function FocusedRun({
               negativePrompt: snap.negativePrompt,
               imageId: snap.imageId,
               labelReasons: snap.labelReasons,
+              userId: snap.userId,
             }
           : undefined;
       upsertVerdict.mutate({
@@ -444,6 +445,19 @@ function ItemHeader({
       )}
 
       <Group gap="xs" wrap="wrap">
+        {content?.userId && (
+          <Badge
+            component={Link}
+            href={`/user-id/${content.userId}`}
+            target="_blank"
+            variant="filled"
+            color="blue"
+            size="sm"
+            style={{ cursor: 'pointer', textTransform: 'none' }}
+          >
+            user {content.userId}
+          </Badge>
+        )}
         {item.labelValue && (
           <Badge variant="outline" size="sm">
             value: {item.labelValue}

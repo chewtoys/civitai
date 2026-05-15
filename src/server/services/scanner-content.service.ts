@@ -21,6 +21,7 @@ import { dbRead, dbWrite } from '~/server/db/client';
 import { internalOrchestratorClient } from '~/server/services/orchestrator/client';
 import { logToAxiom } from '~/server/logging/client';
 import { scanContentBodySchema, type ScanContentBody } from '~/server/schema/scanner-review.schema';
+import { removeEmpty } from '~/utils/object-helpers';
 
 export type ScanContentItem = {
   contentHash: string;
@@ -43,6 +44,10 @@ export type ScanContent = {
   /** Per-label model reasoning, keyed by label. Resolved from the workflow
    * (xguard scans) or from the snapshot once the orchestrator's TTL has lapsed. */
   labelReasons?: Record<string, string>;
+  /** User who submitted the scanned content, if known. Surfaced in the
+   * focused-review UI so moderators can link out and investigate repeat
+   * offenders. Resolved from workflow metadata or carried on the snapshot. */
+  userId?: number;
   /** True when neither snapshot nor orchestrator could resolve the content. */
   unavailable: boolean;
   /** Short tag identifying which code path returned `unavailable: true`. Set
@@ -90,6 +95,7 @@ async function resolveScanContent(
       negativePrompt: parsed.data.negativePrompt,
       imageId: parsed.data.imageId,
       labelReasons: parsed.data.labelReasons,
+      userId: parsed.data.userId,
       unavailable: false,
     };
   }
@@ -200,6 +206,12 @@ async function resolveScanContent(
     for (const r of step.output?.results ?? []) {
       if (r.modelReason) labelReasons[r.label.toLowerCase()] = r.modelReason;
     }
+    // userId is stamped on workflow.metadata at submit time when the caller
+    // had it in scope (e.g. blocked-prompt scans from generateFromGraph).
+    // Surfaced to the focused-review UI so moderators can link out and
+    // investigate the submitting user.
+    const userId =
+      typeof data.metadata?.userId === 'number' ? (data.metadata.userId as number) : undefined;
     if (item.scanner === 'xguard_text') {
       const inputKeys = Object.keys(input ?? {});
       if (!input.text) {
@@ -217,6 +229,7 @@ async function resolveScanContent(
         scanner: item.scanner,
         text: input.text ?? undefined,
         labelReasons,
+        userId,
         unavailable: !input.text,
         unavailableReason: !input.text
           ? `workflow-input-text-empty (input keys: ${inputKeys.join(', ') || 'none'})`
@@ -240,6 +253,7 @@ async function resolveScanContent(
       positivePrompt: input.positivePrompt ?? undefined,
       negativePrompt: input.negativePrompt ?? undefined,
       labelReasons,
+      userId,
       unavailable: !input.positivePrompt,
       unavailableReason: !input.positivePrompt
         ? `workflow-input-positivePrompt-empty (input keys: ${inputKeys.join(', ') || 'none'})`
@@ -347,17 +361,9 @@ export async function snapshotScanContent(input: {
   scanner: string;
   body: ScanContentBody;
 }) {
-  // Strip undefined fields out before storing so the JSON is tight (no
-  // explicit `null`s for unused per-mode fields).
-  const compact: ScanContentBody = {};
-  if (input.body.text !== undefined) compact.text = input.body.text;
-  if (input.body.positivePrompt !== undefined) compact.positivePrompt = input.body.positivePrompt;
-  if (input.body.negativePrompt !== undefined) compact.negativePrompt = input.body.negativePrompt;
-  if (input.body.instructions !== undefined) compact.instructions = input.body.instructions;
-  if (input.body.imageId !== undefined) compact.imageId = input.body.imageId;
-  if (input.body.labelReasons && Object.keys(input.body.labelReasons).length > 0) {
-    compact.labelReasons = input.body.labelReasons;
-  }
+  // Strip nullish / empty-array fields so the JSON is tight (no explicit
+  // `null`s or empty arrays for unused per-mode fields).
+  const compact = removeEmpty(input.body as Record<string, unknown>);
 
   // Upsert with empty `update` so the first verdict per contentHash writes
   // the snapshot and subsequent verdicts are idempotent no-ops. Avoids
