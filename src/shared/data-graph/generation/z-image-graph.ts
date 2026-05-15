@@ -24,6 +24,7 @@ import {
   schedulerNode,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
@@ -133,8 +134,11 @@ export const zImageGraph = new DataGraph<{ ecosystem: string; workflow: string }
     { values: ['turbo'] as const, graph: turboModeGraph },
     { values: ['base'] as const, graph: baseModeGraph },
   ])
-  // Prompt + triggerWords are common to both turbo and base.
+  // Prompt + triggerWords are common to both turbo and base. negativePrompt
+  // is only in the base branch; its registration effect adds itself to the
+  // snippets target map when that branch is active.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export mode options for use in components

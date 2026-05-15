@@ -35,6 +35,16 @@ export type GenerationResourceBase = {
   isOwnedByUser?: boolean;
   /** Whether this resource is private (Private availability, or unpublished with epoch details) (computed by server) */
   isPrivate?: boolean;
+  /**
+   * Stamped by `getResourceData` for `Wildcards`-type ModelVersions. The
+   * resolved `WildcardSet.id` corresponding to this ModelVersion — present
+   * only when `model.type === 'Wildcards'` and the provisioning service has
+   * a set for it. Downstream callers (form hydration, orchestrator) use
+   * this as the signal to partition the entry out of `resources[]` and
+   * into `snippets.wildcardSetIds`. See docs/features/prompt-snippets-v1.md
+   * §"Wildcards models vs generation resources".
+   */
+  wildcardSetId?: number;
 };
 
 export type GenerationResource = GenerationResourceBase & {

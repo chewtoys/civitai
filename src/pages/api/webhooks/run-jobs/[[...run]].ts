@@ -64,6 +64,8 @@ import { processRewards, rewardsDailyReset } from '~/server/jobs/process-rewards
 import { processScheduledPublishing } from '~/server/jobs/process-scheduled-publishing';
 import { processSubscriptionsRequiringRenewal } from '~/server/jobs/process-subscriptions-requiring-renewal';
 import { processVaultItems } from '~/server/jobs/process-vault-items';
+import { auditWildcardSetCategoriesJob } from '~/server/jobs/audit-wildcard-set-categories';
+import { reconcileWildcardSetsJob } from '~/server/jobs/reconcile-wildcard-sets';
 import { pushDiscordMetadata } from '~/server/jobs/push-discord-metadata';
 import { refreshAuctionCache } from '~/server/jobs/refresh-auction-cache';
 import { refreshFeaturedCollectionsEligibility } from '~/server/jobs/refresh-featured-collections-eligibility';
@@ -146,6 +148,8 @@ export const jobs: Job[] = [
   // processCreatorProgramImageGenerationRewards,
   processVaultItems,
   clearVaultItems,
+  reconcileWildcardSetsJob,
+  auditWildcardSetCategoriesJob,
   ...jobQueueJobs,
   countReviewImages,
   processingEngingEarlyAccess,

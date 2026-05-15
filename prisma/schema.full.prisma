@@ -534,6 +534,7 @@ model User {
   issuedStrikes               UserStrike[]                    @relation("strikeIssuedBy")
   voidedStrikes               UserStrike[]                    @relation("strikeVoidedBy")
   generationPresets           GenerationPreset[]
+  ownedWildcardSets           WildcardSet[]                   @relation("WildcardSetOwner")
 
   // Comics
   comicProjects              ComicProject[]
@@ -1018,6 +1019,7 @@ model ModelVersion {
   featuredInfo            FeaturedModelVersion[]
   ImageResourceNew        ImageResourceNew[]
   coveredCheckpoints      CoveredCheckpoint[]
+  wildcardSet             WildcardSet?
 
   @@index([modelId], type: Hash)
 }
@@ -5510,6 +5512,117 @@ model GenerationPreset {
   @@unique([userId, ecosystem, name])
   @@index([userId])
   @@index([userId, ecosystem])
+}
+
+enum WildcardSetKind {
+  System
+  User
+}
+
+enum WildcardSetAuditStatus {
+  Pending
+  Clean
+  Mixed
+  Dirty
+}
+
+enum WildcardSetCategoryAuditStatus {
+  Pending
+  Clean
+  Dirty
+}
+
+model WildcardSet {
+  id   Int             @id @default(autoincrement())
+  kind WildcardSetKind
+
+  // System-kind only (null for User-kind)
+  modelVersionId Int?          @unique
+  modelVersion   ModelVersion? @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+
+  // User-kind only (null for System-kind)
+  ownerUserId Int?
+  owner       User? @relation("WildcardSetOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  // Display name. For System-kind, set at import to "${model.name} - ${modelVersion.name}".
+  // For User-kind, defaults to "My snippets" on first save (and is renameable by the owner).
+  // Drift on rename is acceptable — the picker reads `name` once, model renames are uncommon,
+  // and JOINing back through ModelVersion → Model on every read isn't worth saving the rare
+  // staleness window.
+  name String @db.Citext
+
+  auditStatus      WildcardSetAuditStatus @default(Pending)
+  auditRuleVersion String?
+  auditedAt        DateTime?
+
+  // Boolean OR of every non-Dirty category's `nsfw` flag. Lets a caller (e.g.
+  // the model detail page's "Generate" button) decide whether a wildcard set
+  // has any NSFW content at all (hidden on `.com`, visible on `.red`) without
+  // sub-querying categories. Maintained by the audit verdict path —
+  // recomputed whenever a category's `nsfw` or `auditStatus` changes.
+  //
+  // Deliberately a boolean, not the bitwise `nsfwLevel` bucket that images and
+  // models use: XGuard's text classifiers can't reliably distinguish PG / R /
+  // X for arbitrary text, so a boolean is the only honest representation of
+  // the signal we actually have.
+  nsfw Boolean @default(false)
+
+  isInvalidated      Boolean   @default(false)
+  invalidationReason String?
+  invalidatedAt      DateTime?
+
+  // Open-ended container for set-scoped data we don't want to model as
+  // first-class columns yet. Shape today (see WildcardSetMetadata in the
+  // provisioning service) is `{ skippedEntries?: SkippedEntry[] }` —
+  // surface area can grow with the feature.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categories WildcardSetCategory[]
+
+  @@index([kind])
+  @@index([ownerUserId])
+  @@index([auditStatus])
+  @@index([isInvalidated])
+  @@index([nsfw])
+}
+
+model WildcardSetCategory {
+  id            Int         @id @default(autoincrement())
+  wildcardSetId Int
+  wildcardSet   WildcardSet @relation(fields: [wildcardSetId], references: [id], onDelete: Cascade)
+
+  name       String   @db.Citext
+  values     String[]
+  valueCount Int      @default(0)
+
+  auditStatus      WildcardSetCategoryAuditStatus @default(Pending)
+  auditRuleVersion String?
+  auditedAt        DateTime?
+  auditNote        String?
+
+  // Set to true iff the XGuard audit triggered any of `WILDCARD_AUDIT_LEVEL_LABELS`
+  // (currently just `nsfw`). See WildcardSet.nsfw for why this isn't bitwise.
+  nsfw Boolean @default(false)
+
+  // Open-ended container for category-scoped audit data we don't want to model
+  // as columns yet. Shape today (see WildcardCategoryMetadata in
+  // wildcard-category-audit.service): `{ workflowId?, triggeredTerms?,
+  // triggeredLabels?, retryCount? }` — workflowId tracks in-flight audits;
+  // triggered* arrays survive after rollup so moderators can see what
+  // matched.
+  metadata Json?
+
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([wildcardSetId, name])
+  @@index([wildcardSetId])
+  @@index([wildcardSetId, auditStatus])
+  @@index([auditStatus])
 }
 
 enum ReviewVerdict {

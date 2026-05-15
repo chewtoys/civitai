@@ -31,6 +31,7 @@ import {
   aspectRatioNode,
   promptGraph,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
   enumNode,
   imagesNode,
@@ -480,6 +481,7 @@ export const ltxGraph = new DataGraph<LTXCtx, GenerationCtx>()
 
   // Prompt + triggerWords are common to all LTX versions (no negativePrompt for LTX).
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // =============================================================================

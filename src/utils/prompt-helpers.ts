@@ -54,3 +54,49 @@ export const parsePromptResources = (value: string) => {
   ) as PromptResource[];
   return [...assertions, ...textualInversions];
 };
+
+// Snippet reference syntax: `#name` where name matches the import-side
+// normalization charset (letters/digits/underscore plus `.`, `/`, `-`).
+// Mirrors the WildcardSetCategory.name regex in wildcard-set.schema.ts so a
+// chip the editor renders is always a name the storage layer can hold.
+//
+// Wider than the textual-inversion charset above (which forbids `/`) — this
+// is intentional: path-style refs like `#character/female` are unambiguously
+// snippets. Server-side, snippet expansion runs first; unmatched `#tokens`
+// then fall through to the TI parser. A `#name` that matches both regexes
+// resolves to the snippet when the user has a category named `name` and to
+// the TI when they don't (per the product doc's collision-resolution rule).
+export const snippetReferencePattern = /#([a-zA-Z][\w./-]*)/g;
+
+export type SnippetReference = {
+  /** The captured name without the leading `#`, e.g. `character` or `BoChars/female/modern`. */
+  category: string;
+  /** Inclusive index of the leading `#` in the source string. */
+  start: number;
+  /** Exclusive index one past the last character of the match. */
+  end: number;
+};
+
+/**
+ * Parse `#category` references from a prompt template. Each occurrence is
+ * returned as a separate entry in document order — repeated references are
+ * NOT deduplicated, because slot-counting (`"#character fights #character"`
+ * = two slots, no-repeat rule) needs to see each one individually. Callers
+ * that want unique names can pull them with `new Set(refs.map((r) => r.category))`.
+ *
+ * Names are returned exactly as captured. Case-folding for category lookup
+ * happens at the DB layer (citext on `WildcardSetCategory.name`); preserving
+ * casing here lets editors render the chip with the user's spelling.
+ */
+export const parsePromptSnippetReferences = (value: string): SnippetReference[] => {
+  const out: SnippetReference[] = [];
+  for (const match of value.matchAll(snippetReferencePattern)) {
+    if (match.index === undefined) continue;
+    out.push({
+      category: match[1],
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+  return out;
+};

@@ -216,6 +216,12 @@ export type StrikeReason = "BlockedContent" | "RealisticMinorContent" | "CSAMCon
 
 export type StrikeStatus = "Active" | "Expired" | "Voided";
 
+export type WildcardSetKind = "System" | "User";
+
+export type WildcardSetAuditStatus = "Pending" | "Clean" | "Mixed" | "Dirty";
+
+export type WildcardSetCategoryAuditStatus = "Pending" | "Clean" | "Dirty";
+
 export type ReviewVerdict = "TruePositive" | "FalsePositive" | "TrueNegative" | "FalseNegative" | "Unsure";
 
 export interface Account {
@@ -589,6 +595,7 @@ export interface User {
   issuedStrikes?: UserStrike[];
   voidedStrikes?: UserStrike[];
   generationPresets?: GenerationPreset[];
+  ownedWildcardSets?: WildcardSet[];
   comicProjects?: ComicProject[];
   comicReferences?: ComicReference[];
   comicProjectEngagements?: ComicProjectEngagement[];
@@ -893,6 +900,7 @@ export interface ModelVersion {
   featuredInfo?: FeaturedModelVersion[];
   ImageResourceNew?: ImageResourceNew[];
   coveredCheckpoints?: CoveredCheckpoint[];
+  wildcardSet?: WildcardSet | null;
 }
 
 export interface ModelVersionEngagement {
@@ -4217,6 +4225,45 @@ export interface GenerationPreset {
   ecosystem: string;
   values: JsonValue;
   sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface WildcardSet {
+  id: number;
+  kind: WildcardSetKind;
+  modelVersionId: number | null;
+  modelVersion?: ModelVersion | null;
+  ownerUserId: number | null;
+  owner?: User | null;
+  name: string;
+  auditStatus: WildcardSetAuditStatus;
+  auditRuleVersion: string | null;
+  auditedAt: Date | null;
+  nsfw: boolean;
+  isInvalidated: boolean;
+  invalidationReason: string | null;
+  invalidatedAt: Date | null;
+  metadata: JsonValue | null;
+  createdAt: Date;
+  updatedAt: Date;
+  categories?: WildcardSetCategory[];
+}
+
+export interface WildcardSetCategory {
+  id: number;
+  wildcardSetId: number;
+  wildcardSet?: WildcardSet;
+  name: string;
+  values: string[];
+  valueCount: number;
+  auditStatus: WildcardSetCategoryAuditStatus;
+  auditRuleVersion: string | null;
+  auditedAt: Date | null;
+  auditNote: string | null;
+  nsfw: boolean;
+  metadata: JsonValue | null;
+  displayOrder: number;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -51,6 +51,7 @@ import { contentRouter } from './content.router';
 import { downloadRouter } from './download.router';
 import { generationRouter } from './generation.router';
 import { generationPresetRouter } from './generation-preset.router';
+import { wildcardSetRouter } from './wildcard-set.router';
 import { hiddenPreferencesRouter } from './hidden-preferences.router';
 import { homeBlockRouter } from './home-block.router';
 import { imageRouter } from './image.router';
@@ -135,6 +136,7 @@ export const appRouter = router({
   leaderboard: leaderboardRouter,
   generation: generationRouter,
   generationPreset: generationPresetRouter,
+  wildcardSet: wildcardSetRouter,
   newsletter: newsletterRouter,
   system: systemRouter,
   hiddenPreferences: hiddenPreferencesRouter,

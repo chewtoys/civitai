@@ -791,11 +791,25 @@ export async function getResourceData(
     generation = false,
     withPreview = false,
     sfwOnly = false,
+    wildcardsEnabled = false,
   }: {
     user?: { id?: number; isModerator?: boolean };
     generation?: boolean;
     withPreview?: boolean;
     sfwOnly?: boolean;
+    /**
+     * Mirrors the `wildcards` Flipt flag. When false (default), Wildcards-
+     * type ModelVersions skip the `wildcardSetId` stamp + `canGenerate`
+     * override below — they stay at the default `canGenerate: false` that
+     * `getResourceCanGenerate` returns for non-generation baseModels.
+     * Callers serving snippets-aware surfaces (the model detail page's
+     * Generate button, the form's resource hydration, the orchestrator's
+     * submit-time validation) pass `features.wildcards`; everyone else
+     * leaves it at false. Same flag the snippets graph node gates on, so
+     * the user-visible "can use this wildcard" signal stays consistent
+     * with whether the snippets node actually exists in the form's graph.
+     */
+    wildcardsEnabled?: boolean;
   } = {}
 ): Promise<(GenerationResource & { air: string })[]> {
   if (!versionIds.length) return [];
@@ -1048,9 +1062,77 @@ export async function getResourceData(
   }
 
   // TODO - check if resource id is in "EcosystemCheckpoint" table
-  return generation
+  // Note: `hasGenerationSupport` returns false for Wildcards-type baseModels
+  // (Wildcards aren't generation resources), so the `generation: true` filter
+  // here strips them out unless the caller is asking for unfiltered data
+  // (e.g. the model detail page wants to render a Wildcards model's
+  // "Generate" button enabled when the wildcard set is visible).
+  const filtered = generation
     ? resources.filter((resource) => hasGenerationSupport(resource.baseModel))
     : resources;
+
+  // Wildcards-type entries are NOT generation resources — they're handles to
+  // System-kind WildcardSets. Gated on the `wildcards` Flipt flag (passed in
+  // via `wildcardsEnabled`): when off, skip the stamping + canGenerate
+  // override entirely so a wildcard model's Generate button stays disabled,
+  // the orchestrator's canGenerate check rejects any Wildcards entry that
+  // somehow leaked into a submission, and the rest of the platform behaves
+  // as if the feature doesn't exist. The same flag governs the snippets
+  // graph node, keeping UI and validation aligned.
+  //
+  // When the flag IS on:
+  //   - Stamp `wildcardSetId` so consumers (form hydration when loading a
+  //     preset/remix; the "Generate" button on a Wildcards model page) can
+  //     route the id into `snippets.wildcardSetIds`.
+  //   - Override `canGenerate` to reflect "does this set have content visible
+  //     at the current site context?" — the standard `getResourceCanGenerate`
+  //     path returns false because Wildcards baseModels aren't generation-
+  //     supported, but a published wildcard set should enable the model
+  //     page's Generate button.
+  //
+  // Visibility uses the set-level `nsfw` rollup (boolean OR of every
+  // non-Dirty category's `nsfw`, maintained by the audit verdict path). On
+  // `.com` (sfwOnly), NSFW-flagged sets are hidden; on `.red`, every Clean/
+  // Mixed set is visible. Boolean, not bitwise nsfwLevel — XGuard's text
+  // classifiers can't reliably bucket PG / R / X for arbitrary text. See
+  // docs/features/prompt-snippets-v1.md §"Wildcards models vs generation
+  // resources".
+  const wildcardVersionIds = wildcardsEnabled
+    ? filtered.filter((r) => r.model.type === 'Wildcards').map((r) => r.id)
+    : [];
+  if (wildcardVersionIds.length > 0) {
+    const wildcardSets = await dbRead.wildcardSet.findMany({
+      where: {
+        kind: 'System',
+        modelVersionId: { in: wildcardVersionIds },
+        isInvalidated: false,
+        // Strict gate: Mixed sets stay visible (they have at least one
+        // Clean category), Dirty sets hide. Matches the resolver and the
+        // picker read paths.
+        auditStatus: { not: 'Dirty' },
+        // .com hides any set containing NSFW content; .red surfaces both.
+        ...(sfwOnly ? { nsfw: false } : {}),
+      },
+      select: { id: true, modelVersionId: true },
+    });
+    const visibleSetIdByVersionId = new Map<number, number>();
+    for (const set of wildcardSets) {
+      if (!set.modelVersionId) continue;
+      visibleSetIdByVersionId.set(set.modelVersionId, set.id);
+    }
+    for (const resource of filtered) {
+      if (resource.model.type !== 'Wildcards') continue;
+      const setId = visibleSetIdByVersionId.get(resource.id);
+      if (setId != null) {
+        (resource as GenerationResource).wildcardSetId = setId;
+        resource.canGenerate = true;
+      }
+      // else: wildcardSetId stays undefined, canGenerate stays whatever
+      // getResourceCanGenerate returned (false for Wildcards baseModels).
+    }
+  }
+
+  return filtered;
 }
 
 // =============================================================================

@@ -44,6 +44,7 @@ export const WORKFLOW_TAGS = {
   AUDIO: 'aud',
   FAVORITE: 'favorite',
   FOLDER: 'folder',
+  WILDCARDS: 'wildcards',
   FEEDBACK: {
     LIKED: 'feedback:liked',
     DISLIKED: 'feedback:disliked',

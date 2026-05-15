@@ -1,12 +1,21 @@
 # WildcardSet Provisioning Job
 
-**Status:** ready for implementation in a dedicated session
+**Status:** implemented — see `src/server/services/wildcard-set-provisioning.service.ts`
 **Owner:** TBD
 **Companion docs:**
 
 - [prompt-snippets.md](./prompt-snippets.md) — feature overview
 - [prompt-snippets-schema.md](./prompt-snippets-schema.md) — schema spec (authoritative for table definitions)
 - [prompt-snippets-schema-examples.md](./prompt-snippets-schema-examples.md) — populated table walkthrough
+
+> **Implementation has diverged from the sketches below in a few important ways. See the source as the authoritative reference. Key divergences:**
+>
+> - **Supported primary file types:** `.zip` (any mix of `.txt` and `.yaml`/`.yml` entries inside), bare `.txt`, bare `.yaml`/`.yml`. The sketches show `.zip` only.
+> - **Category names:** the **full relative path** inside the source (zip folder structure or yaml key path) is the category name — *not* the basename. `personmaker/easyman.txt` becomes category `personmaker/easyman`; `BoChars.female.modern` (yaml) becomes `BoChars/female/modern`. This preserves intra-pack references like `__BoChars/female/modern__` so they resolve correctly within the same WildcardSet.
+> - **Persistent vs transient failures:** structural failures (corrupt zip, malformed yaml, no `.txt`/`.yaml` content, no primary file) create a stub `WildcardSet` with `isInvalidated=true` so the reconcile cron skips them next time. Transport failures (URL resolve, HTTP fetch, DB transaction) stay on the `failed` path and continue to retry.
+> - **macOS resource forks (`__MACOSX/`, `._*` AppleDouble files) are filtered** in zip walks.
+> - **Transaction timeout** is bumped to 60 s (Prisma default 5 s blew through on packs with 200+ categories).
+> - **Nested-reference regex** is `[a-zA-Z][\w./-]*` (allows path-style names), not the narrower `[a-zA-Z][a-zA-Z0-9_]*` shown in the sketch.
 
 ---
 
@@ -119,10 +128,7 @@ async function importWildcardModelVersion(modelVersionId: number): Promise<{
       data: {
         kind: 'System',
         modelVersionId,
-        modelName: modelVersion.model.name,
-        versionName: modelVersion.name,
-        sourceFileCount: files.length,
-        totalValueCount: files.reduce((n, f) => n + f.lines.length, 0),
+        name: `${modelVersion.model.name} - ${modelVersion.name}`,
         auditStatus: 'Pending',
       }
     });
@@ -151,9 +157,12 @@ async function importWildcardModelVersion(modelVersionId: number): Promise<{
 }
 
 function normalizeNestedRefs(line: string): string {
-  // Rewrite __name__ → #name. Single-pass regex; no nested escaping needed
-  // since the source uses a flat token format.
-  return line.replace(/__([a-zA-Z][a-zA-Z0-9_]*)__/g, '#$1');
+  // Rewrite __name__ → #name. Single-pass regex. Charset matches the
+  // category-name convention: full relative path inside the source zip
+  // (folders preserved as namespace), so refs like
+  // `__uds_wildcards/personmaker/adultage__` are valid and resolve to a
+  // category of the same name in the same set.
+  return line.replace(/__([a-zA-Z][\w./-]*)__/g, '#$1');
 }
 ```
 

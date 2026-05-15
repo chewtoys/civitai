@@ -25,6 +25,7 @@ import {
   resourcesNode,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 
@@ -154,8 +155,11 @@ export const qwenGraph = new DataGraph<QwenCtx, GenerationCtx>()
     Qwen: qwenSubGraph,
     Qwen2: qwen2SubGraph,
   })
-  // Prompt + triggerWords are common to both Qwen and Qwen 2.
+  // Prompt + triggerWords are common to both Qwen and Qwen 2. negativePrompt
+  // is merged only inside the Qwen2 branch; its registration effect adds
+  // itself to the snippets target map when that branch is active.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export constants for use in components and handlers

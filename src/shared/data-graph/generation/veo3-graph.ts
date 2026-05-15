@@ -27,6 +27,7 @@ import {
   seedNode,
   negativePromptGraph,
   promptGraph,
+  snippetsGraph,
   triggerWordsGraph,
   aspectRatioNode,
   imagesNode,
@@ -164,6 +165,7 @@ export const veo3Graph = new DataGraph<Veo3Ctx, GenerationCtx>()
 
   // Prompt + triggerWords + negativePrompt
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .merge(negativePromptGraph)
 

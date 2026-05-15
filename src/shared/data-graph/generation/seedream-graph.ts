@@ -21,6 +21,7 @@ import {
   promptGraph,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 import {
@@ -129,6 +130,7 @@ export const seedreamGraph = new DataGraph<{ ecosystem: string; workflow: string
 
   // Prompt + triggerWords (no negativePrompt for Seedream)
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export version options for use in components

@@ -18,6 +18,7 @@ import {
   promptGraph,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
@@ -62,6 +63,7 @@ export const ponyV7Graph = new DataGraph<{ ecosystem: string; workflow: string }
   )
   .merge(createResourcesGraph())
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .node('aspectRatio', aspectRatioNode({ options: sdxlAspectRatioBuckets, defaultValue: '1:1' }))
   .node(

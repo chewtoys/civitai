@@ -27,6 +27,7 @@ import {
   samplerNode,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
   type VersionGroup,
   type ResourceData,
@@ -164,4 +165,5 @@ export const hiDreamGraph = new DataGraph<
   // (after the discriminator) so model/resources from the active branch are
   // already in ctx by the time these run.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);

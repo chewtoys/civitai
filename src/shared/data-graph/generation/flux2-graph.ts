@@ -23,6 +23,7 @@ import {
   promptGraph,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
   type ResourceData,
 } from './common';
@@ -164,6 +165,7 @@ export const flux2Graph = new DataGraph<
   })
   // Prompt + triggerWords are common to all flux2 modes.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export mode options for use in components

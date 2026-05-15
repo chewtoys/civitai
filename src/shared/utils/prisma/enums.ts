@@ -1033,6 +1033,30 @@ export const StrikeStatus = {
 
 export type StrikeStatus = (typeof StrikeStatus)[keyof typeof StrikeStatus];
 
+export const WildcardSetKind = {
+  System: 'System',
+  User: 'User',
+} as const;
+
+export type WildcardSetKind = (typeof WildcardSetKind)[keyof typeof WildcardSetKind];
+
+export const WildcardSetAuditStatus = {
+  Pending: 'Pending',
+  Clean: 'Clean',
+  Mixed: 'Mixed',
+  Dirty: 'Dirty',
+} as const;
+
+export type WildcardSetAuditStatus = (typeof WildcardSetAuditStatus)[keyof typeof WildcardSetAuditStatus];
+
+export const WildcardSetCategoryAuditStatus = {
+  Pending: 'Pending',
+  Clean: 'Clean',
+  Dirty: 'Dirty',
+} as const;
+
+export type WildcardSetCategoryAuditStatus = (typeof WildcardSetCategoryAuditStatus)[keyof typeof WildcardSetCategoryAuditStatus];
+
 export const ReviewVerdict = {
   TruePositive: 'TruePositive',
   FalsePositive: 'FalsePositive',

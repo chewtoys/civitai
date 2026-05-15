@@ -1,49 +1,121 @@
 /**
- * Debug endpoint for exercising the full XGuard pipeline end-to-end:
- * orchestrator submit → wait → audit-write to scanner_label_results.
+ * Local-dev / debug endpoint. Action-routed.
+ * =============================================================================
  *
- * GET /api/admin/test?token=$WEBHOOK_TOKEN
+ * Hidden testing route. Guarded by the WEBHOOK_TOKEN via `?token=` query
+ * param (see WebhookEndpoint). Not reachable without the secret; no public UI.
  *
- * Submits a scan via `createXGuardModerationRequest` with `recordForReview:
- * true`, waits up to 60s for the orchestrator, and pushes the workflow
- * through `recordXGuardScanFromWorkflow` — the same helper the webhook
- * callback uses. No entity is attached, so the entity-moderation path is
- * skipped; only the audit-write (ClickHouse) runs.
+ * Usage:
+ *   GET or POST /api/admin/test?token=$WEBHOOK_TOKEN&action=<action>&...params
  *
- * Edit the constants below to change what gets scanned. `LABELS` is passed
- * through as the orchestrator evaluation filter; leave the array empty to
- * let the orchestrator evaluate every label it has configured.
+ * Actions:
+ *   refresh-content-cache              — refresh userContentOverviewCache for `theally`
+ *                                        (the original behavior of this endpoint).
+ *   import-wildcard-set                — {modelVersionId} download a single Wildcards-type
+ *                                        ModelVersion's primary file (.zip, .txt, .yaml,
+ *                                        or .yml), extract category entries (zip walks
+ *                                        .txt + .yaml entries; yaml is parsed as a tree
+ *                                        with leaf arrays becoming categories named by
+ *                                        their key path), normalize __name__ → #name,
+ *                                        and create the WildcardSet + WildcardSetCategory
+ *                                        rows. Idempotent — second call returns already_exists.
+ *   reconcile-wildcard-sets            — {limit?} scan Published Wildcards-type
+ *                                        ModelVersions that don't yet have a WildcardSet and
+ *                                        provision them. Capped per call (default 100, max 500).
+ *                                        Re-run until `scanned` is 0 to drain the backlog.
+ *   list-pending-wildcard-models       — {limit?} read-only — list the next N Wildcards-type
+ *                                        Published ModelVersions still missing a WildcardSet.
+ *                                        Useful for previewing what reconcile would do.
  */
-import { createXGuardModerationRequest } from '~/server/services/orchestrator/orchestrator.service';
-import { recordXGuardScanFromWorkflow } from '~/server/services/scanner-audit.service';
+
+import type { NextApiRequest, NextApiResponse } from 'next';
+import * as z from 'zod';
+import { dbRead } from '~/server/db/client';
+import {
+  importWildcardModelVersion,
+  reconcileWildcardSets,
+} from '~/server/services/wildcard-set-provisioning.service';
+import { userContentOverviewCache } from '~/server/redis/caches';
 import { WebhookEndpoint } from '~/server/utils/endpoint-helpers';
 
-const POSITIVE_PROMPT = ``;
-const NEGATIVE_PROMPT = '';
-const TEXT = `{"anal beads","anal tail","artificial vagina",tenga,"butt plug",aneros,"butt plug tail","cock ring",dildo,"double dildo","huge dildo","dragon dildo","horse dildo","spiked dildo",strap-on,"suction cup dildo","dildo riding","food insertion","dildo gag","mask challenge (meme)","dildo harness","dildo under panties","prostate massager",Pump,"breast pump","clitoris pump","sex machine","too many sex toys",sounding,catheter,"urethral beads",vibrator,"bunny vibrator","butterfly vibrator","egg vibrator","hitachi magic wand","remote control vibrator","riding machine",sybian,"public vibrator","vibrator in anus"}`;
-const LABELS: string[] = ['csam', 'pg', 'pg13', 'r', 'x', 'xxx']; // empty array = evaluate every label the orchestrator knows about
+const actionSchema = z.enum([
+  'refresh-content-cache',
+  'import-wildcard-set',
+  'reconcile-wildcard-sets',
+  'list-pending-wildcard-models',
+]);
 
-export default WebhookEndpoint(async (req, res) => {
-  const workflow = await createXGuardModerationRequest({
-    mode: 'text',
-    content: TEXT,
-    labels: LABELS.length > 0 ? LABELS : undefined,
-    recordForReview: true,
-    wait: 60,
-    // Suppress the auto-callback — this endpoint waits synchronously and
-    // calls `recordXGuardScanFromWorkflow` itself just below, so a callback
-    // would just produce a duplicate (idempotent but wasteful) insert.
-    callbackUrl: null,
+const schema = z
+  .object({
+    action: actionSchema,
+    modelVersionId: z.coerce.number().int().positive().optional(),
+    limit: z.coerce.number().int().positive().max(500).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.action === 'import-wildcard-set' && !data.modelVersionId) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'import-wildcard-set requires modelVersionId',
+        path: ['modelVersionId'],
+      });
+    }
   });
 
-  if (!workflow) {
-    res.status(500).json({ status: 'orchestrator-error' });
-    return;
+export default WebhookEndpoint(async function (req: NextApiRequest, res: NextApiResponse) {
+  const payload = schema.safeParse({ ...req.query, ...(req.body ?? {}) });
+  if (!payload.success) {
+    return res.status(400).json({ error: 'Invalid request', issues: payload.error.issues });
   }
+  const input = payload.data;
 
-  // Mirror the callback URL handler — push the synchronously-returned
-  // workflow through the same audit-write path the webhook would use.
-  await recordXGuardScanFromWorkflow(workflow);
+  try {
+    switch (input.action) {
+      case 'refresh-content-cache': {
+        const user = await dbRead.user.findUnique({
+          where: { username: 'theally' },
+          select: { id: true },
+        });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        await userContentOverviewCache.refresh(user.id);
+        return res.status(200).json({
+          action: input.action,
+          message: `Refreshed content overview cache for user ${user.id}`,
+        });
+      }
 
-  res.status(200).json({ workflow });
+      case 'import-wildcard-set': {
+        const result = await importWildcardModelVersion(input.modelVersionId!);
+        const status = result.status === 'failed' ? 400 : 200;
+        return res.status(status).json({ action: input.action, ...result });
+      }
+
+      case 'reconcile-wildcard-sets': {
+        const result = await reconcileWildcardSets({ limit: input.limit });
+        return res.status(200).json({ action: input.action, ...result });
+      }
+
+      case 'list-pending-wildcard-models': {
+        const limit = input.limit ?? 25;
+        const pending = await dbRead.modelVersion.findMany({
+          where: {
+            status: 'Published',
+            model: { type: 'Wildcards' },
+            wildcardSet: null,
+          },
+          select: {
+            id: true,
+            name: true,
+            model: { select: { id: true, name: true } },
+            files: { select: { id: true, name: true, sizeKB: true } },
+          },
+          take: limit,
+          orderBy: { id: 'asc' },
+        });
+        return res.status(200).json({ action: input.action, count: pending.length, pending });
+      }
+    }
+  } catch (e) {
+    console.log(e);
+    return res.status(500).json({ error: (e as Error).message, stack: (e as Error).stack });
+  }
 });

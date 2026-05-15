@@ -18,6 +18,7 @@ import {
   schedulerNode,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 import { sdxlAspectRatioBuckets } from '~/shared/constants/generation.constants';
@@ -80,5 +81,6 @@ export const animaGraph = new DataGraph<{ ecosystem: string; workflow: string },
   )
   .node('scheduler', schedulerNode({ options: animaSchedules, defaultValue: 'simple' }))
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph)
   .merge(negativePromptGraph);

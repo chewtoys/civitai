@@ -41,7 +41,7 @@ For Prisma definitions, queries, indexes, and migration plan, see [prompt-snippe
 
 See [prompt-snippets-schema.md](./prompt-snippets-schema.md) for full Prisma definitions, indexes, and CHECK constraints. Quick summary:
 
-- `WildcardSet` — `kind: System | User` discriminator. System-kind has `modelVersionId`, `modelName`, `versionName`. User-kind has `ownerUserId`, `name`. Audit aggregate, invalidation flags, denormalized `totalValueCount`.
+- `WildcardSet` — `kind: System | User` discriminator. System-kind has `modelVersionId`. User-kind has `ownerUserId`. Both kinds share a single `name @db.Citext` column (System defaults to `"${model.name} - ${modelVersion.name}"` at import; User defaults to `"My snippets"` and is renameable). Audit aggregate, invalidation flags, open-ended `metadata` JSON.
 - `WildcardSetCategory` — `name CITEXT`, `values text[]`, per-category `auditStatus`, `nsfwLevel` (bitwise int), `valueCount`.
 
 Two new tables — no DB join table for "loaded sets." There is no separate `PromptSnippet` table either. User personal content is a User-kind `WildcardSet` whose categories live in the same table as System-kind imported content.
@@ -52,14 +52,16 @@ Two new tables — no DB join table for "loaded sets." There is no separate `Pro
 
 **Trigger character:** `#category`. The behavior of the submission (cartesian fan-out vs random sampling) is governed by the `snippetMode` form toggle, not by the prompt syntax.
 
-**Grammar:** `#` + identifier matching `[A-Za-z][A-Za-z0-9_]*`. Categories are matched case-insensitively (citext storage preserves original casing for display).
+**Grammar:** `#` + a path-like identifier matching `[A-Za-z][\w./-]*`. The charset mirrors the import pipeline's category-name convention — categories are stored as the full relative path inside their source zip (`uds_wildcards/personmaker/easyman`), so chip references must allow `/`, `.`, and `-`. Categories are matched case-insensitively (citext storage preserves original casing for display).
 
-**Collision with existing `#textualInversion` syntax** is resolved at the server. Snippet expansion runs first and replaces any `#token` matching one of the user's accessible category names. Unmatched `#tokens` pass through to the textual-inversion parser unchanged. Edge case: a user with both a wildcard category named `foo` and a textual-inversion resource named `foo` will see the wildcard win — rare conflict, surface a warning if it ever happens.
+**Reserved separator:** `::` is reserved for a future cross-set qualifier (`#core::hair_color`). Single colons collide with SD attention syntax (`(weight:1.2)`), so we deliberately avoid them. Single-`/` paths are intra-pack namespace, **not** a set qualifier — see the cross-set discussion in [prompt-snippets-nested-resolution.md](./prompt-snippets-nested-resolution.md#open-questions-for-review).
+
+**Collision with existing `#textualInversion` syntax** is resolved at the server. Snippet expansion runs first and replaces any `#token` matching one of the user's accessible category names. Unmatched `#tokens` pass through to the textual-inversion parser unchanged. Path-style refs (containing `/`) are unambiguously snippets — TI never uses slashes. Edge case: a user with both a wildcard category named `foo` and a textual-inversion resource named `foo` will see the wildcard win — rare conflict, surface a warning if it ever happens.
 
 **Parser:** new helper in [src/utils/prompt-helpers.ts](../../src/utils/prompt-helpers.ts), co-located with the existing `parsePromptResources`.
 
 ```ts
-const snippetReferencePattern = /#([a-zA-Z][a-zA-Z0-9_]*)/g;
+const snippetReferencePattern = /#([a-zA-Z][\w./-]*)/g;
 // Returns ordered list of references: [{ category, position }]
 ```
 
@@ -226,9 +228,9 @@ The cartesian space is unified across **all targets**. A single combination prod
 
 **Where the data lives:**
 
-- **Workflow metadata** gets a single `snippets` object (per submission) containing `wildcardSetIds`, `mode`, `batchCount`, and a keyed `targets` map (with conventional keys `prompt` and `negativePrompt` in v1). Used to reload picker state on re-edit and to show "this batch ran with character: Zelda, Link" in run summaries. See schema doc §4.4 for the full shape.
-- **Workflow.tags** gains a `wildcards` entry whenever snippets were used in the submission. Cheap analytics signal + queryable filter ("did this generation use snippets?") without parsing the metadata blob.
-- **Step metadata stays vanilla.** Each step's `params.prompt` and `params.negativePrompt` already contain the fully substituted text. The orchestrator processes snippet-driven steps identically to ordinary steps — no new step-level fields, no awareness of where the prompt came from.
+- **Workflow metadata** gets a single `snippets` object (per submission) containing `wildcardSetIds`, `mode`, `batchCount`, and a keyed `targets` map (with conventional keys `prompt` and `negativePrompt` in v1) — but only when the resolver actually fan-out. Submissions whose snippets node sat at defaults (no `#refs`, `batchCount = 1`) skip the persistence entirely so non-snippet generations aren't polluted with unused snippet blobs. When the resolver did fire, the orchestrator overwrites `targets` with the parsed-refs snapshot and drops `seed` (preview-only). Used to reload picker state on re-edit and to show "this batch ran with character: Zelda, Link" in run summaries. See schema doc §4.4 for the full shape.
+- **Workflow.tags** gains a `wildcards` entry whenever the resolver actually fan-out (≥1 `#ref` to expand, or `batchCount > 1`). A submission that carried a snippets node at defaults does NOT get the tag — that submission ran identically to a pre-snippets build. Cheap analytics signal + queryable filter ("did this generation use snippets in earnest?") without parsing the metadata blob.
+- **Step metadata records the snippet-target deltas.** When the resolver fires, each step's `metadata.params` carries ONLY the substituted snippet-target fields (e.g. `{ prompt, negativePrompt }`) — the workflow-level params already snapshots the template + every other field, and duplicating them per-step would just bloat storage. Non-snippet steps stay vanilla (handler-set fields only). The fully-substituted text always reaches `step.input.imageMetadata` so single-image remix works regardless.
 
 Reproduction of any specific step's expansion is recoverable on demand from `(seed, target templates, snippets)` — re-running the resolver gives byte-identical results. We don't duplicate the per-step expansion tree on every step.
 
@@ -336,7 +338,7 @@ Pickers show in UI; selections aren't sent yet.
 - Augment `generateFromGraph` payload (snippet selections, mode, batchCount, wildcardSetIds)
 - `snippetExpansion.ts` module in `server/services/orchestrator/` — handles both batch and random modes uniformly
 - Hook into `createStepInputs`
-- Workflow metadata records the snippet inputs; step metadata stays vanilla (substituted prompt only)
+- Workflow metadata records the snippet inputs (with parsed-refs snapshot, seed dropped); step metadata records the substituted target fields as a delta from the workflow params
 
 First end-to-end working slice.
 

@@ -22,6 +22,7 @@ import {
   negativePromptGraph,
   promptGraph,
   seedNode,
+  snippetsGraph,
   triggerWordsGraph,
   type AspectRatioOption,
   type ResourceData,
@@ -211,7 +212,11 @@ export const nanoBananaGraph = new DataGraph<
   })
   // Prompt + triggerWords are common to all variants. Placed at the parent
   // (after the discriminator) so model from the active branch is in ctx.
+  // negativePrompt is only present in pro mode; its `createTextEditorGraph`
+  // factory self-registers as a snippets target via its own effect when
+  // that branch is active.
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export mode options for use in components

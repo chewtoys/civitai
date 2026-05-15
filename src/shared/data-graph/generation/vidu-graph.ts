@@ -34,6 +34,7 @@ import {
   imagesNode,
   promptGraph,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
   createCheckpointGraph,
 } from './common';
@@ -354,6 +355,7 @@ export const viduGraph = new DataGraph<ViduCtx, GenerationCtx>()
 
   // Prompt + triggerWords (no negativePrompt for Vidu)
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);
 
 // Export constants for use in components

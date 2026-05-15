@@ -24,7 +24,7 @@ Users reference reusable prompt content in their generator prompts via `#categor
 - **WildcardSet** — global content table. Two kinds:
   - `kind = System`: imported from a Civitai wildcard-type model. Globally cached, shared across all users. Pre-provisioned on publish via the provisioning job (see [prompt-snippets-provisioning-job.md](./prompt-snippets-provisioning-job.md)). Immutable.
   - `kind = User`: owned by one user. Created lazily on first "save to my snippets." Mutable (CRUD on values, with re-audit on every change).
-- **WildcardSetCategory** — categories within a set (e.g. `character`, `setting`). Each holds a `text[]` of value strings. Per-category audit + `nsfwLevel`.
+- **WildcardSetCategory** — categories within a set (e.g. `character`, `setting`). Each holds a `text[]` of value strings. Per-category audit + boolean `nsfw` flag.
 - **No `UserWildcardSet` join table.** The user's own User-kind set is queryable by `ownerUserId`. Additional wildcard sets the user has loaded live in the form's localStorage (graph node state). Loaded-set IDs are validated server-side at submit time (System-kind = public; User-kind = `ownerUserId == submitter`).
 - **`snippets` node in the generation-graph.** Inside `input` (the serialized graph), alongside the existing prompt, negativePrompt, resources, sampler, etc. nodes. Carries the user's wildcard-set IDs, mode, batchCount, and per-target reference state.
 - **Single reference syntax.** `#category` everywhere. Imported wildcard files have source-file `__name__` rewritten to `#name` at import time.
@@ -40,7 +40,7 @@ Three new tables, three enums, one CHECK constraint, citext extension. See [prom
 | Table | Purpose |
 |---|---|
 | `WildcardSet` | Global content. `kind: System \| User` discriminator. System-kind has `modelVersionId` FK; User-kind has `ownerUserId` FK + user-given `name`. Audit aggregate, `isInvalidated` flag. |
-| `WildcardSetCategory` | Categories within a set. `name CITEXT`, `values text[]`, per-category `auditStatus` and `nsfwLevel`. System-kind is immutable; User-kind is mutable with re-audit on each change. |
+| `WildcardSetCategory` | Categories within a set. `name CITEXT`, `values text[]`, per-category `auditStatus` and boolean `nsfw`. System-kind is immutable; User-kind is mutable with re-audit on each change. |
 | `PromptSnippet` | (Existing in feature plan, but *not in v1* — see §4.) Skipped: User-kind WildcardSet covers the same purpose. |
 
 **Not in v1:** `UserWildcardSet` (deferred, see §4).
@@ -52,10 +52,11 @@ Three new tables, three enums, one CHECK constraint, citext extension. See [prom
 - **The chip is always minimal in v1** — `#character`, no verbose form, no popup, no drawer. Just the reference token.
 - **Snippets node in the generation graph.** Carries `wildcardSetIds`, `mode`, `batchCount`, `targets`, optional `seed`. Each editor node has a dependency on the snippets node and reads its slice (`snippets.targets[<editorNodeName>]`) to render chips.
 - **On form mount:**
-  1. Fetch the user's own User-kind set ID via `getMyUserWildcardSet()` (lazy-creates on first call). Auto-prepend to `wildcardSetIds`.
+  1. Fetch the user's own User-kind set ID via `getMyUserWildcardSet()`. Returns `null` in v1 (User-kind sets are deferred — see "Deferred from v1" below). When non-null, auto-prepend to `wildcardSetIds`.
   2. Read additional `wildcardSetIds` from localStorage (set IDs added via "create" clicks on wildcard model pages).
   3. Fetch full set details via `getWildcardSets({ ids })`. Server filters out IDs the user can't access (e.g. invalid User-kind ownership). Pruned IDs silently drop from form state.
   4. Render any chip in the prompts referencing a category that no longer resolves with a **red badge state** ("orphaned" — source set removed or category gone).
+- **What the read API returns — and what it doesn't.** `getWildcardSets` and `getMyUserSet` return per-set metadata (id, kind, name, audit/invalidated flags) and per-category metadata (id, name, displayOrder, valueCount, auditStatus, nsfwLevel) — enough for autocomplete, chip rendering, and audit-aware UI. They deliberately **do not** ship the `values` array. The client never holds values in memory unless a picker drawer for one specific category is open and the user is actively choosing `in`/`ex` values; v1 has no picker drawer, so v1 clients receive zero values from any read endpoint. Preview and submit run the resolver entirely server-side — values stay on the server.
 - **Adding a wildcard set:** clicking "create" on a wildcard model page adds that set's ID to the form's localStorage `wildcardSetIds`. No DB write. The set is immediately available for `#category` autocomplete.
 - **User's own User-kind set is always loaded** — not opt-in.
 
@@ -105,14 +106,16 @@ In v1, **selections are typically `[]`** — the picker UI for picking individua
 
 ### Workflow metadata
 
-Persisted at `workflow.metadata.params.snippets` — same place as other graph form data (prompt, negativePrompt, image-gen seed, etc.). The `seed` field from the submission is **dropped at persistence time** so remixes get fresh randomness.
+Persisted at `workflow.metadata.params.snippets` — same place as other graph form data (prompt, negativePrompt, image-gen seed, etc.) — **but only when the resolver actually fired**. Submissions whose snippets node sat at defaults (no `#refs`, `batchCount = 1`) skip the persistence entirely so non-snippet generations aren't polluted with an empty `{ wildcardSetIds: [], mode: 'random', batchCount: 1 }` blob. The `wildcards` workflow tag is the canonical "did this use snippets" signal.
+
+When the resolver did fire, the orchestrator overwrites `snippets.targets` with the parsed-refs snapshot (server-side parse of each template's `#refs`) and drops `snippets.seed` — that field is preview-only and remixes should re-roll the random picks. Targets whose template had zero `#refs` are omitted entirely: the persisted `targets` map is the historical record of "editors that had refs to substitute," not "editors that could have accepted snippets." (The graph state's `snippets.targets` is the latter; see §"Snippets node target registration" below.)
 
 ```jsonc
 {
   // workflow.metadata
   "params": {
-    "prompt": "A #character ...",
-    "negativePrompt": "...",
+    "prompt": "A #character in #setting",
+    "negativePrompt": "blurry, ugly",     // had no #refs, omitted from snippets.targets below
     "seed": 847291,                       // image-gen seed (existing)
     /* ... other graph form fields ... */
     "snippets": {
@@ -123,22 +126,23 @@ Persisted at `workflow.metadata.params.snippets` — same place as other graph f
         "prompt": [
           { "category": "character", "selections": [] },
           { "category": "setting",   "selections": [] }
-        ],
-        "negativePrompt": []
+        ]
+        // No "negativePrompt" key — the editor accepted snippets but its
+        // template had no #refs in this submission.
       }
-      // Note: no "seed" field here even if the submission had one
+      // No "seed" field here either, even if the submission had one.
     }
   },
   "tags": [..., "wildcards"]
 }
 ```
 
-`wildcards` tag is added to `workflow.tags` whenever the submission carried a `snippets` node. Cheap analytics filter ("did this generation use snippets?").
+`wildcards` tag is added to `workflow.tags` whenever the resolver actually fan-out — i.e. when the submission had at least one `#ref` to expand or requested `batchCount > 1`. A submission that carried a snippets node at defaults (no refs, no batch) does NOT get the tag. Cheap analytical filter for "did this generation use snippets in earnest?"
 
 ### Server resolution
 
 - For each `#category` reference in each target's template:
-  1. Look up matching categories across `wildcardSetIds`. Filter by `auditStatus = 'Clean'` and `nsfwLevel` matching the request site context.
+  1. Look up matching categories across `wildcardSetIds`. Filter by `auditStatus = 'Clean'`; on `.com` (SFW), also filter `nsfw = false`.
   2. If `selections` is empty, use the full merged pool from those categories.
   3. If `selections` is non-empty, apply `in`/`ex` per source category to filter.
 - Resolve mode:
@@ -149,12 +153,65 @@ Persisted at `workflow.metadata.params.snippets` — same place as other graph f
 
 ### Step metadata
 
-Vanilla. Each step's `params.prompt` / `params.negativePrompt` already contain the fully substituted text. The orchestrator doesn't see the snippets node.
+When the resolver fires, each step's `metadata.params` records ONLY the substituted snippet-target fields (e.g. `{ prompt: "<substituted>", negativePrompt: "<substituted>" }`) — NOT a full copy of workflow params. The workflow-level `params` already carries the template + every other field, so duplicating them on every step is wasted bytes. The per-step delta IS the substituted text; everything else is the same as the workflow.
+
+For non-snippet runs (or snippet runs that resolved to no refs), step metadata stays vanilla — handler-set fields only (e.g. `suppressOutput` for multi-step workflows), no `params` field added by the orchestrator.
+
+The fully-substituted text also lives in `step.input.imageMetadata` (the EXIF-embedded blob) regardless of source, so single-image remix continues to work without any snippet awareness in the orchestrator's downstream consumers.
+
+### Snippets node target registration
+
+The graph-state `snippets.targets` map is populated by the text editors themselves, not declared up front by the ecosystem subgraph. `snippetsGraph` ships with `targets: {}`; each `createTextEditorGraph(...)` call (the factory behind `promptGraph`, `negativePromptGraph`, and any future text editor) adds a small effect that, whenever the `snippets` node is reachable in the active subgraph, writes its own `name` into `snippets.targets[name] = []`.
+
+Consequences:
+
+- An ecosystem subgraph that wants snippet support merges `snippetsGraph` once (no target list). Adding or removing a text editor changes which targets appear in `snippets.targets` automatically.
+- Workflows whose discriminator branches contain different text editors (e.g. flux2-klein's `negativePrompt` only in the base mode, or wan-image's `negativePrompt` only on v2.7) get an accurate per-branch target list — the registration effect fires for editors that are active in the current branch and stays silent for ones that aren't.
+- Subgraphs that don't merge `snippetsGraph` (image upscale, background-removal, video interpolation) have no `snippets` in ctx; the registration effect short-circuits and is a no-op.
+
+The persisted `workflow.metadata.params.snippets.targets` (above) is a different map: it's the orchestrator's parsed-refs snapshot for THIS submission, with empty entries stripped. Graph state's `targets` = "editors that accept snippets right now"; persisted `targets` = "editors that had refs to substitute in this submission."
+
+### Wildcards models vs generation resources
+
+A `Wildcards`-type ModelVersion is **not** a generation resource. The generator never consumes it directly the way it consumes a Checkpoint or LoRA; its only role is as the published source for a System-kind `WildcardSet`, and at submit time what matters is the `WildcardSet.id` (which the resolver reads from), not the ModelVersion id (which a handler would otherwise wire as a generation resource).
+
+This creates a normalization rule: anywhere a `Wildcards`-type ModelVersion shows up — as a resource the user picked, as a preset's resource entry, as a remixed generation's resource list, or as the source of a "Generate" click on a wildcard-model detail page — the entry's `wildcardSetId` is routed into `snippets.wildcardSetIds`, never into the generator's `resources[]` array. By the time the orchestrator runs, `resources[]` contains only generation resources (Checkpoints, LoRAs, VAEs, etc.) — Wildcards never reach it.
+
+**Two layers of server-side support; the client owns the routing.**
+
+1. **`getResourceData` stamps `wildcardSetId` and computes `canGenerate`.** When enriching a list of ModelVersion ids, any row whose `model.type === 'Wildcards'` gets:
+   - `wildcardSetId?: number` stamped on the returned `GenerationResource`, resolved to the corresponding System-kind `WildcardSet.id`.
+   - `canGenerate` overridden to reflect WildcardSet visibility at the request's site context. A non-invalidated set with `auditStatus != 'Dirty'` AND (on `.com`) `nsfw = false` — or any non-Dirty set on `.red` — is `canGenerate: true`. The standard `getResourceCanGenerate` path returns false for Wildcards baseModels (they're not on the generation-supported list), so this override is what lets the model detail page enable its "Generate" button for a published, visible wildcard set. The visibility check is a single-table query against `WildcardSet` columns — see "Set-level rollups" below for why this avoids a category sub-query.
+
+2. **Resource picker filters by `hasGenerationSupport`.** The form's resource picker passes `generation: true` to `getResourceData`, which strips out anything whose baseModel isn't generation-supported — Wildcards models are filtered out at this gate. Users can't add a Wildcards model to the `resources` array through the picker; it never shows up as an option.
+
+**Client-side routing.** When a wildcard enters the form (via the "Add wildcard set" button, the wildcard model detail page's "Generate" click, or a preset / remix that carries a `wildcardSetId`-stamped resource), the form reads the `wildcardSetId` field and appends it to `snippets.wildcardSetIds`. The wildcard never lives in the `resources` graph node.
+
+**Edge case — active subgraph doesn't support snippets.** Some workflows (`vid2vid:upscale`, `img2img:remove-background`, video interpolation) don't merge `snippetsGraph` and have no `snippets` node in ctx. A preset loaded into such a workflow with wildcards present **silently drops** the wildcard entries (matching how ecosystem-incompatible resources already vanish today). A soft warning surfaces in the UI so the user understands their wildcards aren't active.
+
+**Preset save shape.** Presets serialize wildcards as `wildcardSetIds: number[]` on `GenerationPreset.values`, NOT as Wildcards entries inside `resources`. The routing layer above is only for legacy data and external paths — anything saved through the form's own preset flow already has the canonical shape.
+
+**Set-level rollups.** `WildcardSet` carries two aggregates maintained by the audit verdict path so visibility checks don't need to JOIN to `WildcardSetCategory`:
+
+- `auditStatus` (`Pending | Clean | Mixed | Dirty`) — buckets the set based on its categories. `Dirty` = nothing usable, everywhere else = at least one Clean (or Pending) category exists.
+- `nsfw` (Boolean) — true iff any non-Dirty category's `nsfw` flag is set. Single-column predicate answers "does this set contain any NSFW content?" Deliberately boolean rather than the bitwise `nsfwLevel` bucket used by images/models: XGuard's text classifiers can't reliably distinguish PG / R / X for arbitrary text, so the boolean is the only honest representation of the signal we actually have.
+
+Both aggregates are recomputed in `recomputeWildcardSetAuditStatus` whenever any category's `auditStatus` or `nsfw` changes. This means hot-path checks like the model detail page's Generate button gate (`auditStatus != 'Dirty' && (sfwOnly ? !nsfw : true)`) hit one row, no JOIN.
+
+**Implementation status.**
+
+- ✅ `getResourceData` stamping + canGenerate override — see `src/server/services/generation/generation.service.ts`.
+- ✅ Set-level `nsfw` rollup — `WildcardSet.nsfw` column + `recomputeWildcardSetAuditStatus` maintenance + backfill in the migration.
+- 🚧 Form-side routing — TODO. After the form fetches enriched resources via `ResourceDataProvider`, entries with `wildcardSetId` should be dispatched into `snippets.wildcardSetIds` rather than appended to `resources`. Handled at the form's hydration boundary (preset load, remix, model-detail-page "Generate" handoff). Without this, a `wildcardSetId`-stamped resource that arrives via a preset would sit visible in the resources list until the user re-renders.
 
 ### Provisioning + audit
 
 - **Provisioning job** (see [prompt-snippets-provisioning-job.md](./prompt-snippets-provisioning-job.md)) creates `WildcardSet` (kind: System) + `WildcardSetCategory` rows when a wildcard-type model version is published. Reconciliation job catches missed publishes. Backfill on initial deploy.
-- **Audit pipeline** runs per-category. On creation (System-kind import; User-kind value mutation), category is `Pending` until the audit job processes it. Verdict is `Clean` or `Dirty`; `nsfwLevel` is set on `Clean`. Re-runs on rule-version bumps. **No transitive propagation** through nested refs in v1.
+- **Audit pipeline** runs per-category. On creation (System-kind import; User-kind value mutation), category is `Pending` until the audit job processes it. The XGuard request carries two label sets:
+  - **Fail labels** (`urine, diaper, scat, menstruation, bestiality`): any triggered → category goes `Dirty`. Hard policy violations regardless of site context. `csam` is not in this list because XGuard's text classifiers don't ship a dedicated CSAM label; instead the callback treats a `young` + `sexual` co-trigger from the level-label set as synthetic CSAM and flips Dirty (with a `csam (young+sexual)` pseudo-label recorded on the audit note).
+  - **Level labels** (`nsfw, young, sexual`): if any of these trigger, the category's `nsfw` flag flips to `true`; otherwise it stays `false`. The fine-grained `pg/pg13/r/x/xxx` evaluators aren't well-tuned for text moderation yet, so we restrict to a binary NSFW signal and store it as an honest boolean rather than pretending we have severity-bucket information we don't. If text classifiers later improve, switching to a bitwise `nsfwLevel` is a (small) migration. `young` and `sexual` are submitted primarily so the synthetic-CSAM rule has signal to combine; either firing alone is treated as ordinary NSFW (the `nsfw` flag flips, no Dirty verdict).
+  - The callback recomputes Dirty from the per-label results — it deliberately ignores XGuard's top-level `blocked` field because that field counts level labels as triggers, which would falsely mark ordinary NSFW content as Dirty.
+- Re-runs on rule-version bumps. Set-level `auditStatus` AND `nsfw` aggregates are recomputed via `recomputeWildcardSetAuditStatus` after each verdict — the rollup is boolean OR across non-Dirty categories, so a set's `nsfw` always reflects "does this set surface any NSFW content?" **No transitive propagation** through nested refs in v1.
 
 ### Implementation phases
 
@@ -171,6 +228,7 @@ Independently shippable. Backend phases first.
 
 ## 4. Out of scope for v1 (deferred to v2 / v3)
 
+- **User-kind `WildcardSet` creation flow ("Save to my snippets").** Originally Phase 3 above, but deferred from v1. The schema, service, and tRPC endpoints all exist and accept User-kind data, but the v1 UI doesn't expose any affordance to create one and `getMyUserWildcardSet()` no longer lazy-creates on first call (it returns `null`). `saveUserSnippet` is gated behind a friendly error so a stale client can't reach it accidentally. Re-enabling the flow post-v1 is a UI-only change plus restoring the lazy-create helper. The rationale for deferral: the v1 form was getting stuck in a perpetual loading state whenever the only loaded set was the auto-created (empty) User-kind one, since the empty set provides no chip targets and the UI had no clean "no content yet" affordance.
 - **Nested wildcard resolution.** Values containing `#name` / `__name__` references that should recursively expand. Currently substituted literally. **When this lands (v2/v3), both `#name` and `__name__` syntaxes will be supported in nested positions** — `#name` for content authored in our system, `__name__` for compatibility with imported wildcard models that ship with the older Dynamic Prompts convention. See [prompt-snippets-nested-resolution.md](./prompt-snippets-nested-resolution.md) for the design.
 - **Per-value selection UI** — drawer, popup, or otherwise. The `in`/`ex` shape exists in the schema but the picker UI to populate them is post-v1. v1 always uses full pools.
 - **Mobile R2 + desktop V8 picker designs.** These represent the post-v1 picker UX (multi-source grouped popover, slim bottom drawer on mobile). The v1 chip is minimal — no popover, no drawer, no progressive disclosure.
@@ -189,6 +247,12 @@ Independently shippable. Backend phases first.
 
 ## 5. Open questions / TODOs (carried over)
 
+- **✅ Audit filters tightened to `auditStatus = 'Clean'`.** The read API and resolver now reject Pending/Dirty content. Audit fires on every User-kind value mutation (`saveUserSnippet`, `updateUserSnippet`, `removeUserSnippet`) and at import time for System-kind sets, with the hourly cron as the safety net. Three call sites carry the strict gate:
+  - `getWildcardSets` — `categories.where` in [src/server/services/wildcard-set.service.ts](../../src/server/services/wildcard-set.service.ts)
+  - `getMyUserWildcardSet` — same file
+  - `expandSnippetsToTargets` — `categoryRows` query in [src/server/services/wildcard-set-resolver.service.ts](../../src/server/services/wildcard-set-resolver.service.ts)
+
+  Paired `nsfwLevel === 0` fallbacks (which let Pending content through during the relaxation window) were dropped from the resolver and `getResourceData`'s Wildcards visibility check at the same time — Clean categories always carry a definitive boolean `nsfw` flag (false unless the audit's `nsfw` label triggered) so the predicate stands on its own.
 - **System default wildcard set** — mechanism for "first-time user" experience. Phase 8 of the long-term plan; not in v1.
 - **`getResourceData` integration** — when adding a `Wildcard` model via the resource picker, return the matching `WildcardSet.id` so the form's snippets node can pick it up. v1 adds the equivalent via the "create" button flow on the wildcard model page; the resource-picker integration is a Phase-2 polish.
 - **Audit-failure user notification** — when a wildcard model the user has loaded gets invalidated, do we notify them? v1 just reflects it on next page load (set details show "invalidated" via the auto-prune flow); explicit notifications are post-v1.
@@ -208,6 +272,6 @@ See [prompt-snippets-schema.md §9](./prompt-snippets-schema.md) for the full op
 - A "preview" button shows the user how the prompt would resolve before submit.
 - All snippet expansion happens server-side; steps look identical to no-snippet steps.
 - Workflow metadata records which sets contributed and what mode/count was used; the `wildcards` tag flags snippet-using submissions.
-- Per-category audit + `nsfwLevel` keep dirty content out of generation pools and route by site context.
+- Per-category audit + boolean `nsfw` flag keep dirty content out of generation pools and route NSFW content away from `.com`.
 
 What v1 doesn't ship: per-value picker UI, nested wildcard resolution, cross-device library sync, mobile drawer / desktop popover picker designs (those are V2 / future-target).

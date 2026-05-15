@@ -38,10 +38,10 @@ import { IconSparkles } from '@tabler/icons-react';
 import clsx from 'clsx';
 import React, { useCallback, useMemo, useState, useRef, useEffect } from 'react';
 
-import { CopyButton } from '~/components/CopyButton/CopyButton';
-import { TrainedWords } from '~/components/TrainedWords/TrainedWords';
 import { useCurrentUser } from '~/hooks/useCurrentUser';
 import { useGatedEcosystems } from './hooks/useGatedEcosystems';
+import { CopyButton } from '~/components/CopyButton/CopyButton';
+import { TrainedWords } from '~/components/TrainedWords/TrainedWords';
 
 import {
   Controller,
@@ -89,6 +89,12 @@ import { ResourceSelectInput } from './inputs/ResourceSelectInput';
 import { useResourceDataContext } from './inputs/ResourceDataProvider';
 import { ResourceSelectMultipleInput } from './inputs/ResourceSelectMultipleInput';
 import { PromptInput } from './inputs/PromptInput';
+import { ActiveWildcards } from '~/components/Generate/Input/ActiveWildcards';
+import { GenerationTextEditor } from '~/components/Generate/Input/GenerationTextEditor';
+import { openResourceSelectModal } from '~/components/Dialog/triggers/resource-select';
+import type { SnippetReference, SnippetsNodeValue } from '~/shared/data-graph/generation/common';
+import { showNotification } from '@mantine/notifications';
+import { trpc } from '~/utils/trpc';
 import { AspectRatioInput } from './inputs/AspectRatioInput';
 import { SliderInput } from './inputs/SliderInput';
 import { SelectInput } from './inputs/SelectInput';
@@ -154,6 +160,77 @@ export function GenerationForm() {
       unsubModel();
     };
   }, [graph]);
+
+  // Drop a System-kind set from the form's loaded list. User-kind sets are
+  // implicitly always-loaded and don't get a remove control.
+  const removeWildcardSet = useCallback(
+    (id: number) => {
+      const snap = graph.getSnapshot() as { snippets?: SnippetsNodeValue };
+      const current = snap.snippets;
+      if (!current) return;
+      graph.set({
+        snippets: {
+          ...current,
+          wildcardSetIds: current.wildcardSetIds.filter((x) => x !== id),
+        },
+      } as Parameters<typeof graph.set>[0]);
+    },
+    [graph]
+  );
+
+  // Add a wildcard set to the form via the resource select modal. The
+  // modal hands back a `GenerationResource` whose `id` is the picked
+  // ModelVersion id; the mutation resolves that to a `WildcardSet.id`
+  // (importing on demand if it's the first time anyone picked this
+  // version). Idempotent — picking an already-loaded set is a silent
+  // no-op (we just don't re-add the id).
+  const loadFromModelVersion = trpc.wildcardSet.loadFromModelVersion.useMutation();
+  const handleAddWildcardSet = useCallback(() => {
+    openResourceSelectModal({
+      title: 'Add wildcard set',
+      selectSource: 'addResource',
+      // Filter the modal to Wildcards-type models only. `baseModels`
+      // omitted intentionally — wildcard packs are model-agnostic.
+      options: { resources: [{ type: 'Wildcards' }] },
+      onSelect: async (resource) => {
+        try {
+          const result = await loadFromModelVersion.mutateAsync({ modelVersionId: resource.id });
+          const snap = graph.getSnapshot() as { snippets?: SnippetsNodeValue };
+          // Fallback shape mirrors `snippetsNode([])`'s default. `targets` is
+          // empty here because we can't infer the active subgraph's target list
+          // from the form layer — if no snippets node was hydrated yet, the
+          // graph's defaultValue will replace this on the next evaluation.
+          const current = snap.snippets ?? {
+            wildcardSetIds: [],
+            mode: 'random' as const,
+            batchCount: 1,
+            targets: {},
+          };
+          if (current.wildcardSetIds.includes(result.wildcardSetId)) return;
+          graph.set({
+            snippets: {
+              ...current,
+              wildcardSetIds: [...current.wildcardSetIds, result.wildcardSetId],
+            },
+          } as Parameters<typeof graph.set>[0]);
+          if (result.invalidated) {
+            showNotification({
+              title: 'Wildcard set added with warnings',
+              message:
+                result.reason ?? 'The set was added but its content is currently invalidated.',
+              color: 'yellow',
+            });
+          }
+        } catch (e) {
+          showNotification({
+            title: 'Could not add wildcard set',
+            message: e instanceof Error ? e.message : String(e),
+            color: 'red',
+          });
+        }
+      },
+    });
+  }, [graph, loadFromModelVersion]);
 
   // Tour initialization
   const { runTour, running, currentStep, setSteps, activeTour } = useTourContext();
@@ -764,9 +841,30 @@ export function GenerationForm() {
               )}
             />
 
-            {/* Prompt with Trigger Words. Each ecosystem subgraph defines its
-                own prompt node (or omits it — e.g. ace custom mode), so the
-                Controller auto-hides when the node isn't in the active graph. */}
+            {/* Snippet sources strip. Lives in its own Controller so it
+                auto-hides whenever the active graph doesn't include the
+                snippets node — i.e. the ecosystem subgraph didn't opt the
+                feature in. Data plumbing (loadedSets, loadingSetIds, etc.)
+                lives inside ActiveWildcards via `useSnippetCategories`;
+                this form just supplies the mutating handlers. */}
+            <Controller
+              graph={graph}
+              name="snippets"
+              render={() => (
+                <ActiveWildcards
+                  onRemoveSet={removeWildcardSet}
+                  onAdd={handleAddWildcardSet}
+                  isAdding={loadFromModelVersion.isPending}
+                />
+              )}
+            />
+
+            {/* Prompt. Each ecosystem subgraph defines its own prompt node
+                (or omits it — e.g. ace custom mode), so the Controller
+                auto-hides when the node isn't in the active graph. The
+                snippets/triggerWords features are turned on by the editor's
+                meta (`createTextEditorGraph`), so the form just forwards
+                those flags — no data hooks here. */}
             <Controller
               graph={graph}
               name="prompt"
@@ -826,32 +924,22 @@ export function GenerationForm() {
                     data-tour="gen:prompt"
                     className="bg-white focus-within:border-blue-6 dark:bg-dark-6 dark:focus-within:border-blue-8"
                   >
-                    <PromptInput
-                      px="sm"
-                      name="prompt"
-                      value={value}
+                    <GenerationTextEditor
+                      value={value as string}
                       onChange={onChange}
-                      onFillForm={(metadata) => {
-                        const { resources, ...data } = metadata;
-                        graph.set(data as Parameters<typeof graph.set>[0]);
-                      }}
+                      snippets={meta?.snippets}
+                      triggerWords={meta?.triggerWords}
+                      attentionEdit
                       placeholder={
                         (meta as { placeholder?: string }).placeholder ?? 'Your prompt goes here...'
                       }
-                      autosize
                       minRows={2}
-                      variant="unstyled"
-                      styles={(theme) => ({
-                        input: {
-                          padding: '10px 0',
-                          backgroundColor: 'transparent',
-                          lineHeight: theme.lineHeights.sm,
-                        },
-                        error: { display: 'none' },
-                        wrapper: { margin: 0 },
-                      })}
+                      className="!border-0 !bg-transparent"
                     />
-                    {/* Nested trigger words controller */}
+                    {/* Nested trigger words controller — surfaces the active
+                        model/resources' trained words as copy-able chips
+                        below the editor. Auto-hides when the active
+                        subgraph didn't merge `triggerWordsGraph`. */}
                     <Controller
                       graph={graph}
                       name="triggerWords"
@@ -859,7 +947,7 @@ export function GenerationForm() {
                         const triggerWords = value as string[] | undefined;
                         if (!triggerWords || triggerWords.length === 0) return null;
                         return (
-                          <div className="mb-1 flex flex-col gap-2">
+                          <div className="mb-1 flex flex-col gap-2 px-2">
                             <Divider />
                             <Text c="dimmed" className="text-xs font-semibold">
                               Trigger words
@@ -903,13 +991,15 @@ export function GenerationForm() {
             <Controller
               graph={graph}
               name="negativePrompt"
-              render={({ value, onChange }) => (
-                <PromptInput
-                  value={value}
+              render={({ value, onChange, meta }) => (
+                <GenerationTextEditor
+                  value={value as string}
                   onChange={onChange}
+                  snippets={meta?.snippets}
+                  triggerWords={meta?.triggerWords}
+                  attentionEdit
                   label="Negative Prompt"
                   placeholder="What to avoid..."
-                  autosize
                   minRows={1}
                 />
               )}

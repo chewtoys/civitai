@@ -24,6 +24,7 @@ import {
   promptGraph,
   seedNode,
   sliderNode,
+  snippetsGraph,
   triggerWordsGraph,
 } from './common';
 import { isWorkflowOrVariant } from './config/workflows';
@@ -139,4 +140,5 @@ export const seedanceGraph = new DataGraph<{ ecosystem: string; workflow: string
 
   // Prompt + triggerWords (no negativePrompt for Seedance)
   .merge(triggerWordsGraph)
+  .merge(snippetsGraph)
   .merge(promptGraph);

@@ -10,8 +10,48 @@ type InferOutput<T extends AnyZodSchema> = T['_zod']['output'];
 /** Utility type that flattens nested intersections for better IDE display */
 type Prettify<T> = { [K in keyof T]: T[K] } & NonNullable<unknown>;
 
+/**
+ * Distributive Prettify — flattens each branch of a discriminated union
+ * separately. Used at the public extraction boundary (`InferDataGraph`,
+ * `init()` return) to give consumers a flat object per branch for fast
+ * property access, without paying the per-chain `Prettify` cost during
+ * graph construction.
+ *
+ * Why distributive: a non-distributive `Prettify<X | Y>` would only project
+ * the keys common to X and Y (since `keyof (X | Y) = keyof X & keyof Y`).
+ * Distributing gives `Prettify<X> | Prettify<Y>` — what consumers actually
+ * want.
+ */
+type DistribPrettify<T> = T extends unknown ? { [K in keyof T]: T[K] } : never;
+
 /** Merge that distributes over unions in A - preserves discriminated unions and prettifies */
 type MergeDistributive<A, B> = A extends unknown ? Prettify<Omit<A, keyof B> & B> : never;
+
+/**
+ * Append a fresh key to the Ctx accumulator. Used by `.node()` and `.computed()`
+ * where B is always `{ [K]: V }` for a key that does not exist in any branch of A.
+ *
+ * Why plain intersection (no `Omit`, no `extends unknown`, no `Prettify`):
+ * - `Omit` is unnecessary because `.node()`/`.computed()` reject duplicate keys
+ *   at runtime.
+ * - `extends unknown` distribution is unnecessary because TypeScript already
+ *   auto-distributes intersection over unions.
+ * - `Prettify` would re-flatten the entire accumulator on every chained call.
+ *   With many chained `.node()` calls, the nested mapped-type evaluation eats
+ *   the type-instantiation depth budget and trips TS2589 sooner.
+ *
+ * Trade-off: skipping `Prettify` per-chain would make downstream structural
+ * comparisons slower (walking `A & {n1} & {n2} & ... & {n40}` instead of one
+ * flat object). This is mitigated by `DistribPrettify` at the `InferDataGraph`
+ * extraction boundary — the accumulator stays cheap during construction, and
+ * consumers see flat object shapes with fast property access.
+ *
+ * Net result: full-repo `tsc` check time +44% vs baseline (with this `Prettify`-
+ * deferred approach), depth budget +85% (~24 → ~46 post-discriminator chained
+ * calls). The TS2589 ceiling is a hard wall — code stops compiling — while the
+ * remaining slowdown is soft. See `src/libs/data-graph/__stress__/depth-budget.ts`.
+ */
+type AppendKey<A, B> = A & B;
 
 /** Empty object type that works correctly with Merge (unlike Record<string, never>) */
 type EmptyObject = Record<never, never>;
@@ -190,25 +230,36 @@ type GroupedBranchesArray<Ctx = any, ExternalCtx = any> = readonly GroupedBranch
  *
  * This reduces type complexity from O(n) branches to O(groups) branches.
  */
+// Perf notes:
+// - `OmitDistributive<ParentCtx, DiscKey>` is hoisted into a wrapper alias so
+//   it is instantiated once per discriminator instead of once per group.
+// - The branch fold uses a mapped type over the tuple (`{ [I in keyof Groups]: ... }[number]`)
+//   instead of head-tail recursion. This is constant-depth regardless of how many
+//   groups exist, which preserves the type-instantiation depth budget for trailing
+//   `.node()` chains. Recursion-based folds added one depth level per group; with
+//   25 ecosystem groups that consumed 25 depth units before any trailing node chain
+//   even started.
 type BuildGroupedDiscriminatedUnion<
   ParentCtx extends Record<string, unknown>,
   DiscKey extends string,
   Groups extends GroupedBranchesArray
-> = Groups extends readonly [infer First, ...infer Rest]
-  ? First extends GroupedBranch<infer Values, infer Graph>
-    ?
-        | MergePreferRight<
-            OmitDistributive<ParentCtx, DiscKey>,
-            MergePreferRight<
-              { [K in DiscKey]: Values[number] },
-              OmitDistributive<InferGraphContext<Graph>, DiscKey>
-            >
-          >
-        | (Rest extends GroupedBranchesArray
-            ? BuildGroupedDiscriminatedUnion<ParentCtx, DiscKey, Rest>
-            : never)
-    : never
-  : never;
+> = _BuildGroupedDiscWithCachedParent<OmitDistributive<ParentCtx, DiscKey>, DiscKey, Groups>;
+
+type _BuildGroupedDiscWithCachedParent<
+  OmittedParent,
+  DiscKey extends string,
+  Groups extends GroupedBranchesArray
+> = {
+  [I in keyof Groups]: Groups[I] extends GroupedBranch<infer Values, infer Graph>
+    ? MergePreferRight<
+        OmittedParent,
+        MergePreferRight<
+          { [K in DiscKey]: Values[number] },
+          OmitDistributive<InferGraphContext<Graph>, DiscKey>
+        >
+      >
+    : never;
+}[number];
 
 /**
  * Lazy evaluation of grouped branch metas via mapped type.
@@ -281,15 +332,25 @@ type BranchShape<
 // - Parent's discriminated union (from earlier discriminators) is preserved
 // - Branch's discriminated union (from nested discriminators) is preserved
 // This allows type narrowing to work for nested discriminators like: workflow -> input -> images
+//
+// Perf note: `OmitDistributive<ParentCtx, DiscKey>` is hoisted into a wrapper alias
+// so it is instantiated once per discriminator instead of once per branch.
+// Without this hoist, a graph with N branches re-evaluates the parent omit N times.
 type BuildDiscriminatedUnion<
   ParentCtx extends Record<string, unknown>,
+  DiscKey extends string,
+  Branches extends BranchesRecord
+> = _BuildDiscWithCachedParent<OmitDistributive<ParentCtx, DiscKey>, DiscKey, Branches>;
+
+type _BuildDiscWithCachedParent<
+  OmittedParent,
   DiscKey extends string,
   Branches extends BranchesRecord
 > = {
   // Map each branch name to its complete shape (merged with parent, subgraph types preferred)
   [BranchName in keyof Branches & string]: MergePreferRight<
-    OmitDistributive<ParentCtx, DiscKey>,
-    BranchShape<ParentCtx, DiscKey, BranchName, Branches[BranchName]>
+    OmittedParent,
+    BranchShape<Record<string, unknown>, DiscKey, BranchName, Branches[BranchName]>
   >;
 }[keyof Branches & string];
 
@@ -952,7 +1013,7 @@ export class DataGraph<
       transform?: (value: InferOutput<T>, ctx: Ctx, ext: ExternalCtx) => InferOutput<T>;
     }
   ): DataGraph<
-    MergeDistributive<Ctx, { [P in K]: InferOutput<T> }>,
+    AppendKey<Ctx, { [P in K]: InferOutput<T> }>,
     ExternalCtx,
     M extends undefined ? CtxMeta : Prettify<CtxMeta & { [P in K]: M }>,
     Prettify<CtxValues & { [P in K]: InferOutput<T> }>
@@ -980,7 +1041,7 @@ export class DataGraph<
     },
     deps: Deps
   ): DataGraph<
-    MergeDistributive<Ctx, { [P in K]: InferOutput<T> }>,
+    AppendKey<Ctx, { [P in K]: InferOutput<T> }>,
     ExternalCtx,
     M extends undefined ? CtxMeta : Prettify<CtxMeta & { [P in K]: M }>,
     Prettify<CtxValues & { [P in K]: InferOutput<T> }>
@@ -1011,7 +1072,7 @@ export class DataGraph<
     },
     deps: Deps
   ): DataGraph<
-    MergeDistributive<Ctx, { [P in K]?: InferOutput<T> }>,
+    AppendKey<Ctx, { [P in K]?: InferOutput<T> }>,
     ExternalCtx,
     M extends undefined ? CtxMeta : Prettify<CtxMeta & { [P in K]: M }>,
     Prettify<CtxValues & { [P in K]: InferOutput<T> }>
@@ -1251,7 +1312,7 @@ export class DataGraph<
     compute: (ctx: Ctx, ext: ExternalCtx) => T,
     deps: Deps
   ): DataGraph<
-    MergeDistributive<Ctx, { [P in K]: T }>,
+    AppendKey<Ctx, { [P in K]: T }>,
     ExternalCtx,
     CtxMeta,
     Prettify<CtxValues & { [P in K]: T }>
@@ -2043,8 +2104,14 @@ export type InferDataGraph<G> = G extends DataGraph<
   infer CtxValues
 >
   ? {
-      /** The context type containing all node values (discriminated union) */
-      Ctx: Ctx;
+      /**
+       * The context type containing all node values (discriminated union).
+       *
+       * Branches are distributively prettified at extraction time — each branch
+       * is flattened from `(branch & {n1} & {n2} & ...)` into a plain object so
+       * downstream property access doesn't walk the intersection chain.
+       */
+      Ctx: DistribPrettify<Ctx>;
       /** External context passed from outside the graph */
       ExternalCtx: ExternalCtx;
       /** Per-node meta type mapping (intersection of all branch metas) */

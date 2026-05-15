@@ -59,6 +59,7 @@ Wildcard-set content is **cached globally** — one extracted copy per model ver
 - **One unified content table.** `WildcardSet` covers both globally-shared content imported from wildcard-type models (`kind = System`) and user-owned personal collections (`kind = User`). The discriminator + nullable owner/model FKs differentiate them; the resolver treats them uniformly.
 - **Values are an inline Postgres `text[]` column.** No separate value table, no JSONB. Audit and site-availability flags live on the category. Categories are the atomic unit of audit + visibility — if a category fails audit it disappears from generation pools entirely; if it passes, its `nsfwLevel` controls whether it shows on .com (SFW) vs .red (NSFW) vs both.
 - **No `UserWildcardSet` join table.** A user's loaded wildcard sets aren't persisted in a DB join table. Their own User-kind set is queryable directly via `WildcardSet WHERE kind = 'User' AND ownerUserId = ?`. Additional sets they've loaded (via "create" buttons on wildcard model pages) live in the form's localStorage — the generation-graph carries those IDs at submission time. Server validates: System-kind sets are public; User-kind sets check `ownerUserId == submitter`.
+- **Minimal denormalization at the set level.** The set carries one `name` column for both kinds (set at import or first save) and lets everything else flow from joins or client-side computation. We deliberately don't carry `modelName`/`versionName` (drift risk on creator rename — JOIN to `ModelVersion → Model` is cheap), `sourceFileCount` (= `categories.length`), or `totalValueCount` (= sum of `categories[].valueCount`, which the picker already loads).
 
 ---
 
@@ -80,14 +81,15 @@ model WildcardSet {
   // System-kind only (null for User-kind):
   modelVersionId      Int?                 @unique
   modelVersion        ModelVersion?        @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
-  modelName           String?              // denormalized e.g. "fullFeatureFantasy"
-  versionName         String?              // denormalized e.g. "v3.0"
-  sourceFileCount     Int?                 // number of .txt files in the source zip
 
   // User-kind only (null for System-kind):
   ownerUserId         Int?
   owner               User?                @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
-  name                String?              @db.Citext // user-given display name e.g. "My snippets"
+
+  // Shared display name. For System-kind, set at import to "${model.name} - ${modelVersion.name}"
+  // (e.g. "fullFeatureFantasy - v3.0"). For User-kind, defaults to "My snippets" on first save
+  // and is renameable by the owner. citext for case-insensitive picker matching.
+  name                String               @db.Citext
 
   // Shared:
   // Aggregate audit — derived from WildcardSetCategory.auditStatus rollup.
@@ -97,6 +99,18 @@ model WildcardSet {
   auditRuleVersion    String?
   auditedAt           DateTime?
 
+  // Set-level nsfwLevel rollup — bitwise OR of every non-Dirty category's
+  // nsfwLevel. Lets callers (the model detail page's "Generate" button gate,
+  // the resource picker, etc.) decide whether a set has content visible at
+  // the request's site context (.com SFW vs .red NSFW) without sub-querying
+  // categories. Maintained by the audit verdict path: recomputed in
+  // `recomputeWildcardSetAuditStatus` whenever any category's auditStatus
+  // or nsfwLevel changes. A set with `nsfwLevel = 0` either has no audited
+  // content yet (Pending) or had its only Clean content classified at the
+  // unrated `PG`-base level — visibility check treats 0 as a permissive
+  // fallback during the audit-relaxation window.
+  nsfwLevel           Int                  @default(0)
+
   // Invalidation — flagged if a System-kind set's source model is unpublished for policy reasons,
   // or if a User-kind set's content is administratively suspended. Pointers remain but the set
   // is excluded from generation pools.
@@ -104,7 +118,11 @@ model WildcardSet {
   invalidationReason  String?
   invalidatedAt       DateTime?
 
-  totalValueCount     Int                  // denormalized sum of all category value counts
+  // Open-ended JSON for set-scoped diagnostic/operational data we don't want to model as
+  // first-class columns yet (e.g. `{ skippedEntries: [{ path, reason, sizeBytes }] }`
+  // recording why specific zip entries were rejected during import).
+  metadata            Json?
+
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 
@@ -114,6 +132,7 @@ model WildcardSet {
   @@index([ownerUserId])
   @@index([auditStatus])
   @@index([isInvalidated])
+  @@index([nsfwLevel])
 }
 
 enum WildcardSetKind {
@@ -134,9 +153,8 @@ enum WildcardSetAuditStatus {
 - **Kind invariant.** Exactly one of `(modelVersionId, ownerUserId)` is non-null per row, determined by `kind`. Enforced via a CHECK constraint at migration time (see §8).
 - `modelVersionId` is `@unique` (only enforced when non-null) because we never create two System-kind sets for the same version. Concurrent first-import is handled by the service layer (see §6.1).
 - `onDelete: Restrict` on `modelVersion` — a `ModelVersion` hard-delete is blocked until dependent System-kind sets are invalidated first. `onDelete: Cascade` on `owner` — deleting a user removes their User-kind sets and their categories.
-- `modelName` / `versionName` are denormalized for picker rendering on System-kind sets without JOINs through the models tables.
-- `name` (User-kind only) is `citext` — case-insensitive, preserves user's casing for display. No global uniqueness; multiple users can have a set called "My snippets," and one user can have several sets like "Characters" and "characters" treated as the same name within their own scope.
-- `totalValueCount` is denormalized for quick "38 values · 3 sources" displays.
+- `name` is `NOT NULL` for both kinds. For System-kind it caches `"${model.name} - ${modelVersion.name}"` at import (drift on rename is acceptable — uncommon, and JOINing back through `ModelVersion → Model` on every read isn't worth saving the rare staleness window). For User-kind, defaults to "My snippets" on first save and is renameable. `citext` makes picker matching case-insensitive while preserving casing for display.
+- **No `modelName` / `versionName` / `sourceFileCount` / `totalValueCount` columns.** All four were pure derived data (cached model/version names, source-zip file count, sum of `WildcardSetCategory.valueCount`) with multi-touchpoint maintenance. Replaced by: a single `name` column (above), `categories.length` for category count, and a sum across `categories[].valueCount` (computed client-side after the picker loads categories anyway, or via Prisma's `_count: { categories: true }` for headline-only views).
 
 ### 4.2 `WildcardSetCategory` — categories within a wildcard set, values inline
 
@@ -198,7 +216,7 @@ enum CategoryAuditStatus {
 - `name` uses the PostgreSQL `citext` type — case-insensitive comparisons and unique constraint automatically. Stores the source filename's casing as-is; the picker can render it directly, and prompts match it regardless of how the user types `#Character` vs `#character`. Removes the need for a separate `displayName` column.
 - `values` is a Postgres `text[]`, e.g. `{"fire","water","earth", ...}` for `elemental_types`, or `{"{3.0::serious|3.0::determined|...}"}` for a single-line weighted-alternation file. Empty source lines are dropped at import. Order is preserved via array position. Identifier for re-edit / metadata uses the literal value string, not the array index — index isn't stable under reorder.
 - **Audit is one verdict per category, not per value.** If any line in the category fails audit, the whole category becomes `Dirty` and is excluded from resolution. Authors curate categories as cohesive lists; partial use after a partial-audit-fail isn't a workflow we want to support, and per-line audit columns aren't needed.
-- `nsfwLevel` follows the existing Civitai bitwise NSFW convention so the site router can filter categories using the same logic it already uses for images, models, etc. A category with `nsfwLevel = 0` (unrated) is treated as not-yet-available pending classification.
+- `nsfwLevel` follows the existing Civitai bitwise NSFW convention so the site router can filter categories using the same logic it already uses for images, models, etc. The audit pipeline classifies severity by submitting the `nsfw` label as an XGuard evaluator alongside the hard-fail labels (`csam, urine, …`); triggered → `nsfwLevel = NsfwLevel.R`, otherwise `NsfwLevel.PG`. The finer-grained `pg/pg13/r/x/xxx` evaluators aren't well-tuned for text yet, so v1 restricts to the binary `nsfw` signal — when those evaluators stabilize, the audit code expands to OR multiple bits with NO schema migration (the column is already an Int). A category with `nsfwLevel = 0` is treated as not-yet-audited (the Pending state).
 - `valueCount` is denormalized for picker headers — derivable from `array_length(values, 1)` but cached to avoid the function call on hot reads.
 - Cascades from `WildcardSet` — deleting a set deletes its categories.
 
@@ -208,7 +226,7 @@ Existing JSON blobs gain new conventional keys. **No per-step snippet metadata**
 
 **`GenerationPreset.values`** — gains `wildcardSetIds: number[]`. When a preset is saved, we snapshot which `WildcardSet.id`s are loaded. On load, those get re-applied to the form state (with a warning if any have since been removed or invalidated). No DB change; just a new key convention.
 
-**`Workflow.tags`** — when a submission uses snippets, the `wildcards` tag is added to the workflow's existing tags array. Serves as an analytics filter (`workflow.tags @> '{wildcards}'`) and as a quick test for "did this generation use snippets?" without parsing the metadata blob.
+**`Workflow.tags`** — when the snippet resolver actually fan-out (at least one `#ref` to expand or `batchCount > 1`), the `wildcards` tag is added to the workflow's existing tags array. Submissions whose snippets node sat at defaults don't get the tag — their generation ran identically to a pre-snippets build, and `workflow.metadata.params.snippets` is stripped at persistence time too. Serves as an analytics filter (`workflow.tags @> '{wildcards}'`) and as a quick test for "did this generation use snippets in earnest?" without parsing the metadata blob.
 
 **Workflow metadata** — gains a single `snippets` object holding everything. One record per workflow, not per step. The shape uses a generic `targets` map keyed by target ID (e.g. `prompt`, `negativePrompt`) rather than hard-coded keys, so new target types (e.g. a future `musicDescription` editor node) can be added without schema changes.
 
@@ -316,8 +334,8 @@ BEGIN
   ELSE:
     INSERT WildcardSet (
       kind = 'System',
-      modelVersionId, modelName, versionName,
-      sourceFileCount, totalValueCount,
+      modelVersionId,
+      name = '${model.name} - ${modelVersion.name}',
       auditStatus = 'Pending'
     )
     FOR each .txt file:
@@ -353,7 +371,7 @@ BEGIN
     INSERT WildcardSet (
       kind = 'User',
       ownerUserId, name = 'My snippets',
-      totalValueCount = 0, auditStatus = 'Pending'
+      auditStatus = 'Pending'
     )
     -- The user's User-kind set is always implicitly loaded — no extra tracking needed.
     -- The form discovers it via getMySnippetSet() on mount.
@@ -377,8 +395,6 @@ BEGIN
           valueCount = valueCount + 1,
           auditStatus = 'Pending'                  -- re-audit on any mutation
       WHERE id = ?
-
-  UPDATE WildcardSet.totalValueCount += new values added
 COMMIT
 -- Enqueue audit for the affected WildcardSetCategory
 ```
@@ -399,9 +415,7 @@ SELECT wsc.id           AS "categoryId",
        wsc."nsfwLevel"  AS "nsfwLevel",
        ws.id            AS "setId",
        ws.kind          AS "setKind",
-       ws."modelName",
-       ws."versionName",
-       ws.name          AS "userSetName",   -- non-null for User-kind sets
+       ws.name          AS "setName",       -- e.g. "fullFeatureFantasy - v3.0" or "My snippets"
        ws."ownerUserId"
 FROM "WildcardSet" ws
   JOIN "WildcardSetCategory" wsc  ON wsc."wildcardSetId" = ws.id
@@ -415,13 +429,15 @@ WHERE ws.id = ANY(?)                       -- the wildcardSetIds from submission
 
 Authorization happens inline via the `kind`/`ownerUserId` check — any submitted ID failing the predicate is silently dropped (the user revoked access, or the set was administratively reassigned, since the form state was saved).
 
-The picker UI groups results by `setKind` for display ("From My Snippets" for User-kind, "From fullFeatureFantasy v3.0" for System-kind), but storage and querying are uniform.
+The picker UI groups results by `setKind` for display, using `ws.name` as the source label for both kinds ("My snippets" for User-kind, "fullFeatureFantasy - v3.0" for System-kind). Storage and querying are uniform.
 
 **Indexes carrying this query:** primary key on `WildcardSet.id` (for the `= ANY(?)` lookup); `(ownerUserId)` on `WildcardSet` (for the User-kind authorization filter); `(wildcardSetId, name)` + `(wildcardSetId, auditStatus)` on `WildcardSetCategory`. Two-table-FK-walk, sub-millisecond at this scale.
 
-**Expected result size:** ~3–20 category rows (one per loaded set that has the category). The app unpacks `values` arrays in code to produce the picker's flat list.
+**Expected result size:** ~3–20 category rows (one per loaded set that has the category). This is a server-internal query — the resolver consumes the `values` arrays directly to build per-reference pools and never ships them to the client.
 
-**Form mount behavior** (related, client-side): when `GenerationForm` mounts, it always loads the user's own User-kind set (`SELECT * FROM WildcardSet WHERE kind = 'User' AND ownerUserId = ?`), then reads any additional `wildcardSetIds` from localStorage and fetches the corresponding `WildcardSet` rows via a `getWildcardSets(ids: number[])` tRPC query. The server returns only sets the user is authorized for (System + own User-kind); missing IDs are silently stripped. If localStorage is empty (fresh session), the form initializes with just the user's User-kind set plus the platform's system default wildcard set (TODO — see §9 open question 5b).
+**Values stay server-side.** The form's read surfaces (`getWildcardSets`, `getMyUserSet`) intentionally omit `WildcardSetCategory.values` from their select. Clients receive category-level metadata (name, valueCount, audit/nsfw flags) for autocomplete + chip rendering, plus the snippets node's own selection state from localStorage. The actual values array is fetched **only** when the post-v1 picker drawer for a specific category is open and the user is actively choosing `in`/`ex` values — at that point a dedicated single-category endpoint serves them. v1 has no picker drawer, so v1 clients never receive any values; the resolver runs entirely server-side, including for the Preview button.
+
+**Form mount behavior** (related, client-side): when `GenerationForm` mounts, it always loads the user's own User-kind set (`SELECT * FROM WildcardSet WHERE kind = 'User' AND ownerUserId = ?`), then reads any additional `wildcardSetIds` from localStorage and fetches the corresponding `WildcardSet` rows via a `getWildcardSets(ids: number[])` tRPC query. The server returns only sets the user is authorized for (System + own User-kind), with `valueCount` per category but no values; missing IDs are silently stripped. If localStorage is empty (fresh session), the form initializes with just the user's User-kind set plus the platform's system default wildcard set (TODO — see §9 open question 5b).
 
 ### 6.3 Audit job — category-level
 
@@ -444,7 +460,14 @@ FOR each WildcardSetCategory WHERE wildcardSetId = ?
   UPDATE WildcardSet SET auditStatus, auditRuleVersion, auditedAt
 ```
 
-The audit service produces both the pass/fail verdict and the `nsfwLevel` classification in one pass. A category that fails outright is marked `Dirty` (excluded everywhere); a category that passes gets a `nsfwLevel` reflecting its content rating, and the site router decides where it shows. Runs as a background worker, ~one category per regex pass — finishes a typical 60-category set well under a minute.
+The audit service produces both the pass/fail verdict and the `nsfwLevel` classification in one pass. Implementation submits a single XGuard text-moderation workflow per category with two label sets in the request:
+
+- **Fail labels** (`csam, urine, diaper, scat, menstruation, bestiality`): any triggered → category goes `Dirty` (excluded everywhere). Hard policy violations regardless of site context.
+- **Level labels** (`nsfw` for v1): triggered → `nsfwLevel = NsfwLevel.R`. Falls back to `NsfwLevel.PG` when not triggered (purely textual content with no NSFW signal sits at the most permissive level). v1 restricts to the binary `nsfw` evaluator because the finer-grained `pg/pg13/r/x/xxx` labels aren't well-tuned for text yet — the schema is already bitwise, so re-introducing those is a code-only change.
+
+The callback (`applyWildcardCategoryAuditSuccess` in `wildcard-category-audit.service.ts`) recomputes Dirty from the per-label results — deliberately ignoring XGuard's top-level `blocked` field, which counts level labels as triggers and would otherwise mark ordinary NSFW content as Dirty.
+
+Runs as a background worker, one category per workflow — finishes a typical 60-category set well under a minute.
 
 ### 6.4 Set invalidation
 
@@ -533,7 +556,7 @@ No data backfill. No existing columns modified. `CREATE EXTENSION IF NOT EXISTS`
 
 ## 9. Open questions for DB review
 
-1. **Denormalization of `valueCount` / `totalValueCount`.** Kept for read-path performance. `valueCount` is derivable from `array_length(values, 1)` — could be a generated column. Worth doing, or overkill?
+1. **`WildcardSetCategory.valueCount` denormalization.** Set alongside `values` in the same write — single touchpoint, can't drift. Could be a generated column (`array_length(values, 1)`); we kept it explicit for picker-header reads without function calls. Worth converting to GENERATED, or overkill? (We deliberately dropped set-level `totalValueCount` and `sourceFileCount` — those had multi-touchpoint maintenance and are derivable client-side from the loaded categories.)
 2. **`nsfwLevel` set by audit pipeline vs explicit moderator action.** Current plan: audit produces a verdict + an inferred `nsfwLevel` based on content rules. Mods can override later. Is there a more rigorous classification process the team would want here (e.g., human-in-the-loop required before any non-zero rating)?
 3. **Global set deletion.** Current plan: `WildcardSet` rows are never hard-deleted; `isInvalidated` handles policy-driven removals. Do we want a separate `deletedAt` for a softer concept, or is hard-delete-with-cascade acceptable for User-kind sets specifically (since we won't have step-history risk for personal content)?
 4. **Audit rule version as a string.** Letting the audit service own the versioning scheme. Alternative: a dedicated `AuditRuleset` table and FK to it. Simpler-as-string for v1?

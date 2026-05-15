@@ -240,6 +240,7 @@ const loadModelVersion = async ({
     const recommendedResourceIds = regularResources.map((x) => x.resource.id);
     const generationResources = await getResourceData(recommendedResourceIds, {
       user: ctx?.user,
+      wildcardsEnabled: ctx?.features.wildcards,
     }).then((data) =>
       data.map((item) => {
         const settings = (regularResources.find((x) => x.resource.id === item.id)?.settings ??
